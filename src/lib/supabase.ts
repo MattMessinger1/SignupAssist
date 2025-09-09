@@ -65,7 +65,20 @@ export type Database = {
   };
 };
 
-export const supabase = createClient<Database>(
-  import.meta.env.VITE_SUPABASE_URL!,
-  import.meta.env.VITE_SUPABASE_ANON_KEY!
-);
+// Debug environment variables
+console.log('VITE_SUPABASE_URL:', import.meta.env.VITE_SUPABASE_URL);
+console.log('VITE_SUPABASE_ANON_KEY present:', !!import.meta.env.VITE_SUPABASE_ANON_KEY);
+console.log('All env vars:', import.meta.env);
+
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+if (!supabaseUrl) {
+  throw new Error('VITE_SUPABASE_URL environment variable is missing. Please check your Supabase integration.');
+}
+
+if (!supabaseAnonKey) {
+  throw new Error('VITE_SUPABASE_ANON_KEY environment variable is missing. Please check your Supabase integration.');
+}
+
+export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey);
