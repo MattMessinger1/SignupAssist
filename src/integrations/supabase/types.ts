@@ -130,6 +130,7 @@ export type Database = {
           preferred: string
           provider_slug: string
           status: string
+          status_updated_at: string | null
           user_id: string
         }
         Insert: {
@@ -147,6 +148,7 @@ export type Database = {
           preferred: string
           provider_slug?: string
           status?: string
+          status_updated_at?: string | null
           user_id: string
         }
         Update: {
@@ -164,6 +166,7 @@ export type Database = {
           preferred?: string
           provider_slug?: string
           status?: string
+          status_updated_at?: string | null
           user_id?: string
         }
         Relationships: [
