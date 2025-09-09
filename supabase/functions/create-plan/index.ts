@@ -86,6 +86,8 @@ serve(async (req) => {
       open_time: requestData.open_time,
       preferred: requestData.preferred,
       alternate: requestData.alternate || null,
+      preferred_class_name: requestData.preferred_class_name || null,
+      alternate_class_name: requestData.alternate_class_name || null,
       credential_id: requestData.credential_id,
       phone: requestData.phone || null,
       status: 'scheduled',

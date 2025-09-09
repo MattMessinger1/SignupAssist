@@ -408,8 +408,8 @@ async function executeBookingFlow(sessionId: string, apiKey: string, plan: any, 
   }
 }
 
-// Helper function to find and click an element
-async function findAndClickElement(sessionId: string, apiKey: string, text: string, elementType: string): Promise<boolean> {
+// Helper function to find and click an element with enhanced fuzzy matching
+async function findAndClickElement(sessionId: string, apiKey: string, text: string, elementType: string, className?: string): Promise<boolean> {
   try {
     // Get page content
     const contentResponse = await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/content`, {
@@ -422,18 +422,57 @@ async function findAndClickElement(sessionId: string, apiKey: string, text: stri
     if (!contentResponse.ok) return false;
 
     const content = await contentResponse.text();
-    const textFound = content.toLowerCase().includes(text.toLowerCase());
+    
+    // Enhanced fuzzy matching strategies
+    const searchTerms = [
+      text, // Exact match
+      text.toLowerCase(),
+      text.replace(/\s+/g, ''), // Remove spaces
+      text.replace(/[^\w\s]/g, ''), // Remove special characters
+      ...text.split(/\s+/), // Individual words
+      text.substring(0, Math.min(text.length, 10)) // First 10 characters
+    ];
+    
+    // Check if any search term is found in content
+    const textFound = searchTerms.some(term => 
+      content.toLowerCase().includes(term.toLowerCase())
+    );
 
     if (!textFound) return false;
 
-    // Try multiple selector strategies
+    // Enhanced selector strategies with fuzzy matching
     const selectors = [
+      // Exact text matching
       `*:contains("${text}")`,
       `button:contains("${text}")`,
       `a:contains("${text}")`,
-      `[data-testid*="${text.toLowerCase()}"]`,
-      `[class*="${text.toLowerCase()}"]`,
-      `[id*="${text.toLowerCase()}"]`
+      `div:contains("${text}")`,
+      `span:contains("${text}")`,
+      
+      // Class and ID-based matching
+      `[class*="${className || text.toLowerCase().replace(/\s+/g, '')}"]`,
+      `[id*="${className || text.toLowerCase().replace(/\s+/g, '')}"]`,
+      `[data-testid*="${text.toLowerCase().replace(/\s+/g, '')}"]`,
+      
+      // Fuzzy text matching for individual words
+      ...text.split(/\s+/).map(word => `*:contains("${word}")`),
+      
+      // Element type with partial text
+      `${elementType}:contains("${text}")`,
+      `${elementType}[class*="${text.toLowerCase().replace(/\s+/g, '')}"]`,
+      
+      // Common lesson/class selectors
+      `button[class*="lesson"]`,
+      `button[class*="class"]`,
+      `button[class*="slot"]`,
+      `a[class*="lesson"]`,
+      `a[class*="class"]`,
+      `a[class*="slot"]`,
+      
+      // Time-based selectors
+      `*[class*="time"]`,
+      `*[class*="schedule"]`,
+      `*[class*="booking"]`
     ];
 
     for (const selector of selectors) {
@@ -448,7 +487,8 @@ async function findAndClickElement(sessionId: string, apiKey: string, text: stri
         });
 
         if (clickResponse.ok) {
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          await new Promise(resolve => setTimeout(resolve, 1500)); // Increased delay for reliability
+          console.log(`Successfully clicked element using selector: ${selector}`);
           return true;
         }
       } catch (e) {
@@ -458,6 +498,7 @@ async function findAndClickElement(sessionId: string, apiKey: string, text: stri
 
     return false;
   } catch (error) {
+    console.error('Error in findAndClickElement:', error);
     return false;
   }
 }
@@ -910,12 +951,16 @@ async function findSlotWithRetry(sessionId: string, apiKey: string, plan: any, s
   
   while (Date.now() - preferredStartTime < PREFERRED_RETRY_DURATION) {
     preferredAttempts++;
+    const preferredSearchText = plan.preferred_class_name 
+      ? `${plan.preferred_class_name} ${plan.preferred}` 
+      : plan.preferred;
+    
     await supabase.from('plan_logs').insert({
       plan_id: plan.id,
-      msg: `Preferred slot attempt ${preferredAttempts} - searching for "${plan.preferred}"`
+      msg: `Preferred slot attempt ${preferredAttempts} - searching for "${preferredSearchText}"${plan.preferred_class_name ? ` (class: ${plan.preferred_class_name})` : ''}`
     });
     
-    const preferredFound = await findAndClickElement(sessionId, apiKey, plan.preferred, 'preferred slot');
+    const preferredFound = await findAndClickElement(sessionId, apiKey, preferredSearchText, 'preferred slot', plan.preferred_class_name);
     
     if (preferredFound) {
       await supabase.from('plan_logs').insert({
@@ -989,12 +1034,16 @@ async function findSlotWithRetry(sessionId: string, apiKey: string, plan: any, s
   
   while (Date.now() - alternateStartTime < ALTERNATE_RETRY_DURATION) {
     alternateAttempts++;
+    const alternateSearchText = plan.alternate_class_name 
+      ? `${plan.alternate_class_name} ${plan.alternate}` 
+      : plan.alternate;
+    
     await supabase.from('plan_logs').insert({
       plan_id: plan.id,
-      msg: `Alternate slot attempt ${alternateAttempts} - searching for "${plan.alternate}"`
+      msg: `Alternate slot attempt ${alternateAttempts} - searching for "${alternateSearchText}"${plan.alternate_class_name ? ` (class: ${plan.alternate_class_name})` : ''}`
     });
     
-    const alternateFound = await findAndClickElement(sessionId, apiKey, plan.alternate, 'alternate slot');
+    const alternateFound = await findAndClickElement(sessionId, apiKey, alternateSearchText, 'alternate slot', plan.alternate_class_name);
     
     if (alternateFound) {
       await supabase.from('plan_logs').insert({

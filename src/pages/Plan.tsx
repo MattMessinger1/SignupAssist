@@ -44,12 +44,14 @@ export default function Plan() {
     credential_id: "",
     child_name: "",
     open_time: "",
-    timezone: "America/New_York", // Default timezone
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York", // Auto-detect user's timezone
     base_url: "",
     preferred_day: "",
     preferred_time: "",
+    preferred_class_name: "",
     alternate_day: "",
     alternate_time: "",
+    alternate_class_name: "",
     phone: ""
   });
   const { toast } = useToast();
@@ -137,6 +139,8 @@ export default function Plan() {
         alternate: formData.alternate_day && formData.alternate_day !== "none" && formData.alternate_time 
           ? `${formData.alternate_day} at ${formData.alternate_time}` 
           : null,
+        preferred_class_name: formData.preferred_class_name || null,
+        alternate_class_name: formData.alternate_class_name || null,
         credential_id: formData.credential_id,
         phone: formData.phone || null
       };
@@ -170,12 +174,14 @@ export default function Plan() {
         credential_id: "",
         child_name: "",
         open_time: "",
-        timezone: "America/New_York",
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York",
         base_url: "",
         preferred_day: "",
         preferred_time: "",
+        preferred_class_name: "",
         alternate_day: "",
         alternate_time: "",
+        alternate_class_name: "",
         phone: ""
       });
 
@@ -398,6 +404,9 @@ export default function Plan() {
                           <SelectItem value="Pacific/Honolulu">Hawaii (HST)</SelectItem>
                         </SelectContent>
                       </Select>
+                      <p className="text-sm text-muted-foreground">
+                        All lesson times below will be shown in this timezone
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -415,7 +424,7 @@ export default function Plan() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label>Preferred Lesson Slot *</Label>
+                  <Label>Preferred Lesson Slot * <span className="text-sm font-normal text-muted-foreground">(Times shown in {formData.timezone.replace('_', ' ')})</span></Label>
                   <div className="grid grid-cols-2 gap-2">
                     <div className="space-y-2">
                       <Label htmlFor="preferred_day">Day</Label>
@@ -449,10 +458,22 @@ export default function Plan() {
                       />
                     </div>
                   </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="preferred_class_name">Class/Lesson Name (Optional)</Label>
+                    <Input
+                      id="preferred_class_name"
+                      value={formData.preferred_class_name}
+                      onChange={(e) => setFormData(prev => ({ ...prev, preferred_class_name: e.target.value }))}
+                      placeholder="e.g., Beginner Ski Lessons, Intermediate Snowboard"
+                    />
+                    <p className="text-sm text-muted-foreground">
+                      Help the system find the right class when multiple lessons are offered at the same time
+                    </p>
+                  </div>
                 </div>
 
                 <div className="space-y-2">
-                  <Label>Alternate Lesson Slot (Optional)</Label>
+                  <Label>Alternate Lesson Slot (Optional) <span className="text-sm font-normal text-muted-foreground">(Times shown in {formData.timezone.replace('_', ' ')})</span></Label>
                   <div className="grid grid-cols-2 gap-2">
                     <div className="space-y-2">
                       <Label htmlFor="alternate_day">Day</Label>
@@ -485,6 +506,18 @@ export default function Plan() {
                         placeholder="e.g., 11:30"
                       />
                     </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="alternate_class_name">Class/Lesson Name (Optional)</Label>
+                    <Input
+                      id="alternate_class_name"
+                      value={formData.alternate_class_name}
+                      onChange={(e) => setFormData(prev => ({ ...prev, alternate_class_name: e.target.value }))}
+                      placeholder="e.g., Beginner Ski Lessons, Intermediate Snowboard"
+                    />
+                    <p className="text-sm text-muted-foreground">
+                      Help the system find the right class when multiple lessons are offered at the same time
+                    </p>
                   </div>
                 </div>
 
