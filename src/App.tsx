@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import AuthGate from "@/components/AuthGate";
 import Dashboard from "@/pages/Dashboard";
 import Credentials from "@/pages/Credentials";
+import Plan from "@/pages/Plan";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -20,6 +21,7 @@ const App = () => (
           <Route path="/" element={<AuthGate><div /></AuthGate>} />
           <Route path="/dashboard" element={<AuthGate><Dashboard /></AuthGate>} />
           <Route path="/credentials" element={<AuthGate><Credentials /></AuthGate>} />
+          <Route path="/plan" element={<AuthGate><Plan /></AuthGate>} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>

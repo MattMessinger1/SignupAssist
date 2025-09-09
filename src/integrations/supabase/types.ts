@@ -47,6 +47,62 @@ export type Database = {
         }
         Relationships: []
       }
+      plans: {
+        Row: {
+          alternate: string | null
+          base_url: string
+          child_name: string
+          created_at: string | null
+          credential_id: string
+          id: string
+          open_time: string
+          org: string
+          phone: string | null
+          preferred: string
+          provider_slug: string
+          status: string
+          user_id: string
+        }
+        Insert: {
+          alternate?: string | null
+          base_url: string
+          child_name: string
+          created_at?: string | null
+          credential_id: string
+          id?: string
+          open_time: string
+          org: string
+          phone?: string | null
+          preferred: string
+          provider_slug?: string
+          status?: string
+          user_id: string
+        }
+        Update: {
+          alternate?: string | null
+          base_url?: string
+          child_name?: string
+          created_at?: string | null
+          credential_id?: string
+          id?: string
+          open_time?: string
+          org?: string
+          phone?: string | null
+          preferred?: string
+          provider_slug?: string
+          status?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "plans_credential_id_fkey"
+            columns: ["credential_id"]
+            isOneToOne: false
+            referencedRelation: "account_credentials"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
