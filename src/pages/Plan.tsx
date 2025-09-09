@@ -54,7 +54,9 @@ export default function Plan() {
     alternate_time: "",
     alternate_class_name: "",
     phone: "",
-    // Payment consent fields
+    // Payment authorization fields
+    expected_lesson_cost: "",
+    maximum_charge_limit: "",
     payment_methods_confirmed: false,
     payment_authorization: false,
     terms_accepted: false
@@ -189,6 +191,9 @@ export default function Plan() {
         alternate_time: "",
         alternate_class_name: "",
         phone: "",
+        // Payment authorization fields
+        expected_lesson_cost: "",
+        maximum_charge_limit: "",
         payment_methods_confirmed: false,
         payment_authorization: false,
         terms_accepted: false
@@ -555,20 +560,63 @@ export default function Plan() {
                       This automated service will make purchases on your behalf using your stored payment methods.
                     </CardDescription>
                   </CardHeader>
-                  <CardContent className="space-y-4">
+                   <CardContent className="space-y-4">
                     <div className="bg-white/80 p-4 rounded-lg border border-amber-200">
-                      <h4 className="font-semibold text-amber-900 mb-2 flex items-center gap-2">
+                      <h4 className="font-semibold text-amber-900 mb-3 flex items-center gap-2">
                         <AlertCircle className="h-4 w-4" />
-                        Expected Costs
+                        Charge Authorization
                       </h4>
-                      <ul className="space-y-1 text-sm text-amber-800">
-                        <li>• <strong>Annual Membership Fee:</strong> $633.00 (if not already paid this season)</li>
-                        <li>• <strong>Lesson Fees:</strong> Varies by lesson type and duration (typically $50-150+ per lesson)</li>
-                        <li>• <strong>Additional Fees:</strong> Equipment rental, lift tickets, or other add-ons may apply</li>
-                      </ul>
-                      <p className="text-xs text-amber-700 mt-2 italic">
-                        Exact costs depend on your selected lessons and organization's pricing. You will be charged automatically using payment methods stored in your {selectedOrg?.name} account.
-                      </p>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="expected_lesson_cost" className="text-sm font-medium text-amber-900">
+                            Expected Lesson Cost *
+                          </Label>
+                          <div className="relative">
+                            <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-amber-700">$</span>
+                            <Input
+                              id="expected_lesson_cost"
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              placeholder="75.00"
+                              className="pl-6 border-amber-300 focus:border-amber-500"
+                              value={formData.expected_lesson_cost}
+                              onChange={(e) => setFormData(prev => ({ ...prev, expected_lesson_cost: e.target.value }))}
+                              required
+                            />
+                          </div>
+                          <p className="text-xs text-amber-700">The specific cost of the lesson you're booking</p>
+                        </div>
+                        
+                        <div className="space-y-2">
+                          <Label htmlFor="maximum_charge_limit" className="text-sm font-medium text-amber-900">
+                            Maximum Charge Limit *
+                          </Label>
+                          <div className="relative">
+                            <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-amber-700">$</span>
+                            <Input
+                              id="maximum_charge_limit"
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              placeholder="100.00"
+                              className="pl-6 border-amber-300 focus:border-amber-500"
+                              value={formData.maximum_charge_limit}
+                              onChange={(e) => setFormData(prev => ({ ...prev, maximum_charge_limit: e.target.value }))}
+                              required
+                            />
+                          </div>
+                          <p className="text-xs text-amber-700">Maximum amount that can be charged (includes lesson cost + transaction fees)</p>
+                        </div>
+                      </div>
+                      
+                      <div className="bg-amber-50 p-3 rounded border border-amber-200">
+                        <p className="text-xs text-amber-800">
+                          <strong>What's included:</strong> The specific lesson cost plus any transaction fees (taxes, processing fees) associated with this purchase. 
+                          The maximum charge limit acts as a safety cap - no matter what, your card will never be charged more than this amount during this booking.
+                        </p>
+                      </div>
                     </div>
 
                     <div className="space-y-3">
@@ -590,7 +638,7 @@ export default function Plan() {
                           onCheckedChange={(checked) => setFormData(prev => ({ ...prev, payment_authorization: checked === true }))}
                         />
                         <Label htmlFor="payment_authorization" className="text-sm leading-relaxed cursor-pointer">
-                          I authorize this automated service to make purchases on my behalf using my stored payment methods. I understand that charges will be processed automatically when lessons become available and are successfully booked.
+                          I authorize this automated service to charge up to <strong>${formData.maximum_charge_limit || '[amount]'}</strong> for the specified lesson and associated transaction fees using my stored payment methods in {selectedOrg?.name}. I understand that charges will be processed automatically when the lesson is successfully booked.
                         </Label>
                       </div>
 
@@ -610,7 +658,15 @@ export default function Plan() {
 
                 <Button 
                   type="submit" 
-                  disabled={submitting || !formData.payment_methods_confirmed || !formData.payment_authorization || !formData.terms_accepted} 
+                  disabled={
+                    submitting || 
+                    !formData.expected_lesson_cost || 
+                    !formData.maximum_charge_limit || 
+                    parseFloat(formData.maximum_charge_limit) < parseFloat(formData.expected_lesson_cost) ||
+                    !formData.payment_methods_confirmed || 
+                    !formData.payment_authorization || 
+                    !formData.terms_accepted
+                  } 
                   className="w-full"
                 >
                   {submitting ? "Scheduling..." : "Authorize & Schedule Plan"}
