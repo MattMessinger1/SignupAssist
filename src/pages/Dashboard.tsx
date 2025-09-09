@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import Header from "@/components/Header";
+import OrgSearchCard from "@/components/OrgSearchCard";
 
 export default function Dashboard() {
   return (
@@ -11,6 +12,10 @@ export default function Dashboard() {
         <div className="mb-8">
           <h1 className="text-3xl font-bold mb-2">Dashboard</h1>
           <p className="text-muted-foreground">Manage your automated signups</p>
+        </div>
+
+        <div className="mb-8">
+          <OrgSearchCard />
         </div>
 
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
