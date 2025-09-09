@@ -28,6 +28,7 @@ const App = () => (
           <Route path="/dashboard" element={<AuthGate><Dashboard /></AuthGate>} />
           <Route path="/credentials" element={<AuthGate><Credentials /></AuthGate>} />
           <Route path="/plan" element={<AuthGate><Plan /></AuthGate>} />
+          <Route path="/create-plan" element={<AuthGate><Plan /></AuthGate>} />
           <Route path="/history" element={<AuthGate><History /></AuthGate>} />
           <Route path="/history/:planId" element={<AuthGate><PlanDetail /></AuthGate>} />
           <Route path="/verify/:token" element={<Verify />} />
