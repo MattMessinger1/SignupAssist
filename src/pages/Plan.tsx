@@ -146,7 +146,7 @@ export default function Plan() {
         child_name: formData.child_name,
         open_time: formData.open_time,
         preferred: `${formData.preferred_day} at ${formData.preferred_time}`,
-        alternate: formData.alternate_day && formData.alternate_time 
+        alternate: formData.alternate_day && formData.alternate_day !== "none" && formData.alternate_time 
           ? `${formData.alternate_day} at ${formData.alternate_time}` 
           : null,
         credential_id: formData.credential_id,
@@ -485,7 +485,7 @@ export default function Plan() {
                           <SelectValue placeholder="Select day" />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="">None</SelectItem>
+                          <SelectItem value="none">None</SelectItem>
                           <SelectItem value="Sunday">Sunday</SelectItem>
                           <SelectItem value="Monday">Monday</SelectItem>
                           <SelectItem value="Tuesday">Tuesday</SelectItem>
