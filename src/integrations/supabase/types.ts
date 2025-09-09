@@ -125,6 +125,7 @@ export type Database = {
           id: string
           open_time: string
           org: string
+          paid: boolean
           phone: string | null
           preferred: string
           provider_slug: string
@@ -141,6 +142,7 @@ export type Database = {
           id?: string
           open_time: string
           org: string
+          paid?: boolean
           phone?: string | null
           preferred: string
           provider_slug?: string
@@ -157,6 +159,7 @@ export type Database = {
           id?: string
           open_time?: string
           org?: string
+          paid?: boolean
           phone?: string | null
           preferred?: string
           provider_slug?: string

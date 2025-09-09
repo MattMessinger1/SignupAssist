@@ -8,6 +8,8 @@ import AuthGate from "@/components/AuthGate";
 import Dashboard from "@/pages/Dashboard";
 import Credentials from "@/pages/Credentials";
 import Plan from "@/pages/Plan";
+import History from "@/pages/History";
+import PlanDetail from "@/pages/PlanDetail";
 import Verify from "@/pages/Verify";
 import NotFound from "./pages/NotFound";
 import { queryClient } from "@/lib/query-client";
@@ -23,6 +25,8 @@ const App = () => (
           <Route path="/dashboard" element={<AuthGate><Dashboard /></AuthGate>} />
           <Route path="/credentials" element={<AuthGate><Credentials /></AuthGate>} />
           <Route path="/plan" element={<AuthGate><Plan /></AuthGate>} />
+          <Route path="/history" element={<AuthGate><History /></AuthGate>} />
+          <Route path="/history/:planId" element={<AuthGate><PlanDetail /></AuthGate>} />
           <Route path="/verify/:token" element={<Verify />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />

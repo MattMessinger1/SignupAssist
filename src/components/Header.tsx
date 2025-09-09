@@ -38,6 +38,20 @@ export default function Header() {
           <div className="flex items-center space-x-4">
             {user && (
               <>
+                <Button 
+                  variant="ghost" 
+                  onClick={() => navigate('/dashboard')}
+                  className="text-sm"
+                >
+                  Dashboard
+                </Button>
+                <Button 
+                  variant="ghost" 
+                  onClick={() => navigate('/history')}
+                  className="text-sm"
+                >
+                  History
+                </Button>
                 <span className="text-sm text-muted-foreground">
                   {user.email}
                 </span>
