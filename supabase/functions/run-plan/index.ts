@@ -1,6 +1,11 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.57.4';
 
+// ===== POLICY CONSTANTS =====
+const CAPTCHA_AUTOSOLVE_ENABLED = false; // NEVER call a CAPTCHA solver - SMS + verify link only
+const PER_USER_WEEKLY_LIMIT = 3; // Maximum plans per user per 7 days  
+const SMS_IMMEDIATE_ON_ACTION_REQUIRED = true; // Send SMS immediately when action required
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -85,10 +90,29 @@ serve(async (req) => {
       );
     }
 
+    // ===== SINGLE-EXECUTION POLICY =====
+    // Only execute plans with status 'scheduled' or 'action_required'
+    if (plan.status !== 'scheduled' && plan.status !== 'action_required') {
+      console.log(`Ignoring execution request for plan ${plan_id} with status '${plan.status}' - only 'scheduled' or 'action_required' plans can be executed`);
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Execution ignored - plan status is '${plan.status}' (only 'scheduled' or 'action_required' plans can be executed)`
+      });
+      
+      return new Response(
+        JSON.stringify({ 
+          success: false, 
+          message: `Plan execution ignored - status is '${plan.status}'`,
+          current_status: plan.status
+        }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     // Log plan details found
     await supabase.from('plan_logs').insert({
       plan_id,
-      msg: `Plan loaded: ${plan.child_name} at ${plan.org}`
+      msg: `Plan loaded: ${plan.child_name} at ${plan.org} - proceeding with execution`
     });
 
     // Get decrypted credentials via cred-get

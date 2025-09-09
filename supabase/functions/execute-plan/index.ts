@@ -1,6 +1,11 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.57.4';
 
+// ===== POLICY CONSTANTS =====
+const CAPTCHA_AUTOSOLVE_ENABLED = false; // NEVER call a CAPTCHA solver - SMS + verify link only
+const PER_USER_WEEKLY_LIMIT = 3; // Maximum plans per user per 7 days  
+const SMS_IMMEDIATE_ON_ACTION_REQUIRED = true; // Send SMS immediately when action required
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -42,12 +47,6 @@ serve(async (req) => {
 
     console.log(`Starting plan execution for plan_id: ${plan_id}`);
 
-    // Log the start of execution
-    await supabase.from('plan_logs').insert({
-      plan_id,
-      msg: 'Execution phase started - loading plan and credentials...'
-    });
-
     // Get plan details with auth check
     const { data: { user } } = await supabase.auth.getUser(authHeader.replace('Bearer ', ''));
     if (!user) {
@@ -80,6 +79,31 @@ serve(async (req) => {
         { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
+
+    // ===== SINGLE-EXECUTION POLICY =====
+    // Only execute plans with status 'scheduled' or 'action_required'
+    if (plan.status !== 'scheduled' && plan.status !== 'action_required') {
+      console.log(`Ignoring execution request for plan ${plan_id} with status '${plan.status}' - only 'scheduled' or 'action_required' plans can be executed`);
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Execution ignored - plan status is '${plan.status}' (only 'scheduled' or 'action_required' plans can be executed)`
+      });
+      
+      return new Response(
+        JSON.stringify({ 
+          success: false, 
+          message: `Plan execution ignored - status is '${plan.status}'`,
+          current_status: plan.status
+        }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Log the start of execution
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: 'Execution phase started - loading plan and credentials...'
+    });
 
     // Get decrypted credentials
     await supabase.from('plan_logs').insert({
@@ -530,6 +554,76 @@ async function handleCheckoutWithCVV(sessionId: string, apiKey: string, plan: an
     // Check if CVV is required
     const cvvRequired = await checkIfCVVRequired(sessionId, apiKey);
     
+    // CAPTCHA DETECTION - Do NOT autosolve; SMS + verify link only
+    const captchaDetected = await checkIfCaptchaRequired(sessionId, apiKey);
+    if (captchaDetected) {
+      await supabase.from('plan_logs').insert({
+        plan_id: plan.id,
+        msg: 'CAPTCHA detected on payment page - POLICY: Do NOT autosolve; SMS + verify link only'
+      });
+      
+      // IMPORTANT: Following our policy of CAPTCHA_AUTOSOLVE_ENABLED = false
+      // We DO NOT attempt to solve CAPTCHAs automatically
+      // Instead, we create a challenge for manual user verification
+      
+      // Create CAPTCHA challenge via challenge-create function
+      const { data: captchaChallenge, error: captchaError } = await supabase
+        .functions
+        .invoke('challenge-create', {
+          body: { 
+            plan_id: plan.id, 
+            type: 'captcha' 
+          },
+          headers: { Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}` }
+        });
+
+      if (captchaError || !captchaChallenge?.success) {
+        await supabase.from('plan_logs').insert({
+          plan_id: plan.id,
+          msg: 'Failed to create CAPTCHA challenge'
+        });
+      } else {
+        const captchaToken = captchaChallenge.token;
+        
+        // Send SMS notification if phone number is available (per SMS_IMMEDIATE_ON_ACTION_REQUIRED policy)
+        if (plan.phone && SMS_IMMEDIATE_ON_ACTION_REQUIRED) {
+          const { error: smsError } = await supabase
+            .functions
+            .invoke('notify', {
+              body: { 
+                to: plan.phone, 
+                token: captchaToken,
+                org: plan.org 
+              }
+            });
+
+          if (smsError) {
+            await supabase.from('plan_logs').insert({
+              plan_id: plan.id,
+              msg: `CAPTCHA challenge created but SMS notification failed: ${smsError.message}`
+            });
+          } else {
+            await supabase.from('plan_logs').insert({
+              plan_id: plan.id,
+              msg: `CAPTCHA challenge created - SMS sent to ${plan.phone} with verification token: ${captchaToken}`
+            });
+          }
+        } else {
+          await supabase.from('plan_logs').insert({
+            plan_id: plan.id,
+            msg: `CAPTCHA challenge created with token: ${captchaToken} (no phone number for SMS)`
+          });
+        }
+      }
+
+      return {
+        success: true,
+        status: 'action_required',
+        message: 'CAPTCHA verification required - user action needed',
+        challenge_token: captchaChallenge?.token
+      };
+    }
+    
     if (cvvRequired) {
       await supabase.from('plan_logs').insert({
         plan_id: plan.id,
@@ -664,6 +758,48 @@ async function handleCheckoutWithCVV(sessionId: string, apiKey: string, plan: an
       status: 'error',
       message: `Checkout error: ${error.message}`
     };
+  }
+}
+
+// Helper function to check if CAPTCHA is required
+async function checkIfCaptchaRequired(sessionId: string, apiKey: string): Promise<boolean> {
+  try {
+    const contentResponse = await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/content`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+      }
+    });
+
+    if (!contentResponse.ok) return false;
+
+    const content = await contentResponse.text();
+    
+    // CAPTCHA DETECTION POLICY: Do NOT autosolve; SMS + verify link only
+    // Common CAPTCHA indicators - we detect but DO NOT solve automatically
+    const captchaKeywords = [
+      'captcha', 'recaptcha', 'hcaptcha', 'cloudflare', 'turnstile',
+      'verify you are human', 'prove you are human', 'security check',
+      'challenge', 'verification', 'robot', 'automated'
+    ];
+    
+    const captchaFound = captchaKeywords.some(keyword => 
+      content.toLowerCase().includes(keyword)
+    );
+    
+    // Also check for common CAPTCHA iframe or div patterns
+    const captchaPatterns = [
+      'g-recaptcha', 'h-captcha', 'cf-turnstile', 
+      'captcha-container', 'recaptcha-container'
+    ];
+    
+    const captchaPatternFound = captchaPatterns.some(pattern =>
+      content.toLowerCase().includes(pattern)
+    );
+    
+    return captchaFound || captchaPatternFound;
+  } catch (error) {
+    return false;
   }
 }
 

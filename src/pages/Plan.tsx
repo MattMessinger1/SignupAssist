@@ -147,22 +147,31 @@ export default function Plan() {
         phone: formData.phone || null
       };
 
-      const { data, error } = await supabase
-        .from('plans')
-        .insert(payload)
-        .select()
-        .single();
+      // Use create-plan edge function instead of direct insert (includes rate limiting)
+      const { data: response, error } = await supabase.functions.invoke('create-plan', {
+        body: payload
+      });
 
       if (error) throw error;
+      
+      if (!response.success) {
+        throw new Error(response.error || 'Failed to create plan');
+      }
 
-      setCreatedPlan(data);
+      const plan = response.plan;
+      setCreatedPlan(plan);
       
       // Schedule the execution
-      scheduleExecution(data.id, data.open_time);
+      scheduleExecution(plan.id, plan.open_time);
+      
+      // Show rate limit info in success message
+      const rateLimitMsg = response.rate_limit_status 
+        ? ` (${response.rate_limit_status.remaining} remaining this week)`
+        : '';
       
       toast({
         title: "Success",
-        description: `Plan scheduled for ${formData.child_name}`,
+        description: `Plan scheduled for ${formData.child_name}${rateLimitMsg}`,
       });
 
       // Clear form
@@ -176,13 +185,23 @@ export default function Plan() {
         phone: ""
       });
 
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to create plan:', error);
-      toast({
-        title: "Error",
-        description: "Failed to schedule plan",
-        variant: "destructive",
-      });
+      
+      // Handle rate limit error specifically
+      if (error.message?.includes("You've reached the 3 signups/week limit")) {
+        toast({
+          title: "Rate Limit Exceeded",
+          description: "You've reached the 3 signups/week limit. Please try again next week.",
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "Error",
+          description: error.message || "Failed to schedule plan",
+          variant: "destructive",
+        });
+      }
     } finally {
       setSubmitting(false);
     }
