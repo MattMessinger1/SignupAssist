@@ -264,30 +264,22 @@ async function executeBookingFlow(sessionId: string, apiKey: string, plan: any, 
     // Wait for page load
     await new Promise(resolve => setTimeout(resolve, 3000));
 
-    // Step 2: Find and click preferred slot
+    // Step 2: Find and click preferred slot with retry logic
     await supabase.from('plan_logs').insert({
       plan_id: plan.id,
-      msg: `Searching for preferred slot: ${plan.preferred}`
+      msg: `Starting slot selection - preferred: "${plan.preferred}"${plan.alternate ? `, alternate: "${plan.alternate}"` : ''}`
     });
 
-    const preferredFound = await findAndClickElement(sessionId, apiKey, plan.preferred, 'preferred slot');
+    const slotResult = await findSlotWithRetry(sessionId, apiKey, plan, supabase);
     
-    if (!preferredFound) {
-      await supabase.from('plan_logs').insert({
-        plan_id: plan.id,
-        msg: `Preferred slot "${plan.preferred}" not found, checking alternate options`
-      });
-
-      // Try alternate if preferred not found
-      if (plan.alternate) {
-        const alternateFound = await findAndClickElement(sessionId, apiKey, plan.alternate, 'alternate slot');
-        if (!alternateFound) {
-          throw new Error('Neither preferred nor alternate slot found');
-        }
-      } else {
-        throw new Error('Preferred slot not found and no alternate specified');
-      }
+    if (!slotResult.success) {
+      throw new Error(slotResult.message);
     }
+
+    await supabase.from('plan_logs').insert({
+      plan_id: plan.id,
+      msg: `Slot selection completed - ${slotResult.message}`
+    });
 
     // Wait for program page to load
     await new Promise(resolve => setTimeout(resolve, 2000));
@@ -342,25 +334,26 @@ async function executeBookingFlow(sessionId: string, apiKey: string, plan: any, 
 
     await new Promise(resolve => setTimeout(resolve, 2000));
 
-    // Step 5: Verify preferred item is in cart
+    // Step 5: Verify item is in cart (use the slot that was successfully added)
+    let verificationText = slotResult.slot_used === 'preferred' ? plan.preferred : plan.alternate;
     await supabase.from('plan_logs').insert({
       plan_id: plan.id,
-      msg: 'Checking if preferred item is in cart...'
+      msg: `Checking if selected item "${verificationText}" is in cart...`
     });
 
-    const preferredInCart = await verifyItemInCart(sessionId, apiKey, plan.preferred);
+    const itemInCart = await verifyItemInCart(sessionId, apiKey, verificationText);
     
-    if (!preferredInCart) {
+    if (!itemInCart) {
       await supabase.from('plan_logs').insert({
         plan_id: plan.id,
-        msg: 'Preferred item not found in cart - may have failed to add'
+        msg: `Selected item "${verificationText}" not found in cart - may have failed to add`
       });
-      throw new Error('Preferred item not in cart');
+      throw new Error(`Selected item not in cart: ${verificationText}`);
     }
 
     await supabase.from('plan_logs').insert({
       plan_id: plan.id,
-      msg: 'Preferred item confirmed in cart'
+      msg: `Selected item "${verificationText}" confirmed in cart`
     });
 
     // Step 6: Proceed to checkout and handle CVV
@@ -371,12 +364,21 @@ async function executeBookingFlow(sessionId: string, apiKey: string, plan: any, 
 
     const checkoutResult = await handleCheckoutWithCVV(sessionId, apiKey, plan, credentials, supabase);
     
+    // Preserve the slot selection status if checkout was successful
+    if (checkoutResult.success && checkoutResult.status === 'success') {
+      checkoutResult.status = slotResult.status; // 'success' or 'alt_success'
+      checkoutResult.slot_used = slotResult.slot_used;
+    } else if (checkoutResult.success && checkoutResult.status === 'action_required') {
+      // For CVV challenges, keep action_required but add slot info
+      checkoutResult.slot_used = slotResult.slot_used;
+    }
+    
     return checkoutResult;
 
   } catch (error) {
     return {
       success: false,
-      status: 'failed',
+      status: 'error',
       message: `Execution failed: ${error.message}`
     };
   }
@@ -517,7 +519,7 @@ async function handleCheckoutWithCVV(sessionId: string, apiKey: string, plan: an
     if (!checkoutClicked) {
       return {
         success: false,
-        status: 'failed',
+        status: 'error',
         message: 'No checkout button found'
       };
     }
@@ -592,7 +594,7 @@ async function handleCheckoutWithCVV(sessionId: string, apiKey: string, plan: an
           
           return {
             success: false,
-            status: 'failed',
+            status: 'error',
             message: 'Failed to create CVV challenge'
           };
         }
@@ -652,14 +654,14 @@ async function handleCheckoutWithCVV(sessionId: string, apiKey: string, plan: an
 
     return {
       success: false,
-      status: 'failed',
+      status: 'error',
       message: 'Checkout process failed'
     };
 
   } catch (error) {
     return {
       success: false,
-      status: 'failed',
+      status: 'error',
       message: `Checkout error: ${error.message}`
     };
   }
@@ -748,6 +750,197 @@ async function checkPaymentSuccess(sessionId: string, apiKey: string): Promise<b
     ];
     
     return successKeywords.some(keyword => 
+      content.toLowerCase().includes(keyword)
+    );
+  } catch (error) {
+    return false;
+  }
+}
+
+// Helper function to find slot with retry logic
+async function findSlotWithRetry(sessionId: string, apiKey: string, plan: any, supabase: any) {
+  const PREFERRED_RETRY_DURATION = 75000; // 75 seconds (60-90s range)
+  const ALTERNATE_RETRY_DURATION = 25000; // 25 seconds (20-30s range)
+  const RELOAD_INTERVAL = 4000; // 4 seconds (3-5s range)
+  
+  // Phase 1: Try preferred slot with retries
+  await supabase.from('plan_logs').insert({
+    plan_id: plan.id,
+    msg: `Phase 1: Attempting preferred slot "${plan.preferred}" with ${PREFERRED_RETRY_DURATION/1000}s retry window`
+  });
+  
+  const preferredStartTime = Date.now();
+  let preferredAttempts = 0;
+  
+  while (Date.now() - preferredStartTime < PREFERRED_RETRY_DURATION) {
+    preferredAttempts++;
+    await supabase.from('plan_logs').insert({
+      plan_id: plan.id,
+      msg: `Preferred slot attempt ${preferredAttempts} - searching for "${plan.preferred}"`
+    });
+    
+    const preferredFound = await findAndClickElement(sessionId, apiKey, plan.preferred, 'preferred slot');
+    
+    if (preferredFound) {
+      await supabase.from('plan_logs').insert({
+        plan_id: plan.id,
+        msg: `✓ Preferred slot "${plan.preferred}" found and clicked on attempt ${preferredAttempts}`
+      });
+      
+      // Verify the slot was actually added by checking cart or confirmation
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      const addedSuccessfully = await verifySlotAdded(sessionId, apiKey, plan.preferred);
+      
+      if (addedSuccessfully) {
+        return {
+          success: true,
+          status: 'success',
+          message: `Preferred slot "${plan.preferred}" successfully added`,
+          slot_used: 'preferred'
+        };
+      } else {
+        await supabase.from('plan_logs').insert({
+          plan_id: plan.id,
+          msg: `Preferred slot clicked but not confirmed in system - continuing retries`
+        });
+      }
+    }
+    
+    // Reload page and wait before next attempt
+    if (Date.now() - preferredStartTime < PREFERRED_RETRY_DURATION - RELOAD_INTERVAL) {
+      await supabase.from('plan_logs').insert({
+        plan_id: plan.id,
+        msg: `Reloading page for next attempt in ${RELOAD_INTERVAL/1000}s...`
+      });
+      
+      // Navigate back to refresh the page
+      let targetUrl = plan.discovered_url || `${plan.base_url}/dashboard`;
+      await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/navigate`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ url: targetUrl })
+      });
+      
+      await new Promise(resolve => setTimeout(resolve, RELOAD_INTERVAL));
+    }
+  }
+  
+  await supabase.from('plan_logs').insert({
+    plan_id: plan.id,
+    msg: `Phase 1 complete: Preferred slot "${plan.preferred}" not found after ${preferredAttempts} attempts over ${PREFERRED_RETRY_DURATION/1000}s`
+  });
+  
+  // Phase 2: Try alternate slot if available
+  if (!plan.alternate) {
+    return {
+      success: false,
+      status: 'error',
+      message: `Preferred slot "${plan.preferred}" not found and no alternate specified`,
+      slot_used: 'none'
+    };
+  }
+  
+  await supabase.from('plan_logs').insert({
+    plan_id: plan.id,
+    msg: `Phase 2: Attempting alternate slot "${plan.alternate}" with ${ALTERNATE_RETRY_DURATION/1000}s retry window`
+  });
+  
+  const alternateStartTime = Date.now();
+  let alternateAttempts = 0;
+  
+  while (Date.now() - alternateStartTime < ALTERNATE_RETRY_DURATION) {
+    alternateAttempts++;
+    await supabase.from('plan_logs').insert({
+      plan_id: plan.id,
+      msg: `Alternate slot attempt ${alternateAttempts} - searching for "${plan.alternate}"`
+    });
+    
+    const alternateFound = await findAndClickElement(sessionId, apiKey, plan.alternate, 'alternate slot');
+    
+    if (alternateFound) {
+      await supabase.from('plan_logs').insert({
+        plan_id: plan.id,
+        msg: `✓ Alternate slot "${plan.alternate}" found and clicked on attempt ${alternateAttempts}`
+      });
+      
+      // Verify the slot was actually added
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      const addedSuccessfully = await verifySlotAdded(sessionId, apiKey, plan.alternate);
+      
+      if (addedSuccessfully) {
+        return {
+          success: true,
+          status: 'alt_success',
+          message: `Alternate slot "${plan.alternate}" successfully added (preferred "${plan.preferred}" was not available)`,
+          slot_used: 'alternate'
+        };
+      } else {
+        await supabase.from('plan_logs').insert({
+          plan_id: plan.id,
+          msg: `Alternate slot clicked but not confirmed in system - continuing retries`
+        });
+      }
+    }
+    
+    // Reload page and wait before next attempt
+    if (Date.now() - alternateStartTime < ALTERNATE_RETRY_DURATION - RELOAD_INTERVAL) {
+      await supabase.from('plan_logs').insert({
+        plan_id: plan.id,
+        msg: `Reloading page for alternate retry in ${RELOAD_INTERVAL/1000}s...`
+      });
+      
+      let targetUrl = plan.discovered_url || `${plan.base_url}/dashboard`;
+      await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/navigate`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ url: targetUrl })
+      });
+      
+      await new Promise(resolve => setTimeout(resolve, RELOAD_INTERVAL));
+    }
+  }
+  
+  await supabase.from('plan_logs').insert({
+    plan_id: plan.id,
+    msg: `Phase 2 complete: Alternate slot "${plan.alternate}" not found after ${alternateAttempts} attempts over ${ALTERNATE_RETRY_DURATION/1000}s`
+  });
+  
+  return {
+    success: false,
+    status: 'error',
+    message: `Neither preferred slot "${plan.preferred}" nor alternate slot "${plan.alternate}" could be added after extensive retries`,
+    slot_used: 'none'
+  };
+}
+
+// Helper function to verify slot was actually added
+async function verifySlotAdded(sessionId: string, apiKey: string, slotText: string): Promise<boolean> {
+  try {
+    // Check page content for confirmation indicators
+    const contentResponse = await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/content`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+      }
+    });
+
+    if (!contentResponse.ok) return false;
+
+    const content = await contentResponse.text();
+    
+    // Look for confirmation indicators
+    const confirmationKeywords = [
+      'added to cart', 'in cart', 'registered', 'enrolled', 
+      'selected', 'confirmed', slotText.toLowerCase()
+    ];
+    
+    return confirmationKeywords.some(keyword => 
       content.toLowerCase().includes(keyword)
     );
   } catch (error) {
