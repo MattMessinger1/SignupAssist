@@ -121,7 +121,7 @@ export default function PlanDetail() {
       day: 'numeric',
       hour: '2-digit',
       minute: '2-digit'
-    });
+    }) + ' (local time)';
   };
 
   const handlePayment = () => {

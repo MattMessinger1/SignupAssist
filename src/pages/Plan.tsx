@@ -11,6 +11,7 @@ import Header from "@/components/Header";
 import { useNavigate } from "react-router-dom";
 import LiveLog from "@/components/LiveLog";
 import { CredEncKeyModal } from "@/components/CredEncKeyModal";
+import { fromZonedTime } from 'date-fns-tz';
 
 interface Credential {
   id: string;
@@ -119,13 +120,19 @@ export default function Plan() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('User not authenticated');
 
+      // Convert datetime-local to proper timezone using date-fns-tz
+      // The datetime-local input gives us a string like "2025-09-09T19:00"
+      // We need to interpret this as being in the user's selected timezone
+      const localDateTime = new Date(formData.open_time);
+      const adjustedOpenTime = fromZonedTime(localDateTime, formData.timezone).toISOString();
+
       const payload = {
         user_id: user.id,
         provider_slug: 'skiclubpro',
         org: selectedOrg.name,
         base_url: formData.base_url,
         child_name: formData.child_name,
-        open_time: formData.open_time,
+        open_time: adjustedOpenTime,
         preferred: `${formData.preferred_day} at ${formData.preferred_time}`,
         alternate: formData.alternate_day && formData.alternate_day !== "none" && formData.alternate_time 
           ? `${formData.alternate_day} at ${formData.alternate_time}` 
@@ -285,7 +292,7 @@ export default function Plan() {
                 <div className="space-y-2">
                   <p><strong>Child:</strong> {createdPlan.child_name}</p>
                   <p><strong>Organization:</strong> {createdPlan.org}</p>
-                  <p><strong>Open Time:</strong> {new Date(createdPlan.open_time).toLocaleString()}</p>
+                  <p><strong>Open Time:</strong> {new Date(createdPlan.open_time).toLocaleString()} (in your local timezone)</p>
                   <p><strong>Preferred Slot:</strong> {createdPlan.preferred}</p>
                   <p><strong>Base URL:</strong> {createdPlan.base_url}</p>
                 </div>
