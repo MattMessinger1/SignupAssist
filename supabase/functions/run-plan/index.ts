@@ -240,6 +240,11 @@ serve(async (req) => {
       const discoveryResult = await performDiscovery(session.id, browserbaseApiKey, plan.base_url);
       
       if (discoveryResult.success && discoveryResult.url) {
+        // Store discovered URL in plans table
+        await supabase.from('plans')
+          .update({ discovered_url: discoveryResult.url })
+          .eq('id', plan_id);
+
         await supabase.from('plan_logs').insert({
           plan_id,
           msg: `Discovered URL: ${discoveryResult.url}`

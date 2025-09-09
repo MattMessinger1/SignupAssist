@@ -570,11 +570,29 @@ async function handleCheckoutWithCVV(sessionId: string, apiKey: string, plan: an
         // CVV not available - require user action
         await supabase.from('plan_logs').insert({
           plan_id: plan.id,
-          msg: 'CVV required but not available - waiting for user action'
+          msg: 'CVV required but not available - creating challenge'
         });
 
-        // TODO: Create challenge system and send SMS
-        // For now, set status to action_required
+        // Create CVV challenge
+        await supabase.from('challenges').insert({
+          plan_id: plan.id,
+          user_id: plan.user_id,
+          challenge_type: 'cvv',
+          status: 'pending',
+          data: {
+            message: 'CVV required to complete checkout',
+            context: 'payment_page'
+          }
+        });
+
+        await supabase.from('plan_logs').insert({
+          plan_id: plan.id,
+          msg: 'CVV challenge created - waiting for user action'
+        });
+
+        // TODO: Send SMS notification to user
+        // This would require implementing SMS service integration
+
         return {
           success: true,
           status: 'action_required',

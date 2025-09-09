@@ -47,6 +47,50 @@ export type Database = {
         }
         Relationships: []
       }
+      challenges: {
+        Row: {
+          challenge_type: string
+          completed_at: string | null
+          created_at: string
+          data: Json | null
+          expires_at: string
+          id: string
+          plan_id: string
+          status: string
+          user_id: string
+        }
+        Insert: {
+          challenge_type: string
+          completed_at?: string | null
+          created_at?: string
+          data?: Json | null
+          expires_at?: string
+          id?: string
+          plan_id: string
+          status?: string
+          user_id: string
+        }
+        Update: {
+          challenge_type?: string
+          completed_at?: string | null
+          created_at?: string
+          data?: Json | null
+          expires_at?: string
+          id?: string
+          plan_id?: string
+          status?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "fk_challenges_plan_id"
+            columns: ["plan_id"]
+            isOneToOne: false
+            referencedRelation: "plans"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       plan_logs: {
         Row: {
           at: string | null
@@ -83,6 +127,7 @@ export type Database = {
           child_name: string
           created_at: string | null
           credential_id: string
+          discovered_url: string | null
           id: string
           open_time: string
           org: string
@@ -98,6 +143,7 @@ export type Database = {
           child_name: string
           created_at?: string | null
           credential_id: string
+          discovered_url?: string | null
           id?: string
           open_time: string
           org: string
@@ -113,6 +159,7 @@ export type Database = {
           child_name?: string
           created_at?: string | null
           credential_id?: string
+          discovered_url?: string | null
           id?: string
           open_time?: string
           org?: string
