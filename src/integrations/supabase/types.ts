@@ -47,6 +47,35 @@ export type Database = {
         }
         Relationships: []
       }
+      plan_logs: {
+        Row: {
+          at: string | null
+          id: number
+          msg: string
+          plan_id: string
+        }
+        Insert: {
+          at?: string | null
+          id?: number
+          msg: string
+          plan_id: string
+        }
+        Update: {
+          at?: string | null
+          id?: number
+          msg?: string
+          plan_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "plan_logs_plan_id_fkey"
+            columns: ["plan_id"]
+            isOneToOne: false
+            referencedRelation: "plans"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       plans: {
         Row: {
           alternate: string | null

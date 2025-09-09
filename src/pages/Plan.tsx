@@ -9,6 +9,7 @@ import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import Header from "@/components/Header";
 import { useNavigate } from "react-router-dom";
+import LiveLog from "@/components/LiveLog";
 
 interface Credential {
   id: string;
@@ -86,6 +87,25 @@ export default function Plan() {
     }
   };
 
+  const scheduleExecution = (planId: string, openTime: string) => {
+    const now = new Date();
+    const scheduledTime = new Date(openTime);
+    const delay = Math.max(0, scheduledTime.getTime() - now.getTime());
+
+    console.log(`Scheduling plan ${planId} to run in ${delay}ms (${delay / 1000}s)`);
+
+    setTimeout(async () => {
+      try {
+        console.log(`Executing plan ${planId} now`);
+        await supabase.functions.invoke('run-plan', {
+          body: { plan_id: planId }
+        });
+      } catch (error) {
+        console.error('Error executing scheduled plan:', error);
+      }
+    }, delay);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
@@ -136,6 +156,9 @@ export default function Plan() {
       if (error) throw error;
 
       setCreatedPlan(data);
+      
+      // Schedule the execution
+      scheduleExecution(data.id, data.open_time);
       
       toast({
         title: "Success",
@@ -260,6 +283,10 @@ export default function Plan() {
                   <p><strong>Preferred Slot:</strong> {createdPlan.preferred}</p>
                   <p><strong>Base URL:</strong> {createdPlan.base_url}</p>
                 </div>
+                
+                {/* Live Log Component */}
+                <LiveLog planId={createdPlan.id} />
+                
                 <div className="flex gap-2">
                   <Button onClick={() => setCreatedPlan(null)} variant="outline">
                     Create Another Plan
