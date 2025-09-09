@@ -49,41 +49,35 @@ export type Database = {
       }
       challenges: {
         Row: {
-          challenge_type: string
-          completed_at: string | null
-          created_at: string
+          created_at: string | null
           data: Json | null
           expires_at: string
-          id: string
           plan_id: string
           status: string
-          user_id: string
+          token: string
+          type: string
         }
         Insert: {
-          challenge_type: string
-          completed_at?: string | null
-          created_at?: string
+          created_at?: string | null
           data?: Json | null
-          expires_at?: string
-          id?: string
+          expires_at: string
           plan_id: string
           status?: string
-          user_id: string
+          token: string
+          type: string
         }
         Update: {
-          challenge_type?: string
-          completed_at?: string | null
-          created_at?: string
+          created_at?: string | null
           data?: Json | null
           expires_at?: string
-          id?: string
           plan_id?: string
           status?: string
-          user_id?: string
+          token?: string
+          type?: string
         }
         Relationships: [
           {
-            foreignKeyName: "fk_challenges_plan_id"
+            foreignKeyName: "challenges_plan_id_fkey"
             columns: ["plan_id"]
             isOneToOne: false
             referencedRelation: "plans"

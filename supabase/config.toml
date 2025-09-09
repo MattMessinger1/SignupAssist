@@ -17,3 +17,12 @@ verify_jwt = true
 
 [functions.execute-plan]
 verify_jwt = true
+
+[functions.challenge-create]
+verify_jwt = true
+
+[functions.notify]
+verify_jwt = false
+
+[functions.challenge-complete]
+verify_jwt = false

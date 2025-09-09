@@ -567,36 +567,73 @@ async function handleCheckoutWithCVV(sessionId: string, apiKey: string, plan: an
           }
         }
       } else {
-        // CVV not available - require user action
+        // CVV not available - create challenge and send SMS
         await supabase.from('plan_logs').insert({
           plan_id: plan.id,
           msg: 'CVV required but not available - creating challenge'
         });
 
-        // Create CVV challenge
-        await supabase.from('challenges').insert({
-          plan_id: plan.id,
-          user_id: plan.user_id,
-          challenge_type: 'cvv',
-          status: 'pending',
-          data: {
-            message: 'CVV required to complete checkout',
-            context: 'payment_page'
+        // Create CVV challenge via challenge-create function
+        const { data: challengeResponse, error: challengeError } = await supabase
+          .functions
+          .invoke('challenge-create', {
+            body: { 
+              plan_id: plan.id, 
+              type: 'cvv' 
+            },
+            headers: { Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}` }
+          });
+
+        if (challengeError || !challengeResponse?.success) {
+          await supabase.from('plan_logs').insert({
+            plan_id: plan.id,
+            msg: 'Failed to create CVV challenge'
+          });
+          
+          return {
+            success: false,
+            status: 'failed',
+            message: 'Failed to create CVV challenge'
+          };
+        }
+
+        const token = challengeResponse.token;
+        
+        // Send SMS notification if phone number is available
+        if (plan.phone) {
+          const { error: smsError } = await supabase
+            .functions
+            .invoke('notify', {
+              body: { 
+                to: plan.phone, 
+                token: token,
+                org: plan.org 
+              }
+            });
+
+          if (smsError) {
+            await supabase.from('plan_logs').insert({
+              plan_id: plan.id,
+              msg: `SMS notification failed: ${smsError.message}`
+            });
+          } else {
+            await supabase.from('plan_logs').insert({
+              plan_id: plan.id,
+              msg: `SMS sent to ${plan.phone} with verification token: ${token}`
+            });
           }
-        });
-
-        await supabase.from('plan_logs').insert({
-          plan_id: plan.id,
-          msg: 'CVV challenge created - waiting for user action'
-        });
-
-        // TODO: Send SMS notification to user
-        // This would require implementing SMS service integration
+        } else {
+          await supabase.from('plan_logs').insert({
+            plan_id: plan.id,
+            msg: `CVV challenge created with token: ${token} (no phone number for SMS)`
+          });
+        }
 
         return {
           success: true,
           status: 'action_required',
-          message: 'CVV required - user action needed'
+          message: 'CVV required - user action needed',
+          challenge_token: token
         };
       }
     } else {
