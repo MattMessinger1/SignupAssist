@@ -91,25 +91,6 @@ export default function Plan() {
     }
   };
 
-  const scheduleExecution = (planId: string, openTime: string) => {
-    const now = new Date();
-    const scheduledTime = new Date(openTime);
-    const delay = Math.max(0, scheduledTime.getTime() - now.getTime());
-
-    console.log(`Scheduling plan ${planId} to run in ${delay}ms (${delay / 1000}s)`);
-
-    setTimeout(async () => {
-      try {
-        console.log(`Executing plan ${planId} now`);
-        await supabase.functions.invoke('run-plan', {
-          body: { plan_id: planId }
-        });
-      } catch (error) {
-        console.error('Error executing scheduled plan:', error);
-      }
-    }, delay);
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
@@ -167,9 +148,6 @@ export default function Plan() {
       const plan = response.plan;
       setCreatedPlan(plan);
       
-      // Schedule the execution
-      scheduleExecution(plan.id, plan.open_time);
-      
       // Show rate limit info in success message
       const rateLimitMsg = response.rate_limit_status 
         ? ` (${response.rate_limit_status.remaining} remaining this week)`
@@ -177,7 +155,7 @@ export default function Plan() {
       
       toast({
         title: "Success",
-        description: `Plan scheduled for ${formData.child_name}${rateLimitMsg}`,
+        description: `Plan scheduled for ${formData.child_name}${rateLimitMsg}. It will execute automatically 5 minutes before the open time.`,
       });
 
       // Clear form

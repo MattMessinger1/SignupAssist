@@ -3,7 +3,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.57.4';
 
 // ===== POLICY CONSTANTS =====
 const CAPTCHA_AUTOSOLVE_ENABLED = false; // NEVER call a CAPTCHA solver
-const PER_USER_WEEKLY_LIMIT = 3; // Maximum plans per user per 7 days
+const PER_USER_WEEKLY_LIMIT = 20; // Maximum plans per user per 7 days
 const SMS_IMMEDIATE_ON_ACTION_REQUIRED = true; // Send SMS immediately when action required
 
 const corsHeaders = {
@@ -69,7 +69,7 @@ serve(async (req) => {
       console.log(`Rate limit exceeded for user ${user.id}: ${planCount}/${PER_USER_WEEKLY_LIMIT}`);
       return new Response(
         JSON.stringify({ 
-          error: "You've reached the 3 signups/week limit.",
+          error: "You've reached the 20 signups/week limit.",
           rate_limit_exceeded: true
         }),
         { status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
