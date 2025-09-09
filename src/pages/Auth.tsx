@@ -35,6 +35,9 @@ export default function Auth() {
         const { error } = await supabase.auth.signUp({
           email,
           password,
+          options: {
+            emailRedirectTo: `${window.location.origin}/dashboard`
+          }
         });
         if (error) throw error;
         toast({ 
