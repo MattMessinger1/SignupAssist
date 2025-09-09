@@ -143,6 +143,20 @@ serve(async (req) => {
       );
     }
 
+    const browserbaseProjectId = Deno.env.get('BROWSERBASE_PROJECT_ID');
+    if (!browserbaseProjectId) {
+      const errorMsg = 'Browserbase project ID not configured';
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Error: ${errorMsg}`
+      });
+      
+      return new Response(
+        JSON.stringify({ error: errorMsg }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     // Create Browserbase session
     const sessionResponse = await fetch('https://www.browserbase.com/v1/sessions', {
       method: 'POST',
@@ -151,7 +165,7 @@ serve(async (req) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        projectId: Deno.env.get('BROWSERBASE_PROJECT_ID') || 'default'
+        projectId: browserbaseProjectId
       })
     });
 
