@@ -5,6 +5,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import AuthGate from "@/components/AuthGate";
+import Auth from "@/pages/Auth";
 import Dashboard from "@/pages/Dashboard";
 import Credentials from "@/pages/Credentials";
 import Plan from "@/pages/Plan";
@@ -22,6 +23,8 @@ const App = () => (
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<AuthGate><div /></AuthGate>} />
+          <Route path="/login" element={<Auth />} />
+          <Route path="/signup" element={<Auth />} />
           <Route path="/dashboard" element={<AuthGate><Dashboard /></AuthGate>} />
           <Route path="/credentials" element={<AuthGate><Credentials /></AuthGate>} />
           <Route path="/plan" element={<AuthGate><Plan /></AuthGate>} />

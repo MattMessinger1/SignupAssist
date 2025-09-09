@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
-import { User } from "@supabase/supabase-js";
+import { User, Session } from "@supabase/supabase-js";
 import LoginRegister from "./LoginRegister";
 
 interface AuthGateProps {
@@ -10,33 +10,33 @@ interface AuthGateProps {
 
 export default function AuthGate({ children }: AuthGateProps) {
   const [user, setUser] = useState<User | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
   const location = useLocation();
 
   useEffect(() => {
-    // Get initial session
-    const getSession = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      setUser(user);
-      setLoading(false);
-
-      // If user is signed in and on root path, redirect to dashboard
-      if (user && location.pathname === "/") {
-        navigate("/dashboard");
-      }
-    };
-
-    getSession();
-
-    // Listen for auth state changes
+    // Set up auth state listener FIRST
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      setSession(session);
       setUser(session?.user ?? null);
       
       if (session?.user && location.pathname === "/") {
         navigate("/dashboard");
-      } else if (!session?.user && location.pathname === "/dashboard") {
+      } else if (!session?.user && location.pathname !== "/" && location.pathname !== "/verify") {
         navigate("/");
+      }
+    });
+
+    // THEN check for existing session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setUser(session?.user ?? null);
+      setLoading(false);
+
+      // If user is signed in and on root path, redirect to dashboard
+      if (session?.user && location.pathname === "/") {
+        navigate("/dashboard");
       }
     });
 
@@ -56,13 +56,9 @@ export default function AuthGate({ children }: AuthGateProps) {
     return <LoginRegister />;
   }
 
-  // If on dashboard and not signed in, redirect handled by useEffect
-  if (location.pathname === "/dashboard" && !user) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="text-center">Redirecting...</div>
-      </div>
-    );
+  // If trying to access protected routes without auth, redirect to login
+  if (!user && !["/", "/login", "/signup"].includes(location.pathname) && !location.pathname.startsWith("/verify")) {
+    return <LoginRegister />;
   }
 
   // If signed in, show children
