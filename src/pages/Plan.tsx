@@ -4,7 +4,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { AlertTriangle, CheckCircle, ExternalLink } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { AlertTriangle, CheckCircle, ExternalLink, CreditCard, AlertCircle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import Header from "@/components/Header";
@@ -52,7 +53,11 @@ export default function Plan() {
     alternate_day: "",
     alternate_time: "",
     alternate_class_name: "",
-    phone: ""
+    phone: "",
+    // Payment consent fields
+    payment_methods_confirmed: false,
+    payment_authorization: false,
+    terms_accepted: false
   });
   const { toast } = useToast();
   const navigate = useNavigate();
@@ -107,10 +112,11 @@ export default function Plan() {
     }
 
     if (!formData.credential_id || !formData.child_name || !formData.open_time || 
-        !formData.base_url || !formData.preferred_day || !formData.preferred_time) {
+        !formData.base_url || !formData.preferred_day || !formData.preferred_time ||
+        !formData.payment_methods_confirmed || !formData.payment_authorization || !formData.terms_accepted) {
       toast({
         title: "Error",
-        description: "Please fill in all required fields",
+        description: "Please fill in all required fields and accept the payment terms",
         variant: "destructive",
       });
       return;
@@ -182,7 +188,10 @@ export default function Plan() {
         alternate_day: "",
         alternate_time: "",
         alternate_class_name: "",
-        phone: ""
+        phone: "",
+        payment_methods_confirmed: false,
+        payment_authorization: false,
+        terms_accepted: false
       });
 
     } catch (error: any) {
@@ -535,8 +544,76 @@ export default function Plan() {
                   </p>
                 </div>
 
-                <Button type="submit" disabled={submitting} className="w-full">
-                  {submitting ? "Scheduling..." : "Schedule Plan"}
+                {/* Payment Disclosure and Authorization Section */}
+                <Card className="border-amber-200 bg-amber-50/50">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="flex items-center gap-2 text-amber-800">
+                      <CreditCard className="h-5 w-5" />
+                      Payment Authorization Required
+                    </CardTitle>
+                    <CardDescription className="text-amber-700">
+                      This automated service will make purchases on your behalf using your stored payment methods.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="bg-white/80 p-4 rounded-lg border border-amber-200">
+                      <h4 className="font-semibold text-amber-900 mb-2 flex items-center gap-2">
+                        <AlertCircle className="h-4 w-4" />
+                        Expected Costs
+                      </h4>
+                      <ul className="space-y-1 text-sm text-amber-800">
+                        <li>• <strong>Annual Membership Fee:</strong> $633.00 (if not already paid this season)</li>
+                        <li>• <strong>Lesson Fees:</strong> Varies by lesson type and duration (typically $50-150+ per lesson)</li>
+                        <li>• <strong>Additional Fees:</strong> Equipment rental, lift tickets, or other add-ons may apply</li>
+                      </ul>
+                      <p className="text-xs text-amber-700 mt-2 italic">
+                        Exact costs depend on your selected lessons and organization's pricing. You will be charged automatically using payment methods stored in your {selectedOrg?.name} account.
+                      </p>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="flex items-start space-x-2">
+                        <Checkbox 
+                          id="payment_methods_confirmed"
+                          checked={formData.payment_methods_confirmed}
+                          onCheckedChange={(checked) => setFormData(prev => ({ ...prev, payment_methods_confirmed: checked === true }))}
+                        />
+                        <Label htmlFor="payment_methods_confirmed" className="text-sm leading-relaxed cursor-pointer">
+                          I confirm that I have valid payment methods (credit card, bank account, etc.) stored and active in my <strong>{selectedOrg?.name}</strong> account, and these payment methods have sufficient funds/credit available for the expected charges.
+                        </Label>
+                      </div>
+
+                      <div className="flex items-start space-x-2">
+                        <Checkbox 
+                          id="payment_authorization"
+                          checked={formData.payment_authorization}
+                          onCheckedChange={(checked) => setFormData(prev => ({ ...prev, payment_authorization: checked === true }))}
+                        />
+                        <Label htmlFor="payment_authorization" className="text-sm leading-relaxed cursor-pointer">
+                          I authorize this automated service to make purchases on my behalf using my stored payment methods. I understand that charges will be processed automatically when lessons become available and are successfully booked.
+                        </Label>
+                      </div>
+
+                      <div className="flex items-start space-x-2">
+                        <Checkbox 
+                          id="terms_accepted"
+                          checked={formData.terms_accepted}
+                          onCheckedChange={(checked) => setFormData(prev => ({ ...prev, terms_accepted: checked === true }))}
+                        />
+                        <Label htmlFor="terms_accepted" className="text-sm leading-relaxed cursor-pointer">
+                          I accept responsibility for all charges incurred by this automated booking service. I understand that refunds and cancellations are subject to <strong>{selectedOrg?.name}</strong>'s policies, not this service's policies.
+                        </Label>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Button 
+                  type="submit" 
+                  disabled={submitting || !formData.payment_methods_confirmed || !formData.payment_authorization || !formData.terms_accepted} 
+                  className="w-full"
+                >
+                  {submitting ? "Scheduling..." : "Authorize & Schedule Plan"}
                 </Button>
               </form>
             </CardContent>
