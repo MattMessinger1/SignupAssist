@@ -27,7 +27,7 @@ serve(async (req) => {
     const { data: plansToExecute, error: fetchError } = await supabase
       .from('plans')
       .select('*')
-      .eq('status', 'scheduled')
+      .eq('status', 'scheduled') // Only get scheduled plans (not cancelled, executed, etc.)
       .gte('open_time', now.toISOString())
       .lte('open_time', executionWindow.toISOString());
 

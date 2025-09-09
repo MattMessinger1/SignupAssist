@@ -91,12 +91,12 @@ serve(async (req) => {
     }
 
     // ===== SINGLE-EXECUTION POLICY =====
-    // Only execute plans with status 'scheduled' or 'action_required'
-    if (plan.status !== 'scheduled' && plan.status !== 'action_required') {
-      console.log(`Ignoring execution request for plan ${plan_id} with status '${plan.status}' - only 'scheduled' or 'action_required' plans can be executed`);
+    // Only execute plans with status 'scheduled', 'action_required', or 'executing'
+    if (plan.status !== 'scheduled' && plan.status !== 'action_required' && plan.status !== 'executing') {
+      console.log(`Ignoring execution request for plan ${plan_id} with status '${plan.status}' - only 'scheduled', 'action_required', or 'executing' plans can be executed`);
       await supabase.from('plan_logs').insert({
         plan_id,
-        msg: `Execution ignored - plan status is '${plan.status}' (only 'scheduled' or 'action_required' plans can be executed)`
+        msg: `Execution ignored - plan status is '${plan.status}' (cannot execute ${plan.status === 'cancelled' ? 'cancelled' : plan.status} plans)`
       });
       
       return new Response(

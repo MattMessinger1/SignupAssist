@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Clock, Calendar, Target, DollarSign } from "lucide-react";
+import { Clock, Calendar, Target, DollarSign, X } from "lucide-react";
 import Header from "@/components/Header";
 import { useToast } from "@/hooks/use-toast";
 
@@ -57,6 +57,40 @@ export default function History() {
     }
   };
 
+  const cancelPlan = async (planId: string, event: React.MouseEvent) => {
+    event.stopPropagation(); // Prevent card click navigation
+    
+    try {
+      const { error } = await supabase
+        .from('plans')
+        .update({ status: 'cancelled' })
+        .eq('id', planId);
+
+      if (error) throw error;
+
+      // Add a log entry
+      await supabase.from('plan_logs').insert({
+        plan_id: planId,
+        msg: 'Plan cancelled by user'
+      });
+
+      toast({
+        title: "Success",
+        description: "Plan cancelled successfully"
+      });
+
+      // Reload the plans to show updated status
+      loadPlans();
+    } catch (error) {
+      console.error('Error cancelling plan:', error);
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to cancel plan"
+      });
+    }
+  };
+
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'success':
@@ -69,7 +103,10 @@ export default function History() {
       case 'scheduled':
         return 'bg-blue-100 text-blue-800 border-blue-200';
       case 'running':
+      case 'executing':
         return 'bg-purple-100 text-purple-800 border-purple-200';
+      case 'cancelled':
+        return 'bg-gray-100 text-gray-800 border-gray-200';
       default:
         return 'bg-gray-100 text-gray-800 border-gray-200';
     }
@@ -88,7 +125,10 @@ export default function History() {
       case 'scheduled':
         return 'Scheduled';
       case 'running':
+      case 'executing':
         return 'Running';
+      case 'cancelled':
+        return 'Cancelled';
       default:
         return status;
     }
@@ -168,6 +208,17 @@ export default function History() {
                         <Badge variant={plan.paid ? "default" : "destructive"}>
                           {plan.paid ? "Paid" : "Unpaid"}
                         </Badge>
+                      )}
+                      {plan.status === 'scheduled' && (
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          onClick={(e) => cancelPlan(plan.id, e)}
+                          className="ml-2"
+                        >
+                          <X className="h-4 w-4 mr-1" />
+                          Cancel
+                        </Button>
                       )}
                     </div>
                   </div>

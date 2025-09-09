@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, ExternalLink, DollarSign, Calendar, Target, Clock } from "lucide-react";
+import { ArrowLeft, ExternalLink, DollarSign, Calendar, Target, Clock, X } from "lucide-react";
 import Header from "@/components/Header";
 import LiveLog from "@/components/LiveLog";
 import { useToast } from "@/hooks/use-toast";
@@ -89,7 +89,10 @@ export default function PlanDetail() {
       case 'scheduled':
         return 'bg-blue-100 text-blue-800 border-blue-200';
       case 'running':
+      case 'executing':
         return 'bg-purple-100 text-purple-800 border-purple-200';
+      case 'cancelled':
+        return 'bg-gray-100 text-gray-800 border-gray-200';
       default:
         return 'bg-gray-100 text-gray-800 border-gray-200';
     }
@@ -108,9 +111,46 @@ export default function PlanDetail() {
       case 'scheduled':
         return 'Scheduled';
       case 'running':
+      case 'executing':
         return 'Running';
+      case 'cancelled':
+        return 'Cancelled';
       default:
         return status;
+    }
+  };
+
+  const cancelPlan = async () => {
+    if (!plan) return;
+    
+    try {
+      const { error } = await supabase
+        .from('plans')
+        .update({ status: 'cancelled' })
+        .eq('id', plan.id);
+
+      if (error) throw error;
+
+      // Add a log entry
+      await supabase.from('plan_logs').insert({
+        plan_id: plan.id,
+        msg: 'Plan cancelled by user'
+      });
+
+      toast({
+        title: "Success",
+        description: "Plan cancelled successfully"
+      });
+
+      // Reload the plan to show updated status
+      loadPlan();
+    } catch (error) {
+      console.error('Error cancelling plan:', error);
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to cancel plan"
+      });
     }
   };
 
@@ -196,6 +236,17 @@ export default function PlanDetail() {
                     <Badge variant={plan.paid ? "default" : "destructive"}>
                       {plan.paid ? "Paid" : "Unpaid"}
                     </Badge>
+                  )}
+                  {plan.status === 'scheduled' && (
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={cancelPlan}
+                      className="ml-2"
+                    >
+                      <X className="h-4 w-4 mr-1" />
+                      Cancel Plan
+                    </Button>
                   )}
                 </div>
               </div>
