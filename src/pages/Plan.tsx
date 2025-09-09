@@ -343,12 +343,6 @@ export default function Plan() {
             <p className="text-muted-foreground">
               Create a scheduled plan for {selectedOrg.name}
             </p>
-            
-            {/* Developer Utilities */}
-            <div className="mt-4 pt-4 border-t border-muted">
-              <p className="text-xs text-muted-foreground mb-2">Developer Utilities</p>
-              <CredEncKeyModal />
-            </div>
           </div>
 
           <Card>
