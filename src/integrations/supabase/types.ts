@@ -123,7 +123,9 @@ export type Database = {
           created_at: string | null
           credential_id: string
           discovered_url: string | null
+          expected_lesson_cost: number | null
           id: string
+          max_charge_limit: number | null
           open_time: string
           org: string
           paid: boolean
@@ -143,7 +145,9 @@ export type Database = {
           created_at?: string | null
           credential_id: string
           discovered_url?: string | null
+          expected_lesson_cost?: number | null
           id?: string
+          max_charge_limit?: number | null
           open_time: string
           org: string
           paid?: boolean
@@ -163,7 +167,9 @@ export type Database = {
           created_at?: string | null
           credential_id?: string
           discovered_url?: string | null
+          expected_lesson_cost?: number | null
           id?: string
+          max_charge_limit?: number | null
           open_time?: string
           org?: string
           paid?: boolean
