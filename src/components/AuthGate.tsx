@@ -16,6 +16,17 @@ export default function AuthGate({ children }: AuthGateProps) {
   const location = useLocation();
 
   useEffect(() => {
+    // Debug logging
+    console.log('Supabase client:', supabase);
+    console.log('Supabase auth:', supabase?.auth);
+    console.log('getSession method:', typeof supabase?.auth?.getSession);
+    
+    if (!supabase || !supabase.auth || typeof supabase.auth.getSession !== 'function') {
+      console.error('Supabase client is not properly configured');
+      setLoading(false);
+      return;
+    }
+
     // Set up auth state listener FIRST
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setSession(session);
@@ -38,6 +49,9 @@ export default function AuthGate({ children }: AuthGateProps) {
       if (session?.user && location.pathname === "/") {
         navigate("/dashboard");
       }
+    }).catch((error) => {
+      console.error('Error getting session:', error);
+      setLoading(false);
     });
 
     return () => subscription.unsubscribe();
