@@ -68,10 +68,10 @@ serve(async (req) => {
       return decoder.decode(decrypted);
     }
 
-    // Get encrypted credential (only if owned by user)
+    // Get encrypted credential (only if owned by user) - bypass RLS with service role
     const { data, error } = await supabaseClient
       .from('account_credentials')
-      .select('email_enc, password_enc, cvv_enc')
+      .select('id, user_id, alias, provider_slug, email_enc, password_enc, cvv_enc')
       .eq('id', credential_id)
       .eq('user_id', user.id)
       .single();
@@ -88,7 +88,15 @@ serve(async (req) => {
 
     console.log('Credential decrypted successfully for server use:', credential_id);
 
-    return new Response(JSON.stringify({ email, password, cvv }), {
+    return new Response(JSON.stringify({ 
+      success: true,
+      data: {
+        alias: data.alias,
+        email,
+        password,
+        cvv
+      }
+    }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
 
