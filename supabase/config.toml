@@ -1,5 +1,8 @@
 project_id = "pyoszlfqqvljwocrrafl"
 
+[functions.plan-scheduler]
+verify_jwt = false
+
 [functions.cred-delete]
 verify_jwt = true
 

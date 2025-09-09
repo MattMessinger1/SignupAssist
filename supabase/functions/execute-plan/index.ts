@@ -131,6 +131,15 @@ serve(async (req) => {
       );
     }
 
+    // Handle legacy plans without payment authorization fields
+    const expectedCost = plan.expected_lesson_cost || 50; // Default reasonable amount for legacy plans
+    const maxChargeLimit = plan.max_charge_limit || 100; // Default safety limit for legacy plans
+    
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Payment authorization: Expected cost: $${expectedCost}, Max limit: $${maxChargeLimit}`
+    });
+
     const credentials = credentialResponse.data;
     await supabase.from('plan_logs').insert({
       plan_id,
