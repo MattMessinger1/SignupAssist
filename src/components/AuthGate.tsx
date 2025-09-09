@@ -16,8 +16,20 @@ export default function AuthGate({ children }: AuthGateProps) {
   const location = useLocation();
 
   useEffect(() => {
+    // Debug logging to understand the issue
+    console.log('=== DEBUG: Supabase client analysis ===');
+    console.log('supabase:', supabase);
+    console.log('supabase.auth:', supabase?.auth);
+    console.log('supabase.auth.getSession type:', typeof supabase?.auth?.getSession);
+    console.log('supabase.auth.getSession:', supabase?.auth?.getSession);
+    console.log('Available auth methods:', supabase?.auth ? Object.keys(supabase.auth) : 'auth is undefined');
+    
     if (!supabase || !supabase.auth || typeof supabase.auth.getSession !== 'function') {
-      console.error('Supabase client is not properly configured');
+      console.error('Supabase client is not properly configured', {
+        hasSupabase: !!supabase,
+        hasAuth: !!supabase?.auth,
+        getSessionType: typeof supabase?.auth?.getSession
+      });
       setLoading(false);
       return;
     }
