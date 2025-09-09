@@ -43,9 +43,12 @@ export default function Plan() {
     credential_id: "",
     child_name: "",
     open_time: "",
+    timezone: "America/New_York", // Default timezone
     base_url: "",
-    preferred: "",
-    alternate: "",
+    preferred_day: "",
+    preferred_time: "",
+    alternate_day: "",
+    alternate_time: "",
     phone: ""
   });
   const { toast } = useToast();
@@ -120,7 +123,7 @@ export default function Plan() {
     }
 
     if (!formData.credential_id || !formData.child_name || !formData.open_time || 
-        !formData.base_url || !formData.preferred) {
+        !formData.base_url || !formData.preferred_day || !formData.preferred_time) {
       toast({
         title: "Error",
         description: "Please fill in all required fields",
@@ -142,8 +145,10 @@ export default function Plan() {
         base_url: formData.base_url,
         child_name: formData.child_name,
         open_time: formData.open_time,
-        preferred: formData.preferred,
-        alternate: formData.alternate || null,
+        preferred: `${formData.preferred_day} at ${formData.preferred_time}`,
+        alternate: formData.alternate_day && formData.alternate_time 
+          ? `${formData.alternate_day} at ${formData.alternate_time}` 
+          : null,
         credential_id: formData.credential_id,
         phone: formData.phone || null
       };
@@ -180,9 +185,12 @@ export default function Plan() {
         credential_id: "",
         child_name: "",
         open_time: "",
+        timezone: "America/New_York",
         base_url: "",
-        preferred: "",
-        alternate: "",
+        preferred_day: "",
+        preferred_time: "",
+        alternate_day: "",
+        alternate_time: "",
         phone: ""
       });
 
@@ -384,13 +392,35 @@ export default function Plan() {
 
                 <div className="space-y-2">
                   <Label htmlFor="open_time">Open Time *</Label>
-                  <Input
-                    id="open_time"
-                    type="datetime-local"
-                    value={formData.open_time}
-                    onChange={(e) => setFormData(prev => ({ ...prev, open_time: e.target.value }))}
-                    required
-                  />
+                  <div className="space-y-2">
+                    <Input
+                      id="open_time"
+                      type="datetime-local"
+                      value={formData.open_time}
+                      onChange={(e) => setFormData(prev => ({ ...prev, open_time: e.target.value }))}
+                      required
+                    />
+                    <div className="space-y-2">
+                      <Label htmlFor="timezone">Confirm Timezone *</Label>
+                      <Select 
+                        value={formData.timezone} 
+                        onValueChange={(value) => setFormData(prev => ({ ...prev, timezone: value }))}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select timezone" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="America/New_York">Eastern (EST/EDT)</SelectItem>
+                          <SelectItem value="America/Chicago">Central (CST/CDT)</SelectItem>
+                          <SelectItem value="America/Denver">Mountain (MST/MDT)</SelectItem>
+                          <SelectItem value="America/Los_Angeles">Pacific (PST/PDT)</SelectItem>
+                          <SelectItem value="America/Phoenix">Arizona (MST)</SelectItem>
+                          <SelectItem value="America/Anchorage">Alaska (AKST/AKDT)</SelectItem>
+                          <SelectItem value="Pacific/Honolulu">Hawaii (HST)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="space-y-2">
@@ -406,28 +436,81 @@ export default function Plan() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="preferred">Preferred Slot *</Label>
-                  <Input
-                    id="preferred"
-                    value={formData.preferred}
-                    onChange={(e) => setFormData(prev => ({ ...prev, preferred: e.target.value }))}
-                    placeholder="e.g., 9:00 AM - 10:00 AM"
-                    required
-                  />
+                  <Label>Preferred Lesson Slot *</Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="preferred_day">Day</Label>
+                      <Select 
+                        value={formData.preferred_day} 
+                        onValueChange={(value) => setFormData(prev => ({ ...prev, preferred_day: value }))}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select day" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="Sunday">Sunday</SelectItem>
+                          <SelectItem value="Monday">Monday</SelectItem>
+                          <SelectItem value="Tuesday">Tuesday</SelectItem>
+                          <SelectItem value="Wednesday">Wednesday</SelectItem>
+                          <SelectItem value="Thursday">Thursday</SelectItem>
+                          <SelectItem value="Friday">Friday</SelectItem>
+                          <SelectItem value="Saturday">Saturday</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="preferred_time">Time</Label>
+                      <Input
+                        id="preferred_time"
+                        type="time"
+                        value={formData.preferred_time}
+                        onChange={(e) => setFormData(prev => ({ ...prev, preferred_time: e.target.value }))}
+                        placeholder="e.g., 09:45"
+                        required
+                      />
+                    </div>
+                  </div>
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="alternate">Alternate Slot (Optional)</Label>
-                  <Input
-                    id="alternate"
-                    value={formData.alternate}
-                    onChange={(e) => setFormData(prev => ({ ...prev, alternate: e.target.value }))}
-                    placeholder="e.g., 10:00 AM - 11:00 AM"
-                  />
+                  <Label>Alternate Lesson Slot (Optional)</Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="alternate_day">Day</Label>
+                      <Select 
+                        value={formData.alternate_day} 
+                        onValueChange={(value) => setFormData(prev => ({ ...prev, alternate_day: value }))}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select day" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="">None</SelectItem>
+                          <SelectItem value="Sunday">Sunday</SelectItem>
+                          <SelectItem value="Monday">Monday</SelectItem>
+                          <SelectItem value="Tuesday">Tuesday</SelectItem>
+                          <SelectItem value="Wednesday">Wednesday</SelectItem>
+                          <SelectItem value="Thursday">Thursday</SelectItem>
+                          <SelectItem value="Friday">Friday</SelectItem>
+                          <SelectItem value="Saturday">Saturday</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="alternate_time">Time</Label>
+                      <Input
+                        id="alternate_time"
+                        type="time"
+                        value={formData.alternate_time}
+                        onChange={(e) => setFormData(prev => ({ ...prev, alternate_time: e.target.value }))}
+                        placeholder="e.g., 11:30"
+                      />
+                    </div>
+                  </div>
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="phone">Phone (E.164 format)</Label>
+                  <Label htmlFor="phone">Phone Number (Optional)</Label>
                   <Input
                     id="phone"
                     type="tel"
@@ -435,6 +518,9 @@ export default function Plan() {
                     onChange={(e) => setFormData(prev => ({ ...prev, phone: e.target.value }))}
                     placeholder="+1234567890"
                   />
+                  <p className="text-sm text-muted-foreground">
+                    Used for SMS notifications when manual action is required (E.164 format)
+                  </p>
                 </div>
 
                 <Button type="submit" disabled={submitting} className="w-full">
