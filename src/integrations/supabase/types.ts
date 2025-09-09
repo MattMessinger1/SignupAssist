@@ -14,7 +14,39 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      account_credentials: {
+        Row: {
+          alias: string
+          created_at: string | null
+          cvv_enc: string | null
+          email_enc: string
+          id: string
+          password_enc: string
+          provider_slug: string
+          user_id: string
+        }
+        Insert: {
+          alias: string
+          created_at?: string | null
+          cvv_enc?: string | null
+          email_enc: string
+          id?: string
+          password_enc: string
+          provider_slug: string
+          user_id: string
+        }
+        Update: {
+          alias?: string
+          created_at?: string | null
+          cvv_enc?: string | null
+          email_enc?: string
+          id?: string
+          password_enc?: string
+          provider_slug?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
