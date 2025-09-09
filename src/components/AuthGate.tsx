@@ -9,6 +9,9 @@ interface AuthGateProps {
 }
 
 export default function AuthGate({ children }: AuthGateProps) {
+  console.log('🚨 AUTHGATE COMPONENT IS RUNNING 🚨');
+  console.log('Current location:', window.location.href);
+  
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
