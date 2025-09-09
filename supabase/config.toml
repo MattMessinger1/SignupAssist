@@ -1,1 +1,19 @@
 project_id = "pyoszlfqqvljwocrrafl"
+
+[functions.cred-delete]
+verify_jwt = true
+
+[functions.cred-get]
+verify_jwt = true
+
+[functions.cred-list]
+verify_jwt = true
+
+[functions.cred-store]
+verify_jwt = true
+
+[functions.run-plan]
+verify_jwt = true
+
+[functions.execute-plan]
+verify_jwt = true
