@@ -9,8 +9,6 @@ interface AuthGateProps {
 }
 
 export default function AuthGate({ children }: AuthGateProps) {
-  console.log('🚨 AUTHGATE COMPONENT IS RUNNING 🚨');
-  console.log('Current location:', window.location.href);
   
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
@@ -19,20 +17,8 @@ export default function AuthGate({ children }: AuthGateProps) {
   const location = useLocation();
 
   useEffect(() => {
-    // Debug logging to understand the issue
-    console.log('=== DEBUG: Supabase client analysis ===');
-    console.log('supabase:', supabase);
-    console.log('supabase.auth:', supabase?.auth);
-    console.log('supabase.auth.getSession type:', typeof supabase?.auth?.getSession);
-    console.log('supabase.auth.getSession:', supabase?.auth?.getSession);
-    console.log('Available auth methods:', supabase?.auth ? Object.keys(supabase.auth) : 'auth is undefined');
-    
     if (!supabase || !supabase.auth || typeof supabase.auth.getSession !== 'function') {
-      console.error('Supabase client is not properly configured', {
-        hasSupabase: !!supabase,
-        hasAuth: !!supabase?.auth,
-        getSessionType: typeof supabase?.auth?.getSession
-      });
+      console.error('Supabase client is not properly configured');
       setLoading(false);
       return;
     }
@@ -65,7 +51,7 @@ export default function AuthGate({ children }: AuthGateProps) {
     });
 
     return () => subscription.unsubscribe();
-  }, [navigate, location.pathname]);
+  }, [location.pathname]);
 
   if (loading) {
     return (
