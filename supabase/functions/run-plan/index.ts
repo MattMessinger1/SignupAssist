@@ -320,10 +320,10 @@ serve(async (req) => {
     const browserbaseProjectId = Deno.env.get('BROWSERBASE_PROJECT_ID')!;
 
     // Create Browserbase session
-    const sessionResponse = await fetch('https://www.browserbase.com/v1/sessions', {
+    const sessionResponse = await fetch('https://api.browserbase.com/v1/sessions', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${browserbaseApiKey}`,
+        'X-BB-API-Key': browserbaseApiKey,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -444,10 +444,10 @@ serve(async (req) => {
     }
 
     // Close browser session
-    await fetch(`https://www.browserbase.com/v1/sessions/${session.id}`, {
+    await fetch(`https://api.browserbase.com/v1/sessions/${session.id}`, {
       method: 'DELETE',
       headers: {
-        'Authorization': `Bearer ${browserbaseApiKey}`,
+        'X-BB-API-Key': browserbaseApiKey,
       }
     });
 
@@ -485,10 +485,10 @@ serve(async (req) => {
 async function performLogin(sessionId: string, apiKey: string, loginUrl: string, email: string, password: string) {
   try {
     // Navigate to login page
-    const navigateResponse = await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/navigate`, {
+    const navigateResponse = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/navigate`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'X-BB-API-Key': apiKey,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ url: loginUrl })
@@ -502,10 +502,10 @@ async function performLogin(sessionId: string, apiKey: string, loginUrl: string,
     await new Promise(resolve => setTimeout(resolve, 3000));
 
     // Fill email field
-    await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/type`, {
+    await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/type`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'X-BB-API-Key': apiKey,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -515,10 +515,10 @@ async function performLogin(sessionId: string, apiKey: string, loginUrl: string,
     });
 
     // Fill password field
-    await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/type`, {
+    await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/type`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'X-BB-API-Key': apiKey,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -528,10 +528,10 @@ async function performLogin(sessionId: string, apiKey: string, loginUrl: string,
     });
 
     // Submit form
-    await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/click`, {
+    await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/click`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'X-BB-API-Key': apiKey,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -543,10 +543,10 @@ async function performLogin(sessionId: string, apiKey: string, loginUrl: string,
     await new Promise(resolve => setTimeout(resolve, 5000));
 
     // Check if login was successful by looking for common error indicators
-    const pageResponse = await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/content`, {
+    const pageResponse = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/content`, {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'X-BB-API-Key': apiKey,
       }
     });
 
@@ -568,10 +568,10 @@ async function performLogin(sessionId: string, apiKey: string, loginUrl: string,
 async function performDiscovery(sessionId: string, apiKey: string, baseUrl: string) {
   try {
     // Navigate to base URL
-    const navigateResponse = await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/navigate`, {
+    const navigateResponse = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/navigate`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'X-BB-API-Key': apiKey,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ url: baseUrl })
@@ -591,10 +591,10 @@ async function performDiscovery(sessionId: string, apiKey: string, baseUrl: stri
 
     while (Date.now() - startTime < maxTime) {
       // Get page content
-      const contentResponse = await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/content`, {
+      const contentResponse = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/content`, {
         method: 'GET',
         headers: {
-          'Authorization': `Bearer ${apiKey}`,
+          'X-BB-API-Key': apiKey,
         }
       });
 
