@@ -51,11 +51,11 @@ async function loadPlaywrightForDeno() {
   // }
 
   // Import a Playwright bundle that works in Deno (Node-style transpiled)
-  try {
-    return await import("https://esm.sh/v138/playwright-core@1.46.0?target=deno");
-  } catch {
-    return await import("https://esm.sh/playwright-core@1.46.0?target=deno");
+  const mod = await import("https://esm.sh/v138/playwright-core@1.46.0?target=deno");
+  if (typeof (mod as any).chromium?.connectOverCDP !== "function") {
+    throw new Error("Playwright bundle loaded but chromium.connectOverCDP missing");
   }
+  return mod;
 }
 
 serve(async (req) => {
