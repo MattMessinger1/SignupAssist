@@ -469,6 +469,24 @@ serve(async (req) => {
         }
       }
 
+      // ===== NORDIC ADD-ONS (if present) =====
+      try {
+        await handleNordicAddons(page, plan_id, supabase, {
+          nordicRental,
+          nordicColorGroup,
+          volunteer
+        });
+      } catch (e) {
+        const msg = String(e?.message || e);
+        if (msg === 'RENTAL_REQUIRED') {
+          return jsonResponse({ ok:false, code:'RENTAL_REQUIRED', msg:'Rental option required for Nordic. Add extras.nordicRental to your plan.' }, 422);
+        }
+        if (msg === 'RENTAL_NOT_FOUND') {
+          return jsonResponse({ ok:false, code:'RENTAL_NOT_FOUND', msg:`Rental option not found on page: ${nordicRental}` }, 404);
+        }
+        await supabase.from('plan_logs').insert({ plan_id, msg: `Add-ons error: ${msg}` });
+      }
+
       // Add to cart / register
       await supabase.from("plan_logs").insert({ plan_id, msg: "Clicking Add/Register/Cart..." });
       await clickByTexts(page, ["Add to cart","Add","Enroll","Register","Cart","Continue"]);
