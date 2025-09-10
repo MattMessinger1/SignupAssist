@@ -117,21 +117,17 @@ export type Database = {
       plans: {
         Row: {
           alternate: string | null
-          alternate_class_name: string | null
           base_url: string
           child_name: string
           created_at: string | null
           credential_id: string
           discovered_url: string | null
-          expected_lesson_cost: number | null
           id: string
-          max_charge_limit: number | null
           open_time: string
           org: string
           paid: boolean
           phone: string | null
           preferred: string
-          preferred_class_name: string | null
           provider_slug: string
           status: string
           status_updated_at: string | null
@@ -139,21 +135,17 @@ export type Database = {
         }
         Insert: {
           alternate?: string | null
-          alternate_class_name?: string | null
           base_url: string
           child_name: string
           created_at?: string | null
           credential_id: string
           discovered_url?: string | null
-          expected_lesson_cost?: number | null
           id?: string
-          max_charge_limit?: number | null
           open_time: string
           org: string
           paid?: boolean
           phone?: string | null
           preferred: string
-          preferred_class_name?: string | null
           provider_slug?: string
           status?: string
           status_updated_at?: string | null
@@ -161,21 +153,17 @@ export type Database = {
         }
         Update: {
           alternate?: string | null
-          alternate_class_name?: string | null
           base_url?: string
           child_name?: string
           created_at?: string | null
           credential_id?: string
           discovered_url?: string | null
-          expected_lesson_cost?: number | null
           id?: string
-          max_charge_limit?: number | null
           open_time?: string
           org?: string
           paid?: boolean
           phone?: string | null
           preferred?: string
-          preferred_class_name?: string | null
           provider_slug?: string
           status?: string
           status_updated_at?: string | null
