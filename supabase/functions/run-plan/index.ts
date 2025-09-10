@@ -385,6 +385,43 @@ serve(async (req) => {
       }
       await supabase.from("plan_logs").insert({ plan_id, msg: "Login successful" });
 
+      //// ===== PAYMENT READINESS GATE =====
+      await supabase.from('plan_logs').insert({ plan_id, msg: 'Checking payment readiness…' });
+
+      // We handle saved-card + CVV flows; allow override if site never asks for CVV.
+      const hasCVV = !!(credentials?.cvv && String(credentials.cvv).trim().length > 0);
+      if (!allowNoCvv && !hasCVV) {
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: 'Payment not ready: saved card CVV required or set extras.allow_no_cvv=true'
+        });
+        return jsonResponse({
+          ok: false,
+          code: 'PAYMENT_NOT_READY',
+          msg: 'Saved card CVV required (or set extras.allow_no_cvv=true if checkout never requests CVV).'
+        }, 422);
+      }
+
+      // Optional probe: if full card fields appear, we can't proceed (we don't collect PAN)
+      try {
+        const origin = plan.base_url ? new URL(plan.base_url) : new URL(`https://${subdomain}.skiclubpro.team/`);
+        const cartUrl = new URL('/cart', origin).toString();
+        await page.goto(cartUrl, { waitUntil: 'domcontentloaded' });
+        const probe = (await page.content()).toLowerCase();
+        const fullCard = /(card number|cardnumber|name on card|expiration|exp month|exp year)/i.test(probe);
+        if (fullCard && !allowNoCvv) {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: 'Detected full-card fields; saved card required. Aborting.'
+          });
+          return jsonResponse({
+            ok: false,
+            code: 'PAYMENT_NOT_READY',
+            msg: 'Checkout requires full card entry. Save a card on your SkiClubPro account first.'
+          }, 422);
+        }
+      } catch { /* non-fatal */ }
+
       // Navigate to target page
       const targetUrl = plan.discovered_url || plan.base_url || `https://${subdomain}.skiclubpro.team/dashboard`;
       await supabase.from("plan_logs").insert({ plan_id, msg: `Opening target page: ${targetUrl}` });
