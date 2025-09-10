@@ -824,3 +824,106 @@ async function clickByTexts(page: any, texts: string[]) {
   }
   return null;
 }
+
+async function handleNordicAddons(page: any, plan_id: string, supabase: any, opts: {
+  nordicRental: string | null,
+  nordicColorGroup: string | null,
+  volunteer: string | null
+}) {
+  const html = (await page.content()).toLowerCase();
+  const looksLikeForm = /nordic|registration|question|options/.test(html);
+  if (!looksLikeForm) {
+    await supabase.from('plan_logs').insert({ plan_id, msg: 'No Nordic add-on form detected (continuing)…' });
+    return;
+  }
+
+  await supabase.from('plan_logs').insert({ plan_id, msg: 'Handling Nordic add-ons…' });
+
+  // Helper: select first non-placeholder option
+  async function selectFirstRealOption(selectLocator: string) {
+    const exists = await page.locator(selectLocator).first().count();
+    if (!exists) return false;
+    const options = await page.locator(`${selectLocator} option`).allTextContents();
+    const firstReal = options.find(t => t && !/^\s*-\s*select\s*-\s*$/i.test(t));
+    if (!firstReal) return false;
+    await page.selectOption(selectLocator, { label: firstReal });
+    return true;
+  }
+
+  // RENTAL (paid): any <select> with $ in options → must be provided in opts.nordicRental
+  const selects = page.locator('select');
+  const n = await selects.count();
+  for (let i = 0; i < n; i++) {
+    const sel = selects.nth(i);
+    const optsText = await sel.locator('option').allTextContents();
+    const hasDollar = optsText.some(o => /\$\s*\d/.test(o));
+    if (hasDollar) {
+      if (!opts.nordicRental) {
+        await supabase.from('plan_logs').insert({ plan_id, msg: 'Rental option required for Nordic but not in extras.' });
+        throw new Error('RENTAL_REQUIRED');
+      }
+      let matched = false;
+      try { await sel.selectOption({ label: opts.nordicRental }); matched = true; } catch {}
+      if (!matched) {
+        const match = optsText.find(o => o.toLowerCase().includes(opts.nordicRental!.toLowerCase()));
+        if (match) { await sel.selectOption({ label: match }); matched = true; }
+      }
+      if (!matched) {
+        await supabase.from('plan_logs').insert({ plan_id, msg: `Rental option not found: ${opts.nordicRental}` });
+        throw new Error('RENTAL_NOT_FOUND');
+      }
+      await supabase.from('plan_logs').insert({ plan_id, msg: `Rental selected: ${opts.nordicRental}` });
+    }
+  }
+
+  // COLOR GROUP (no $): use provided or default to first option
+  if (opts.nordicColorGroup) {
+    const candidates = ['select[name*="color"]', 'select[id*="color"]', 'select'];
+    let done = false;
+    for (const c of candidates) {
+      try { await page.selectOption(c, { label: opts.nordicColorGroup }); done = true; break; } catch {}
+    }
+    if (done) {
+      await supabase.from('plan_logs').insert({ plan_id, msg: `Color group: ${opts.nordicColorGroup}` });
+    } else {
+      await supabase.from('plan_logs').insert({ plan_id, msg: `Color group not found (${opts.nordicColorGroup}). Defaulting.` });
+      await selectFirstRealOption('select');
+    }
+  } else {
+    await selectFirstRealOption('select');
+    await supabase.from('plan_logs').insert({ plan_id, msg: 'Color group defaulted to first option.' });
+  }
+
+  // VOLUNTEER (checkboxes, no $): pick provided label or first checkbox
+  const cbs = page.locator('input[type="checkbox"]');
+  if (await cbs.count()) {
+    if (opts.volunteer) {
+      const labeled = page.getByLabel(new RegExp(opts.volunteer, 'i'));
+      if (await labeled.count()) {
+        await labeled.first().check().catch(()=>{});
+        await supabase.from('plan_logs').insert({ plan_id, msg: `Volunteer selected: ${opts.volunteer}` });
+      } else {
+        await cbs.first().check().catch(()=>{});
+        await supabase.from('plan_logs').insert({ plan_id, msg: 'Volunteer defaulted (label not found).' });
+      }
+    } else {
+      await cbs.first().check().catch(()=>{});
+      await supabase.from('plan_logs').insert({ plan_id, msg: 'Volunteer defaulted to first option.' });
+    }
+  }
+
+  // Skip donations if present
+  const donation = page.locator('input[name*="donation"], input[id*="donation"]');
+  if (await donation.count()) {
+    try { await donation.first().fill('0'); } catch {}
+    await supabase.from('plan_logs').insert({ plan_id, msg: 'Donation skipped (0).' });
+  }
+
+  // Proceed/Next if visible
+  const nextBtn = page.locator('button:has-text("Next"), button:has-text("Continue"), input[type="submit"]');
+  if (await nextBtn.count()) {
+    await nextBtn.first().click().catch(()=>{});
+    await supabase.from('plan_logs').insert({ plan_id, msg: 'Advanced past add-ons form.' });
+    await page.waitForLoadState('domcontentloaded').catch(()=>{});
+  }
+}
