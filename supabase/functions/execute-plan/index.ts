@@ -169,10 +169,10 @@ serve(async (req) => {
     }
 
     // Create Browserbase session
-    const sessionResponse = await fetch('https://www.browserbase.com/v1/sessions', {
+    const sessionResponse = await fetch('https://api.browserbase.com/v1/sessions', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${browserbaseApiKey}`,
+        'X-BB-API-Key': browserbaseApiKey,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -223,10 +223,10 @@ serve(async (req) => {
       }
 
       // Close browser session
-      await fetch(`https://www.browserbase.com/v1/sessions/${session.id}`, {
+      await fetch(`https://api.browserbase.com/v1/sessions/${session.id}`, {
         method: 'DELETE',
         headers: {
-          'Authorization': `Bearer ${browserbaseApiKey}`,
+          'X-BB-API-Key': browserbaseApiKey,
         }
       });
 
@@ -242,10 +242,10 @@ serve(async (req) => {
 
     } catch (error) {
       // Close browser session on error
-      await fetch(`https://www.browserbase.com/v1/sessions/${session.id}`, {
+      await fetch(`https://api.browserbase.com/v1/sessions/${session.id}`, {
         method: 'DELETE',
         headers: {
-          'Authorization': `Bearer ${browserbaseApiKey}`,
+          'X-BB-API-Key': browserbaseApiKey,
         }
       });
 
@@ -281,10 +281,10 @@ async function executeBookingFlow(sessionId: string, apiKey: string, plan: any, 
       msg: `Navigating to: ${targetUrl}`
     });
 
-    const navigateResponse = await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/navigate`, {
+    const navigateResponse = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/navigate`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'X-BB-API-Key': apiKey,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ url: targetUrl })
@@ -356,10 +356,10 @@ async function executeBookingFlow(sessionId: string, apiKey: string, plan: any, 
     
     // Try to navigate to cart page
     const cartUrl = `${plan.base_url}/cart`;
-    await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/navigate`, {
+    await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/navigate`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'X-BB-API-Key': apiKey,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ url: cartUrl })
@@ -421,10 +421,10 @@ async function executeBookingFlow(sessionId: string, apiKey: string, plan: any, 
 async function findAndClickElement(sessionId: string, apiKey: string, text: string, elementType: string, className?: string): Promise<boolean> {
   try {
     // Get page content
-    const contentResponse = await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/content`, {
+    const contentResponse = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/content`, {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'X-BB-API-Key': apiKey,
       }
     });
 
@@ -486,10 +486,10 @@ async function findAndClickElement(sessionId: string, apiKey: string, text: stri
 
     for (const selector of selectors) {
       try {
-        const clickResponse = await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/click`, {
+        const clickResponse = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/click`, {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${apiKey}`,
+            'X-BB-API-Key': apiKey,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({ selector })
@@ -527,10 +527,10 @@ async function selectChildIfVisible(sessionId: string, apiKey: string, childName
     for (const selector of selectors) {
       try {
         // Try to select the child
-        const selectResponse = await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/select`, {
+        const selectResponse = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/select`, {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${apiKey}`,
+            'X-BB-API-Key': apiKey,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
@@ -556,10 +556,10 @@ async function selectChildIfVisible(sessionId: string, apiKey: string, childName
 // Helper function to verify item is in cart
 async function verifyItemInCart(sessionId: string, apiKey: string, itemText: string): Promise<boolean> {
   try {
-    const contentResponse = await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/content`, {
+    const contentResponse = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/content`, {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'X-BB-API-Key': apiKey,
       }
     });
 
@@ -814,10 +814,10 @@ async function handleCheckoutWithCVV(sessionId: string, apiKey: string, plan: an
 // Helper function to check if CAPTCHA is required
 async function checkIfCaptchaRequired(sessionId: string, apiKey: string): Promise<boolean> {
   try {
-    const contentResponse = await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/content`, {
+    const contentResponse = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/content`, {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'X-BB-API-Key': apiKey,
       }
     });
 
@@ -856,10 +856,10 @@ async function checkIfCaptchaRequired(sessionId: string, apiKey: string): Promis
 // Helper function to check if CVV is required
 async function checkIfCVVRequired(sessionId: string, apiKey: string): Promise<boolean> {
   try {
-    const contentResponse = await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/content`, {
+    const contentResponse = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/content`, {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'X-BB-API-Key': apiKey,
       }
     });
 
@@ -891,10 +891,10 @@ async function fillCVV(sessionId: string, apiKey: string, cvv: string): Promise<
 
     for (const selector of selectors) {
       try {
-        const typeResponse = await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/type`, {
+        const typeResponse = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/type`, {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${apiKey}`,
+            'X-BB-API-Key': apiKey,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
@@ -920,10 +920,10 @@ async function fillCVV(sessionId: string, apiKey: string, cvv: string): Promise<
 // Helper function to check payment success
 async function checkPaymentSuccess(sessionId: string, apiKey: string): Promise<boolean> {
   try {
-    const contentResponse = await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/content`, {
+    const contentResponse = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/content`, {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'X-BB-API-Key': apiKey,
       }
     });
 
@@ -1005,10 +1005,10 @@ async function findSlotWithRetry(sessionId: string, apiKey: string, plan: any, s
       
       // Navigate back to refresh the page
       let targetUrl = plan.discovered_url || `${plan.base_url}/dashboard`;
-      await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/navigate`, {
+      await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/navigate`, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${apiKey}`,
+          'X-BB-API-Key': apiKey,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ url: targetUrl })
@@ -1087,10 +1087,10 @@ async function findSlotWithRetry(sessionId: string, apiKey: string, plan: any, s
       });
       
       let targetUrl = plan.discovered_url || `${plan.base_url}/dashboard`;
-      await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/navigate`, {
+      await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/navigate`, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${apiKey}`,
+          'X-BB-API-Key': apiKey,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ url: targetUrl })
@@ -1117,10 +1117,10 @@ async function findSlotWithRetry(sessionId: string, apiKey: string, plan: any, s
 async function verifySlotAdded(sessionId: string, apiKey: string, slotText: string): Promise<boolean> {
   try {
     // Check page content for confirmation indicators
-    const contentResponse = await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}/content`, {
+    const contentResponse = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/content`, {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'X-BB-API-Key': apiKey,
       }
     });
 
