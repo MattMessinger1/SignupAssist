@@ -7,6 +7,12 @@ const CAPTCHA_AUTOSOLVE_ENABLED = false; // NEVER call a CAPTCHA solver - SMS + 
 const PER_USER_WEEKLY_LIMIT = 3; // Maximum plans per user per 7 days  
 const SMS_IMMEDIATE_ON_ACTION_REQUIRED = true; // Send SMS immediately when action required
 
+// Debug logging helper - set DEBUG_VERBOSE=1 in Supabase function secrets to enable verbose logs
+const DEBUG_VERBOSE = Deno.env.get("DEBUG_VERBOSE") === "1";
+function dlog(...args: any[]) { 
+  if (DEBUG_VERBOSE) console.log(...args); 
+}
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -99,7 +105,7 @@ serve(async (req) => {
     
     if (isServiceRole) {
       // Service role call from scheduler - no user auth needed
-      console.log('Service role call detected - fetching plan without user restriction');
+      dlog('Service role call detected - fetching plan without user restriction');
       const { data, error } = await supabase
         .from('plans')
         .select('*')
@@ -331,7 +337,7 @@ serve(async (req) => {
         return jsonResponse({ ok:false, code:"BROWSERBASE_SESSION_FAILED", msg:"Cannot create browser session" }, 500);
       }
       session = await sessionResp.json();
-      console.log("Browserbase session created:", session);
+      dlog("Browserbase session created:", session);
       await supabase.from("plan_logs").insert({ plan_id, msg: `✅ Browserbase session created: ${session.id}` });
 
       // Connect Playwright over CDP
@@ -340,7 +346,7 @@ serve(async (req) => {
         browser = await chromium.connectOverCDP(session.connectUrl);
         const ctx = browser.contexts()[0] ?? await browser.newContext();
         page = ctx.pages()[0] ?? await ctx.newPage();
-        console.log("Connected Playwright to session:", session.id);
+        dlog("Connected Playwright to session:", session.id);
         await supabase.from("plan_logs").insert({ plan_id, msg: "Playwright connected to Browserbase" });
       } catch (e) {
         console.error("Playwright connect error:", e);
@@ -461,7 +467,7 @@ serve(async (req) => {
       }
       await supabase.from("plan_logs").insert({ plan_id, msg: "🎉 Sign-up completed successfully!" });
 
-      console.log(`Plan execution completed for plan_id: ${plan_id}`);
+      dlog(`Plan execution completed for plan_id: ${plan_id}`);
       
       return jsonResponse({ 
         ok: true, 
@@ -507,7 +513,7 @@ serve(async (req) => {
 
 // Helper function for Playwright-based login
 async function loginWithPlaywright(page: any, loginUrl: string, email: string, password: string) {
-  console.log("Navigating to login URL:", loginUrl);
+  dlog("Navigating to login URL:", loginUrl);
   await page.goto(loginUrl, { waitUntil: "networkidle" });
   // Wait for email input to appear (adjust if site differs)
   await page.waitForSelector('input[type="email"], input[name*="email"], input[id*="email"]', { timeout: 15000 });

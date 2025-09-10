@@ -60,6 +60,17 @@ This project is built with:
 - shadcn-ui
 - Tailwind CSS
 
+## Debug Configuration
+
+For debugging the Supabase edge functions (especially `run-plan`), you can enable verbose logging by setting the `DEBUG_VERBOSE` environment variable to `1` in your Supabase function secrets. This will enable detailed diagnostic logs without requiring code changes.
+
+To set this up:
+1. Go to your [Supabase Dashboard > Functions > Secrets](https://supabase.com/dashboard/project/pyoszlfqqvljwocrrafl/settings/functions)
+2. Add a new secret: `DEBUG_VERBOSE=1`
+3. Redeploy your functions or wait for the next execution
+
+This helps with production debugging by providing more detailed logs for troubleshooting.
+
 ## How can I deploy this project?
 
 Simply open [Lovable](https://lovable.dev/projects/659643f5-6853-4cee-9629-8b9d4d6c7eb3) and click on Share -> Publish.
