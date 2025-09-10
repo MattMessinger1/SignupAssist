@@ -510,7 +510,7 @@ async function performLogin(sessionId: string, apiKey: string, loginUrl: string,
   try {
     // Navigate to login page
     console.log("Navigating to login URL:", loginUrl);
-    const navigateResponse = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/navigate`, {
+    let navigateResponse = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/navigate`, {
       method: 'POST',
       headers: {
         'X-BB-API-Key': apiKey,
@@ -520,13 +520,27 @@ async function performLogin(sessionId: string, apiKey: string, loginUrl: string,
     });
 
     if (!navigateResponse.ok) {
-      const errorText = await navigateResponse.text().catch(() => '');
-      console.error('Navigation failed:', {
-        status: navigateResponse.status,
-        statusText: navigateResponse.statusText,
-        body: errorText
+      console.warn("Primary navigate endpoint failed, trying fallback endpoint /goto");
+      
+      // Try fallback endpoint
+      navigateResponse = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/goto`, {
+        method: 'POST',
+        headers: {
+          'X-BB-API-Key': apiKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ url: loginUrl })
       });
-      return { success: false, error: `Failed to navigate: ${navigateResponse.status} ${navigateResponse.statusText}` };
+
+      if (!navigateResponse.ok) {
+        const errorText = await navigateResponse.text().catch(() => '');
+        console.error("Fallback navigation failed:", {
+          status: navigateResponse.status,
+          statusText: navigateResponse.statusText,
+          body: errorText
+        });
+        return { success: false, error: `Failed to navigate: ${navigateResponse.status} ${navigateResponse.statusText}` };
+      }
     }
 
     // Wait for page load
