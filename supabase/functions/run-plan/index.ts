@@ -35,6 +35,28 @@ interface BrowserbaseContext {
   id: string;
 }
 
+// --- Node shim + Playwright loader for Deno Edge ---
+async function loadPlaywrightForDeno() {
+  if (!(globalThis as any).process) (globalThis as any).process = { env: {} } as any;
+
+  try { await import("https://esm.sh/node/events?target=deno"); } catch {}
+  try { await import("https://esm.sh/node/util?target=deno"); } catch {}
+  try { await import("https://esm.sh/node/timers?target=deno"); } catch {}
+  try { await import("https://esm.sh/node/stream?target=deno"); } catch {}
+
+  // Optional Buffer shim (if you hit Buffer errors later)
+  // if (!(globalThis as any).Buffer) {
+  //   const { Buffer } = await import("https://esm.sh/buffer@6.0.3?target=deno");
+  //   (globalThis as any).Buffer = Buffer;
+  // }
+
+  try {
+    return await import("https://esm.sh/playwright-core@1.46.0?target=deno");
+  } catch {
+    return await import("https://esm.sh/playwright-core@1.45.3?target=deno");
+  }
+}
+
 serve(async (req) => {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
@@ -360,6 +382,8 @@ serve(async (req) => {
       // Connect Playwright over CDP
       let page: any = null;
       try {
+        const playwright = await loadPlaywrightForDeno();
+        const { chromium } = playwright;
         browser = await chromium.connectOverCDP(session.connectUrl);
         const ctx = browser.contexts()[0] ?? await browser.newContext();
         page = ctx.pages()[0] ?? await ctx.newPage();
