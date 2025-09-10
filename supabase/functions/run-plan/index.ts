@@ -9,7 +9,16 @@ const SMS_IMMEDIATE_ON_ACTION_REQUIRED = true; // Send SMS immediately when acti
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
 };
+
+// Structured JSON response helper
+function jsonResponse(data: any, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json', ...corsHeaders }
+  });
+}
 
 interface BrowserbaseSession {
   id: string;
@@ -27,26 +36,49 @@ serve(async (req) => {
   }
 
   try {
+    // ===== UPFRONT ENVIRONMENT VALIDATION =====
+    const requiredEnvVars = [
+      'SUPABASE_URL',
+      'SUPABASE_SERVICE_ROLE_KEY', 
+      'BROWSERBASE_API_KEY',
+      'BROWSERBASE_PROJECT_ID',
+      'CRED_ENC_KEY'
+    ];
+    
+    const missingEnvVars = requiredEnvVars.filter(varName => !Deno.env.get(varName));
+    if (missingEnvVars.length > 0) {
+      console.error('Missing environment variables:', missingEnvVars);
+      return jsonResponse({ 
+        ok: false, 
+        code: 'MISSING_ENV', 
+        msg: `Missing environment variables: ${missingEnvVars.join(', ')}`,
+        details: { missingVars: missingEnvVars }
+      }, 500);
+    }
+
     const supabase = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     );
 
     const authHeader = req.headers.get('Authorization');
     if (!authHeader) {
-      return new Response(
-        JSON.stringify({ error: 'Authorization required' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return jsonResponse({ 
+        ok: false, 
+        code: 'MISSING_AUTH', 
+        msg: 'Authorization header required' 
+      }, 401);
     }
 
-    const { plan_id } = await req.json();
+    const body = await req.json().catch(() => ({}));
+    const { plan_id } = body;
 
     if (!plan_id) {
-      return new Response(
-        JSON.stringify({ error: 'plan_id is required' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return jsonResponse({ 
+        ok: false, 
+        code: 'MISSING_PLAN_ID', 
+        msg: 'plan_id is required in request body' 
+      }, 400);
     }
 
     console.log(`Starting plan execution for plan_id: ${plan_id}`);
@@ -82,10 +114,11 @@ serve(async (req) => {
           plan_id,
           msg: 'Error: Authentication failed'
         });
-        return new Response(
-          JSON.stringify({ error: 'Authentication failed' }),
-          { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
+        return jsonResponse({ 
+          ok: false, 
+          code: 'AUTH_FAILED', 
+          msg: 'User authentication failed - invalid token' 
+        }, 401);
       }
 
       const { data, error } = await supabase
@@ -105,10 +138,12 @@ serve(async (req) => {
         msg: `Error: ${errorMsg}`
       });
       
-      return new Response(
-        JSON.stringify({ error: errorMsg }),
-        { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return jsonResponse({ 
+        ok: false, 
+        code: 'PLAN_NOT_FOUND', 
+        msg: errorMsg,
+        details: { plan_id, planError: planError?.message }
+      }, 404);
     }
 
     // ===== SINGLE-EXECUTION POLICY =====
@@ -120,14 +155,15 @@ serve(async (req) => {
         msg: `Execution ignored - plan status is '${plan.status}' (cannot execute ${plan.status === 'cancelled' ? 'cancelled' : plan.status} plans)`
       });
       
-      return new Response(
-        JSON.stringify({ 
-          success: false, 
-          message: `Plan execution ignored - status is '${plan.status}'`,
-          current_status: plan.status
-        }),
-        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return jsonResponse({ 
+        ok: false, 
+        code: 'INVALID_PLAN_STATUS', 
+        msg: `Plan execution ignored - status is '${plan.status}'`,
+        details: { 
+          current_status: plan.status, 
+          allowed_statuses: ['scheduled', 'action_required', 'executing'] 
+        }
+      }, 200);
     }
 
     // Log plan details found
@@ -160,10 +196,12 @@ serve(async (req) => {
           msg: `Error: ${errorMsg}`
         });
         
-        return new Response(
-          JSON.stringify({ error: errorMsg }),
-          { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
+        return jsonResponse({ 
+          ok: false, 
+          code: 'CREDENTIALS_NOT_FOUND', 
+          msg: errorMsg,
+          details: { credential_id: plan.credential_id, credError: credError?.message }
+        }, 404);
       }
 
       // Decrypt credentials using the encryption key
@@ -175,10 +213,11 @@ serve(async (req) => {
           msg: `Error: ${errorMsg}`
         });
         
-        return new Response(
-          JSON.stringify({ error: errorMsg }),
-          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
+        return jsonResponse({ 
+          ok: false, 
+          code: 'MISSING_ENCRYPTION_KEY', 
+          msg: errorMsg 
+        }, 500);
       }
 
       // Decrypt function (matching cred-store implementation)
@@ -228,10 +267,12 @@ serve(async (req) => {
           msg: `Error: ${errorMsg}`
         });
         
-        return new Response(
-          JSON.stringify({ error: errorMsg }),
-          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
+        return jsonResponse({ 
+          ok: false, 
+          code: 'DECRYPTION_FAILED', 
+          msg: errorMsg,
+          details: { error: decryptError.message }
+        }, 500);
       }
     } else {
       // Regular user call - use cred-get function
@@ -254,10 +295,12 @@ serve(async (req) => {
           msg: `Error: ${errorMsg}`
         });
         
-        return new Response(
-          JSON.stringify({ error: errorMsg }),
-          { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
+        return jsonResponse({ 
+          ok: false, 
+          code: 'CRED_GET_FAILED', 
+          msg: errorMsg,
+          details: { credError: credError?.message }
+        }, 404);
       }
 
       credentials = credentialResponse.data;
@@ -273,33 +316,8 @@ serve(async (req) => {
       msg: 'Starting browser session...'
     });
 
-    const browserbaseApiKey = Deno.env.get('BROWSERBASE_API_KEY');
-    if (!browserbaseApiKey) {
-      const errorMsg = 'Browserbase API key not configured';
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Error: ${errorMsg}`
-      });
-      
-      return new Response(
-        JSON.stringify({ error: errorMsg }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    const browserbaseProjectId = Deno.env.get('BROWSERBASE_PROJECT_ID');
-    if (!browserbaseProjectId) {
-      const errorMsg = 'Browserbase project ID not configured';
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Error: ${errorMsg}`
-      });
-      
-      return new Response(
-        JSON.stringify({ error: errorMsg }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
+    const browserbaseApiKey = Deno.env.get('BROWSERBASE_API_KEY')!;
+    const browserbaseProjectId = Deno.env.get('BROWSERBASE_PROJECT_ID')!;
 
     // Create Browserbase session
     const sessionResponse = await fetch('https://www.browserbase.com/v1/sessions', {
@@ -315,16 +333,30 @@ serve(async (req) => {
 
     if (!sessionResponse.ok) {
       const errorText = await sessionResponse.text();
-      const errorMsg = `Failed to create browser session: ${sessionResponse.status} ${sessionResponse.statusText} - ${errorText}`;
+      let parsedError = null;
+      try {
+        parsedError = JSON.parse(errorText);
+      } catch {}
+      
+      const errorMsg = `Failed to create browser session: ${sessionResponse.status} ${sessionResponse.statusText}`;
+      const detailedMsg = `${errorMsg} - ${errorText}`;
+      
       await supabase.from('plan_logs').insert({
         plan_id,
-        msg: `Error: ${errorMsg}`
+        msg: `Error: ${detailedMsg}`
       });
       
-      return new Response(
-        JSON.stringify({ error: errorMsg }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return jsonResponse({ 
+        ok: false, 
+        code: 'BROWSERBASE_SESSION_FAILED', 
+        msg: errorMsg,
+        details: { 
+          status: sessionResponse.status, 
+          statusText: sessionResponse.statusText,
+          response: parsedError || errorText,
+          headers: Object.fromEntries(sessionResponse.headers.entries())
+        }
+      }, 500);
     }
 
     const session: BrowserbaseSession = await sessionResponse.json();
@@ -358,10 +390,12 @@ serve(async (req) => {
           msg: `Login failed: ${loginResult.error}`
         });
         
-        return new Response(
-          JSON.stringify({ error: `Login failed: ${loginResult.error}` }),
-          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
+        return jsonResponse({ 
+          ok: false, 
+          code: 'LOGIN_FAILED', 
+          msg: `Login failed: ${loginResult.error}`,
+          details: { loginError: loginResult.error }
+        }, 400);
       }
     } catch (error) {
       await supabase.from('plan_logs').insert({
@@ -369,10 +403,12 @@ serve(async (req) => {
         msg: `Login error: ${error.message}`
       });
       
-      return new Response(
-        JSON.stringify({ error: `Login error: ${error.message}` }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return jsonResponse({ 
+        ok: false, 
+        code: 'LOGIN_EXCEPTION', 
+        msg: `Login error: ${error.message}`,
+        details: { error: error.message, stack: error.stack }
+      }, 500);
     }
 
     // Perform discovery
@@ -422,18 +458,26 @@ serve(async (req) => {
 
     console.log(`Plan execution completed for plan_id: ${plan_id}`);
 
-    return new Response(
-      JSON.stringify({ success: true, plan_id }),
-      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    return jsonResponse({ 
+      ok: true, 
+      success: true, 
+      msg: 'Plan execution completed successfully',
+      data: { plan_id }
+    }, 200);
 
   } catch (error) {
     console.error('Error in run-plan function:', error);
     
-    return new Response(
-      JSON.stringify({ error: 'Internal server error' }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    return jsonResponse({ 
+      ok: false, 
+      code: 'UNEXPECTED_ERROR', 
+      msg: 'Internal server error',
+      details: { 
+        error: error.message, 
+        stack: error.stack,
+        name: error.name 
+      }
+    }, 500);
   }
 });
 

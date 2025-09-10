@@ -92,7 +92,26 @@ serve(async (req) => {
         if (executionError) {
           console.error(`Failed to execute plan ${plan.id}:`, executionError);
           
-          // Update status back to scheduled if execution failed
+          // Extract detailed error information from the improved error response
+          let errorDetails = executionError.message;
+          if (executionError.context?.body) {
+            try {
+              const errorBody = typeof executionError.context.body === 'string' 
+                ? JSON.parse(executionError.context.body) 
+                : executionError.context.body;
+              
+              if (errorBody.code && errorBody.msg) {
+                errorDetails = `${errorBody.code}: ${errorBody.msg}`;
+                if (errorBody.details) {
+                  console.log(`Plan ${plan.id} error details:`, errorBody.details);
+                }
+              }
+            } catch (parseError) {
+              console.log(`Could not parse error body for plan ${plan.id}:`, executionError.context.body);
+            }
+          }
+          
+          // Update status back to failed if execution failed
           await supabase
             .from('plans')
             .update({ status: 'failed' })
@@ -100,13 +119,36 @@ serve(async (req) => {
 
           await supabase.from('plan_logs').insert({
             plan_id: plan.id,
-            msg: `Scheduled execution failed: ${executionError.message}`
+            msg: `Scheduled execution failed: ${errorDetails}`
           });
 
           results.push({ 
             planId: plan.id, 
             success: false, 
-            error: executionError.message 
+            error: errorDetails 
+          });
+        } else if (executionResult && !executionResult.ok) {
+          // Handle structured error responses that don't throw but return ok: false
+          const errorDetails = executionResult.code 
+            ? `${executionResult.code}: ${executionResult.msg}` 
+            : executionResult.msg || 'Unknown execution error';
+          
+          console.error(`Plan ${plan.id} execution returned error:`, executionResult);
+          
+          await supabase
+            .from('plans')
+            .update({ status: 'failed' })
+            .eq('id', plan.id);
+
+          await supabase.from('plan_logs').insert({
+            plan_id: plan.id,
+            msg: `Scheduled execution failed: ${errorDetails}`
+          });
+
+          results.push({ 
+            planId: plan.id, 
+            success: false, 
+            error: errorDetails 
           });
         } else {
           console.log(`Successfully executed plan ${plan.id}`);

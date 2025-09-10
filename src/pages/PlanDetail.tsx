@@ -154,6 +154,77 @@ export default function PlanDetail() {
     }
   };
 
+  const testExecution = async () => {
+    if (!plan) return;
+    
+    try {
+      toast({
+        title: "Testing Execution",
+        description: "Attempting to execute plan for testing..."
+      });
+
+      const { data, error } = await supabase.functions.invoke('run-plan', {
+        body: { plan_id: plan.id }
+      });
+
+      if (error) {
+        console.error('Execution error:', error);
+        
+        // Extract detailed error information
+        let errorDetails = error.message;
+        if (error.context?.body) {
+          try {
+            const errorBody = typeof error.context.body === 'string' 
+              ? JSON.parse(error.context.body) 
+              : error.context.body;
+            
+            if (errorBody.code && errorBody.msg) {
+              errorDetails = `${errorBody.code}: ${errorBody.msg}`;
+              console.log('Error details:', errorBody.details);
+            }
+          } catch (parseError) {
+            console.log('Could not parse error response:', error.context.body);
+          }
+        }
+        
+        toast({
+          variant: "destructive",
+          title: "Execution Failed",
+          description: errorDetails
+        });
+        return;
+      }
+
+      if (data && !data.ok) {
+        const errorDetails = data.code 
+          ? `${data.code}: ${data.msg}` 
+          : data.msg || 'Unknown execution error';
+        
+        toast({
+          variant: "destructive",
+          title: "Execution Failed", 
+          description: errorDetails
+        });
+        return;
+      }
+
+      toast({
+        title: "Success",
+        description: "Plan execution completed successfully"
+      });
+
+      // Reload the plan to show updated status
+      loadPlan();
+    } catch (error) {
+      console.error('Test execution error:', error);
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to test execution"
+      });
+    }
+  };
+
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString('en-US', {
       year: 'numeric',
@@ -238,15 +309,25 @@ export default function PlanDetail() {
                     </Badge>
                   )}
                   {plan.status === 'scheduled' && (
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={cancelPlan}
-                      className="ml-2"
-                    >
-                      <X className="h-4 w-4 mr-1" />
-                      Cancel Plan
-                    </Button>
+                    <>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={cancelPlan}
+                        className="ml-2"
+                      >
+                        <X className="h-4 w-4 mr-1" />
+                        Cancel Plan
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={testExecution}
+                        className="ml-2"
+                      >
+                        Test Execution
+                      </Button>
+                    </>
                   )}
                 </div>
               </div>
