@@ -314,181 +314,180 @@ serve(async (req) => {
     // Create Browserbase session and connect Playwright
     const browserbaseApiKey = Deno.env.get("BROWSERBASE_API_KEY")!;
     const browserbaseProjectId = Deno.env.get("BROWSERBASE_PROJECT_ID")!;
-    const sessionResp = await fetch("https://api.browserbase.com/v1/sessions", {
-      method: "POST",
-      headers: { "X-BB-API-Key": browserbaseApiKey, "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: browserbaseProjectId })
-    });
-    if (!sessionResp.ok) {
-      const t = await sessionResp.text().catch(()=>"");
-      console.error("Session create failed:", sessionResp.status, sessionResp.statusText, t);
-      await supabase.from("plan_logs").insert({ plan_id, msg: `Error: Browserbase session failed ${sessionResp.status}` });
-      return jsonResponse({ ok:false, code:"BROWSERBASE_SESSION_FAILED", msg:"Cannot create browser session" }, 500);
-    }
-    const session = await sessionResp.json();
-    console.log("Browserbase session created:", session);
-    await supabase.from("plan_logs").insert({ plan_id, msg: `✅ Browserbase session created: ${session.id}` });
-
-    // Connect Playwright over CDP
-    let browser: any = null;
-    let page: any = null;
-    try {
-      browser = await chromium.connectOverCDP(session.connectUrl);
-      const ctx = browser.contexts()[0] ?? await browser.newContext();
-      page = ctx.pages()[0] ?? await ctx.newPage();
-      console.log("Connected Playwright to session:", session.id);
-      await supabase.from("plan_logs").insert({ plan_id, msg: "Playwright connected to Browserbase" });
-    } catch (e) {
-      console.error("Playwright connect error:", e);
-      await supabase.from("plan_logs").insert({ plan_id, msg: `Error: Playwright connect error ${e?.message||e}` });
-      return jsonResponse({ ok:false, code:"PLAYWRIGHT_CONNECT_FAILED", msg:"Cannot connect Playwright" }, 500);
-    }
-
-    // Compute login URL from plan
-    const subdomain = (plan.org || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-    const loginUrl = `https://${subdomain}.skiclubpro.team/user/login`;
     
-    // Perform login with Playwright
-    await supabase.from("plan_logs").insert({ plan_id, msg: `Navigating to login: ${loginUrl}` });
-    const loginResult = await loginWithPlaywright(page, loginUrl, credentials.email, credentials.password);
-    if (!loginResult.success) {
-      await supabase.from("plan_logs").insert({ plan_id, msg: `Login failed: ${loginResult.error}` });
-      return jsonResponse({ ok:false, code:"LOGIN_FAILED", msg: loginResult.error }, 400);
-    }
-    await supabase.from("plan_logs").insert({ plan_id, msg: "Login successful" });
-
-    // Navigate to target page
-    const targetUrl = plan.discovered_url || plan.base_url || `https://${subdomain}.skiclubpro.team/dashboard`;
-    await supabase.from("plan_logs").insert({ plan_id, msg: `Opening target page: ${targetUrl}` });
-    await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
-
-    // If no discovered URL, run discovery with Playwright
-    if (!plan.discovered_url) {
-      await supabase.from("plan_logs").insert({ plan_id, msg: "Starting discovery..." });
-      
-      try {
-        const discoveryResult = await performPlaywrightDiscovery(page, plan.base_url);
-        
-        if (discoveryResult.success && discoveryResult.url) {
-          // Store discovered URL in plans table
-          await supabase.from('plans')
-            .update({ discovered_url: discoveryResult.url })
-            .eq('id', plan_id);
-
-          // Navigate to discovered page
-          await page.goto(discoveryResult.url, { waitUntil: "domcontentloaded" });
-          await supabase.from("plan_logs").insert({ plan_id, msg: `Discovered URL: ${discoveryResult.url}` });
-        } else {
-          await supabase.from("plan_logs").insert({ plan_id, msg: "Discovery completed - no signup links found" });
-        }
-      } catch (error) {
-        await supabase.from("plan_logs").insert({ plan_id, msg: `Discovery error: ${error.message}` });
-      }
-    }
-
-    // Slot selection
-    await supabase.from("plan_logs").insert({ plan_id, msg: `Selecting slot. Preferred: "${plan.preferred}"${plan.alternate?`, Alt: "${plan.alternate}"`:``}` });
-    const used = await clickByTexts(page, [plan.preferred, plan.alternate].filter(Boolean));
-    if (!used) { 
-      await supabase.from("plan_logs").insert({ plan_id, msg: "No preferred/alternate slot found" });
-      return jsonResponse({ ok:false, code:"SLOT_NOT_FOUND", msg:"Could not find slot" }, 404);
-    }
-    await supabase.from("plan_logs").insert({ plan_id, msg: `Selected slot: ${used}` });
-
-    // Child selection (if applicable)
-    if (plan.child_name) {
-      await supabase.from("plan_logs").insert({ plan_id, msg: `Choosing child: ${plan.child_name}` });
-      const picked = await clickByTexts(page, [plan.child_name]);
-      if (!picked) {
-        await supabase.from("plan_logs").insert({ plan_id, msg: "Child selector not found (continuing)" });
-      }
-    }
-
-    // Add to cart / register
-    await supabase.from("plan_logs").insert({ plan_id, msg: "Clicking Add/Register/Cart..." });
-    await clickByTexts(page, ["Add to cart","Add","Enroll","Register","Cart","Continue"]);
-
-    // Verify cart contains the chosen text
-    const verifyText = used || plan.preferred;
-    const cartHtml = (await page.content()).toLowerCase();
-    if (!cartHtml.includes((verifyText||"").toLowerCase())) {
-      await supabase.from("plan_logs").insert({ plan_id, msg: "Cart verify failed" });
-      return jsonResponse({ ok:false, code:"VERIFY_FAILED", msg:"Item not visible in cart/summary" }, 422);
-    }
-    await supabase.from("plan_logs").insert({ plan_id, msg: `Verified cart contains: ${verifyText}` });
-
-    // Proceed to checkout
-    await supabase.from("plan_logs").insert({ plan_id, msg: "Proceeding to checkout..." });
-    await clickByTexts(page, ["Checkout","Continue","Next"]);
-
-    // Handle CVV if requested
-    const afterCheckout = (await page.content()).toLowerCase();
-    const cvvNeeded = /cvv|cvc|security code/.test(afterCheckout);
-    if (cvvNeeded) {
-      await supabase.from("plan_logs").insert({ plan_id, msg: "CVV required at checkout" });
-      if (credentials.cvv) {
-        // Try common CVV selectors
-        const cvvSelectors = [
-          'input[name*="cvv"]','input[id*="cvv"]','input[name*="cvc"]','input[id*="cvc"]','input[autocomplete="cc-csc"]'
-        ];
-        let filled = false;
-        for (const sel of cvvSelectors) {
-          try { await page.fill(sel, credentials.cvv); filled = true; break; } catch {}
-        }
-        if (filled) {
-          await supabase.from("plan_logs").insert({ plan_id, msg: "CVV filled" });
-          await clickByTexts(page, ["Pay","Submit","Finish","Complete"]);
-        } else {
-          await supabase.from("plan_logs").insert({ plan_id, msg: "CVV field not found" });
-          return jsonResponse({ ok:false, code:"CVV_FIELD_NOT_FOUND", msg:"CVV field not found on page" }, 422);
-        }
-      } else {
-        await supabase.from("plan_logs").insert({ plan_id, msg: "CVV needed from user – marking action_required" });
-        // Close browser session before returning
-        await fetch(`https://api.browserbase.com/v1/sessions/${session.id}`, {
-          method: 'DELETE',
-          headers: { 'X-BB-API-Key': browserbaseApiKey }
-        });
-        return jsonResponse({ ok:true, success:false, code:"CVV_NEEDED", msg:"CVV required to complete payment" }, 200);
-      }
-    }
-
-    // Confirm success
-    const finalHtml = (await page.content()).toLowerCase();
-    const success = /(thank you|confirmation|order complete|success)/.test(finalHtml);
-    if (!success) {
-      await supabase.from("plan_logs").insert({ plan_id, msg: "Sign-up not confirmed" });
-      // Close browser session before returning
-      await fetch(`https://api.browserbase.com/v1/sessions/${session.id}`, {
-        method: 'DELETE',
-        headers: { 'X-BB-API-Key': browserbaseApiKey }
+    let session: any = null;
+    let browser: any = null;
+    
+    try {
+      const sessionResp = await fetch("https://api.browserbase.com/v1/sessions", {
+        method: "POST",
+        headers: { "X-BB-API-Key": browserbaseApiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: browserbaseProjectId })
       });
-      return jsonResponse({ ok:false, code:"SIGNUP_NOT_CONFIRMED", msg:"Could not confirm sign-up" }, 422);
-    }
-    await supabase.from("plan_logs").insert({ plan_id, msg: "🎉 Sign-up completed successfully!" });
-
-    // Close browser session
-    console.log("Closing Browserbase session:", session.id);
-    await fetch(`https://api.browserbase.com/v1/sessions/${session.id}`, {
-      method: 'DELETE',
-      headers: {
-        'X-BB-API-Key': browserbaseApiKey,
+      if (!sessionResp.ok) {
+        const t = await sessionResp.text().catch(()=>"");
+        console.error("Session create failed:", sessionResp.status, sessionResp.statusText, t);
+        await supabase.from("plan_logs").insert({ plan_id, msg: `Error: Browserbase session failed ${sessionResp.status}` });
+        return jsonResponse({ ok:false, code:"BROWSERBASE_SESSION_FAILED", msg:"Cannot create browser session" }, 500);
       }
-    });
+      session = await sessionResp.json();
+      console.log("Browserbase session created:", session);
+      await supabase.from("plan_logs").insert({ plan_id, msg: `✅ Browserbase session created: ${session.id}` });
 
-    await supabase.from('plan_logs').insert({
-      plan_id,
-      msg: `🛑 Browserbase session closed: ${session.id}`
-    });
+      // Connect Playwright over CDP
+      let page: any = null;
+      try {
+        browser = await chromium.connectOverCDP(session.connectUrl);
+        const ctx = browser.contexts()[0] ?? await browser.newContext();
+        page = ctx.pages()[0] ?? await ctx.newPage();
+        console.log("Connected Playwright to session:", session.id);
+        await supabase.from("plan_logs").insert({ plan_id, msg: "Playwright connected to Browserbase" });
+      } catch (e) {
+        console.error("Playwright connect error:", e);
+        await supabase.from("plan_logs").insert({ plan_id, msg: `Error: Playwright connect error ${e?.message||e}` });
+        return jsonResponse({ ok:false, code:"PLAYWRIGHT_CONNECT_FAILED", msg:"Cannot connect Playwright" }, 500);
+      }
 
-    console.log(`Plan execution completed for plan_id: ${plan_id}`);
+      // Compute login URL from plan
+      const subdomain = (plan.org || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      const loginUrl = `https://${subdomain}.skiclubpro.team/user/login`;
+      
+      // Perform login with Playwright
+      await supabase.from("plan_logs").insert({ plan_id, msg: `Navigating to login: ${loginUrl}` });
+      const loginResult = await loginWithPlaywright(page, loginUrl, credentials.email, credentials.password);
+      if (!loginResult.success) {
+        await supabase.from("plan_logs").insert({ plan_id, msg: `Login failed: ${loginResult.error}` });
+        return jsonResponse({ ok:false, code:"LOGIN_FAILED", msg: loginResult.error }, 400);
+      }
+      await supabase.from("plan_logs").insert({ plan_id, msg: "Login successful" });
 
-    return jsonResponse({ 
-      ok: true, 
-      success: true, 
-      msg: 'Plan executed: sign-up complete',
-      data: { plan_id }
-    }, 200);
+      // Navigate to target page
+      const targetUrl = plan.discovered_url || plan.base_url || `https://${subdomain}.skiclubpro.team/dashboard`;
+      await supabase.from("plan_logs").insert({ plan_id, msg: `Opening target page: ${targetUrl}` });
+      await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
+
+      // If no discovered URL, run discovery with Playwright
+      if (!plan.discovered_url) {
+        await supabase.from("plan_logs").insert({ plan_id, msg: "Starting discovery..." });
+        
+        try {
+          const discoveryResult = await performPlaywrightDiscovery(page, plan.base_url);
+          
+          if (discoveryResult.success && discoveryResult.url) {
+            // Store discovered URL in plans table
+            await supabase.from('plans')
+              .update({ discovered_url: discoveryResult.url })
+              .eq('id', plan_id);
+
+            // Navigate to discovered page
+            await page.goto(discoveryResult.url, { waitUntil: "domcontentloaded" });
+            await supabase.from("plan_logs").insert({ plan_id, msg: `Discovered URL: ${discoveryResult.url}` });
+          } else {
+            await supabase.from("plan_logs").insert({ plan_id, msg: "Discovery completed - no signup links found" });
+          }
+        } catch (error) {
+          await supabase.from("plan_logs").insert({ plan_id, msg: `Discovery error: ${error.message}` });
+        }
+      }
+
+      // Slot selection
+      await supabase.from("plan_logs").insert({ plan_id, msg: `Selecting slot. Preferred: "${plan.preferred}"${plan.alternate?`, Alt: "${plan.alternate}"`:``}` });
+      const used = await clickByTexts(page, [plan.preferred, plan.alternate].filter(Boolean));
+      if (!used) { 
+        await supabase.from("plan_logs").insert({ plan_id, msg: "No preferred/alternate slot found" });
+        return jsonResponse({ ok:false, code:"SLOT_NOT_FOUND", msg:"Could not find slot" }, 404);
+      }
+      await supabase.from("plan_logs").insert({ plan_id, msg: `Selected slot: ${used}` });
+
+      // Child selection (if applicable)
+      if (plan.child_name) {
+        await supabase.from("plan_logs").insert({ plan_id, msg: `Choosing child: ${plan.child_name}` });
+        const picked = await clickByTexts(page, [plan.child_name]);
+        if (!picked) {
+          await supabase.from("plan_logs").insert({ plan_id, msg: "Child selector not found (continuing)" });
+        }
+      }
+
+      // Add to cart / register
+      await supabase.from("plan_logs").insert({ plan_id, msg: "Clicking Add/Register/Cart..." });
+      await clickByTexts(page, ["Add to cart","Add","Enroll","Register","Cart","Continue"]);
+
+      // Verify cart contains the chosen text
+      const verifyText = used || plan.preferred;
+      const cartHtml = (await page.content()).toLowerCase();
+      if (!cartHtml.includes((verifyText||"").toLowerCase())) {
+        await supabase.from("plan_logs").insert({ plan_id, msg: "Cart verify failed" });
+        return jsonResponse({ ok:false, code:"VERIFY_FAILED", msg:"Item not visible in cart/summary" }, 422);
+      }
+      await supabase.from("plan_logs").insert({ plan_id, msg: `Verified cart contains: ${verifyText}` });
+
+      // Proceed to checkout
+      await supabase.from("plan_logs").insert({ plan_id, msg: "Proceeding to checkout..." });
+      await clickByTexts(page, ["Checkout","Continue","Next"]);
+
+      // Handle CVV if requested
+      const afterCheckout = (await page.content()).toLowerCase();
+      const cvvNeeded = /cvv|cvc|security code/.test(afterCheckout);
+      if (cvvNeeded) {
+        await supabase.from("plan_logs").insert({ plan_id, msg: "CVV required at checkout" });
+        if (credentials.cvv) {
+          // Try common CVV selectors
+          const cvvSelectors = [
+            'input[name*="cvv"]','input[id*="cvv"]','input[name*="cvc"]','input[id*="cvc"]','input[autocomplete="cc-csc"]'
+          ];
+          let filled = false;
+          for (const sel of cvvSelectors) {
+            try { await page.fill(sel, credentials.cvv); filled = true; break; } catch {}
+          }
+          if (filled) {
+            await supabase.from("plan_logs").insert({ plan_id, msg: "CVV filled" });
+            await clickByTexts(page, ["Pay","Submit","Finish","Complete"]);
+          } else {
+            await supabase.from("plan_logs").insert({ plan_id, msg: "CVV field not found" });
+            return jsonResponse({ ok:false, code:"CVV_FIELD_NOT_FOUND", msg:"CVV field not found on page" }, 422);
+          }
+        } else {
+          await supabase.from("plan_logs").insert({ plan_id, msg: "CVV needed from user – marking action_required" });
+          return jsonResponse({ ok:true, success:false, code:"CVV_NEEDED", msg:"CVV required to complete payment" }, 200);
+        }
+      }
+
+      // Confirm success
+      const finalHtml = (await page.content()).toLowerCase();
+      const success = /(thank you|confirmation|order complete|success)/.test(finalHtml);
+      if (!success) {
+        await supabase.from("plan_logs").insert({ plan_id, msg: "Sign-up not confirmed" });
+        return jsonResponse({ ok:false, code:"SIGNUP_NOT_CONFIRMED", msg:"Could not confirm sign-up" }, 422);
+      }
+      await supabase.from("plan_logs").insert({ plan_id, msg: "🎉 Sign-up completed successfully!" });
+
+      console.log(`Plan execution completed for plan_id: ${plan_id}`);
+      
+      return jsonResponse({ 
+        ok: true, 
+        success: true, 
+        msg: 'Plan executed: sign-up complete',
+        data: { plan_id }
+      }, 200);
+
+    } catch (e) {
+      console.error("Error in run-plan:", e);
+      await supabase.from("plan_logs").insert({ plan_id, msg: `Error: ${e?.message||e}` });
+      return jsonResponse({ ok:false, code:"UNEXPECTED_ERROR", msg:"Internal server error" }, 500);
+    } finally {
+      try { await browser?.close(); } catch {}
+      try {
+        if (session?.id) {
+          await fetch(`https://api.browserbase.com/v1/sessions/${session.id}`, {
+            method: "DELETE", 
+            headers: { "X-BB-API-Key": browserbaseApiKey }
+          });
+        }
+      } catch {}
+      if (session?.id) {
+        await supabase.from("plan_logs").insert({ plan_id, msg: `🛑 Browserbase session closed: ${session.id}` });
+      }
+    }
 
   } catch (error) {
     console.error('Error in run-plan function:', error);
