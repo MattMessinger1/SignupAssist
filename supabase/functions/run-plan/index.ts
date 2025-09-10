@@ -381,6 +381,8 @@ serve(async (req) => {
         }
       }, 500);
     }
+
+    console.log("Browserbase session created:", session);
     
     await supabase.from('plan_logs').insert({
       plan_id,
@@ -465,6 +467,7 @@ serve(async (req) => {
     }
 
     // Close browser session
+    console.log("Closing Browserbase session:", session.id);
     await fetch(`https://api.browserbase.com/v1/sessions/${session.id}`, {
       method: 'DELETE',
       headers: {
