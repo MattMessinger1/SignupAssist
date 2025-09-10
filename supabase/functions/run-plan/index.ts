@@ -311,84 +311,38 @@ serve(async (req) => {
       msg: `Using account: ${credentials.alias} (${credentials.email})`
     });
 
-    // Start Browserbase session
-    await supabase.from('plan_logs').insert({
-      plan_id,
-      msg: 'Starting browser session...'
+    // Create Browserbase session and connect Playwright
+    const browserbaseApiKey = Deno.env.get("BROWSERBASE_API_KEY")!;
+    const browserbaseProjectId = Deno.env.get("BROWSERBASE_PROJECT_ID")!;
+    const sessionResp = await fetch("https://api.browserbase.com/v1/sessions", {
+      method: "POST",
+      headers: { "X-BB-API-Key": browserbaseApiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: browserbaseProjectId })
     });
-
-    const browserbaseApiKey = Deno.env.get('BROWSERBASE_API_KEY')!;
-    const browserbaseProjectId = Deno.env.get('BROWSERBASE_PROJECT_ID')!;
-
-    // Create Browserbase session
-    const sessionResponse = await fetch('https://api.browserbase.com/v1/sessions', {
-      method: 'POST',
-      headers: {
-        'X-BB-API-Key': browserbaseApiKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        projectId: browserbaseProjectId
-      })
-    });
-
-    if (!sessionResponse.ok) {
-      const errorText = await sessionResponse.text();
-      let parsedError = null;
-      try {
-        parsedError = JSON.parse(errorText);
-      } catch {}
-      
-      const errorMsg = `Failed to create browser session: ${sessionResponse.status} ${sessionResponse.statusText}`;
-      const detailedMsg = `${errorMsg} - ${errorText}`;
-      
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Error: ${detailedMsg}`
-      });
-      
-      return jsonResponse({ 
-        ok: false, 
-        code: 'BROWSERBASE_SESSION_FAILED', 
-        msg: errorMsg,
-        details: { 
-          status: sessionResponse.status, 
-          statusText: sessionResponse.statusText,
-          response: parsedError || errorText,
-          headers: Object.fromEntries(sessionResponse.headers.entries())
-        }
-      }, 500);
+    if (!sessionResp.ok) {
+      const t = await sessionResp.text().catch(()=>"");
+      console.error("Session create failed:", sessionResp.status, sessionResp.statusText, t);
+      await supabase.from("plan_logs").insert({ plan_id, msg: `Error: Browserbase session failed ${sessionResp.status}` });
+      return jsonResponse({ ok:false, code:"BROWSERBASE_SESSION_FAILED", msg:"Cannot create browser session" }, 500);
     }
-
-    let session: BrowserbaseSession;
-    try {
-      session = await sessionResponse.json();
-    } catch (err) {
-      const text = await sessionResponse.text();
-      const errorMsg = `Browserbase returned non-JSON: ${text}`;
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Error: ${errorMsg}`
-      });
-      
-      return jsonResponse({ 
-        ok: false, 
-        code: 'BROWSERBASE_JSON_ERROR', 
-        msg: errorMsg,
-        details: { 
-          status: sessionResponse.status, 
-          statusText: sessionResponse.statusText,
-          response: text
-        }
-      }, 500);
-    }
-
+    const session = await sessionResp.json();
     console.log("Browserbase session created:", session);
-    
-    await supabase.from('plan_logs').insert({
-      plan_id,
-      msg: `✅ Browserbase session created: ${session.id}`
-    });
+    await supabase.from("plan_logs").insert({ plan_id, msg: `✅ Browserbase session created: ${session.id}` });
+
+    // Connect Playwright over CDP
+    let browser: any = null;
+    let page: any = null;
+    try {
+      browser = await chromium.connectOverCDP(session.connectUrl);
+      const ctx = browser.contexts()[0] ?? await browser.newContext();
+      page = ctx.pages()[0] ?? await ctx.newPage();
+      console.log("Connected Playwright to session:", session.id);
+      await supabase.from("plan_logs").insert({ plan_id, msg: "Playwright connected to Browserbase" });
+    } catch (e) {
+      console.error("Playwright connect error:", e);
+      await supabase.from("plan_logs").insert({ plan_id, msg: `Error: Playwright connect error ${e?.message||e}` });
+      return jsonResponse({ ok:false, code:"PLAYWRIGHT_CONNECT_FAILED", msg:"Cannot connect Playwright" }, 500);
+    }
 
     // Determine subdomain from org name
     const subdomain = plan.org.toLowerCase().replace(/[^a-z0-9]/g, '');
