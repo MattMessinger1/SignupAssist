@@ -136,33 +136,126 @@ serve(async (req) => {
       msg: `Plan loaded: ${plan.child_name} at ${plan.org} - proceeding with execution`
     });
 
-    // Get decrypted credentials via cred-get
-    await supabase.from('plan_logs').insert({
-      plan_id,
-      msg: 'Retrieving account credentials...'
-    });
-
-    const { data: credentialResponse, error: credError } = await supabase
-      .functions
-      .invoke('cred-get', {
-        body: { credential_id: plan.credential_id },
-        headers: { Authorization: authHeader }
-      });
-
-    if (credError || !credentialResponse?.success) {
-      const errorMsg = 'Failed to retrieve credentials';
+    // Handle credential retrieval based on call type
+    let credentials;
+    if (isServiceRole) {
+      // Service role call - decrypt credentials directly
       await supabase.from('plan_logs').insert({
         plan_id,
-        msg: `Error: ${errorMsg}`
+        msg: 'Retrieving account credentials...'
       });
-      
-      return new Response(
-        JSON.stringify({ error: errorMsg }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
 
-    const credentials = credentialResponse.data;
+      // Get encrypted credential directly using service role
+      const { data: credentialData, error: credError } = await supabase
+        .from('account_credentials')
+        .select('id, user_id, alias, provider_slug, email_enc, password_enc, cvv_enc')
+        .eq('id', plan.credential_id)
+        .eq('user_id', plan.user_id)
+        .single();
+
+      if (credError || !credentialData) {
+        const errorMsg = 'Failed to retrieve credentials';
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Error: ${errorMsg}`
+        });
+        
+        return new Response(
+          JSON.stringify({ error: errorMsg }),
+          { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      // Decrypt credentials using the encryption key
+      const CRED_ENC_KEY = Deno.env.get('CRED_ENC_KEY');
+      if (!CRED_ENC_KEY) {
+        const errorMsg = 'Encryption key not configured';
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Error: ${errorMsg}`
+        });
+        
+        return new Response(
+          JSON.stringify({ error: errorMsg }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      // Decrypt function (copied from cred-get)
+      async function decrypt(encryptedData: { iv: number[], ct: number[] }): Promise<string> {
+        const key = await crypto.subtle.importKey(
+          'raw',
+          new TextEncoder().encode(CRED_ENC_KEY.padEnd(32, '0').slice(0, 32)),
+          { name: 'AES-GCM' },
+          false,
+          ['decrypt']
+        );
+
+        const iv = new Uint8Array(encryptedData.iv);
+        const ct = new Uint8Array(encryptedData.ct);
+
+        const decrypted = await crypto.subtle.decrypt(
+          { name: 'AES-GCM', iv },
+          key,
+          ct
+        );
+
+        const decoder = new TextDecoder();
+        return decoder.decode(decrypted);
+      }
+
+      try {
+        const email = await decrypt(credentialData.email_enc);
+        const password = await decrypt(credentialData.password_enc);
+        const cvv = credentialData.cvv_enc ? await decrypt(credentialData.cvv_enc) : null;
+
+        credentials = {
+          alias: credentialData.alias,
+          email,
+          password,
+          cvv
+        };
+      } catch (decryptError) {
+        const errorMsg = 'Failed to decrypt credentials';
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Error: ${errorMsg}`
+        });
+        
+        return new Response(
+          JSON.stringify({ error: errorMsg }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+    } else {
+      // Regular user call - use cred-get function
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: 'Retrieving account credentials...'
+      });
+
+      const { data: credentialResponse, error: credError } = await supabase
+        .functions
+        .invoke('cred-get', {
+          body: { credential_id: plan.credential_id },
+          headers: { Authorization: authHeader }
+        });
+
+      if (credError || !credentialResponse?.success) {
+        const errorMsg = 'Failed to retrieve credentials';
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Error: ${errorMsg}`
+        });
+        
+        return new Response(
+          JSON.stringify({ error: errorMsg }),
+          { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      credentials = credentialResponse.data;
+    }
     await supabase.from('plan_logs').insert({
       plan_id,
       msg: `Using account: ${credentials.alias} (${credentials.email})`
