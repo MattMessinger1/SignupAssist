@@ -421,6 +421,52 @@ serve(async (req) => {
     await supabase.from("plan_logs").insert({ plan_id, msg: "Proceeding to checkout..." });
     await clickByTexts(page, ["Checkout","Continue","Next"]);
 
+    // Handle CVV if requested
+    const afterCheckout = (await page.content()).toLowerCase();
+    const cvvNeeded = /cvv|cvc|security code/.test(afterCheckout);
+    if (cvvNeeded) {
+      await supabase.from("plan_logs").insert({ plan_id, msg: "CVV required at checkout" });
+      if (credentials.cvv) {
+        // Try common CVV selectors
+        const cvvSelectors = [
+          'input[name*="cvv"]','input[id*="cvv"]','input[name*="cvc"]','input[id*="cvc"]','input[autocomplete="cc-csc"]'
+        ];
+        let filled = false;
+        for (const sel of cvvSelectors) {
+          try { await page.fill(sel, credentials.cvv); filled = true; break; } catch {}
+        }
+        if (filled) {
+          await supabase.from("plan_logs").insert({ plan_id, msg: "CVV filled" });
+          await clickByTexts(page, ["Pay","Submit","Finish","Complete"]);
+        } else {
+          await supabase.from("plan_logs").insert({ plan_id, msg: "CVV field not found" });
+          return jsonResponse({ ok:false, code:"CVV_FIELD_NOT_FOUND", msg:"CVV field not found on page" }, 422);
+        }
+      } else {
+        await supabase.from("plan_logs").insert({ plan_id, msg: "CVV needed from user – marking action_required" });
+        // Close browser session before returning
+        await fetch(`https://api.browserbase.com/v1/sessions/${session.id}`, {
+          method: 'DELETE',
+          headers: { 'X-BB-API-Key': browserbaseApiKey }
+        });
+        return jsonResponse({ ok:true, success:false, code:"CVV_NEEDED", msg:"CVV required to complete payment" }, 200);
+      }
+    }
+
+    // Confirm success
+    const finalHtml = (await page.content()).toLowerCase();
+    const success = /(thank you|confirmation|order complete|success)/.test(finalHtml);
+    if (!success) {
+      await supabase.from("plan_logs").insert({ plan_id, msg: "Sign-up not confirmed" });
+      // Close browser session before returning
+      await fetch(`https://api.browserbase.com/v1/sessions/${session.id}`, {
+        method: 'DELETE',
+        headers: { 'X-BB-API-Key': browserbaseApiKey }
+      });
+      return jsonResponse({ ok:false, code:"SIGNUP_NOT_CONFIRMED", msg:"Could not confirm sign-up" }, 422);
+    }
+    await supabase.from("plan_logs").insert({ plan_id, msg: "🎉 Sign-up completed successfully!" });
+
     // Close browser session
     console.log("Closing Browserbase session:", session.id);
     await fetch(`https://api.browserbase.com/v1/sessions/${session.id}`, {
@@ -440,7 +486,7 @@ serve(async (req) => {
     return jsonResponse({ 
       ok: true, 
       success: true, 
-      msg: 'Plan execution completed successfully',
+      msg: 'Plan executed: sign-up complete',
       data: { plan_id }
     }, 200);
 
