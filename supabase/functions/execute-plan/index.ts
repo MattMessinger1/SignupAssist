@@ -193,7 +193,22 @@ serve(async (req) => {
       );
     }
 
-    const session: BrowserbaseSession = await sessionResponse.json();
+    let session: BrowserbaseSession;
+    try {
+      session = await sessionResponse.json();
+    } catch (err) {
+      const text = await sessionResponse.text();
+      const errorMsg = `Browserbase returned non-JSON: ${text}`;
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Error: ${errorMsg}`
+      });
+      
+      return new Response(
+        JSON.stringify({ error: errorMsg }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
     
     await supabase.from('plan_logs').insert({
       plan_id,

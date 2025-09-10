@@ -359,7 +359,28 @@ serve(async (req) => {
       }, 500);
     }
 
-    const session: BrowserbaseSession = await sessionResponse.json();
+    let session: BrowserbaseSession;
+    try {
+      session = await sessionResponse.json();
+    } catch (err) {
+      const text = await sessionResponse.text();
+      const errorMsg = `Browserbase returned non-JSON: ${text}`;
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Error: ${errorMsg}`
+      });
+      
+      return jsonResponse({ 
+        ok: false, 
+        code: 'BROWSERBASE_JSON_ERROR', 
+        msg: errorMsg,
+        details: { 
+          status: sessionResponse.status, 
+          statusText: sessionResponse.statusText,
+          response: text
+        }
+      }, 500);
+    }
     
     await supabase.from('plan_logs').insert({
       plan_id,
