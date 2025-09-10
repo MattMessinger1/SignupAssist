@@ -344,50 +344,18 @@ serve(async (req) => {
       return jsonResponse({ ok:false, code:"PLAYWRIGHT_CONNECT_FAILED", msg:"Cannot connect Playwright" }, 500);
     }
 
-    // Determine subdomain from org name
-    const subdomain = plan.org.toLowerCase().replace(/[^a-z0-9]/g, '');
+    // Compute login URL from plan
+    const subdomain = (plan.org || "").toLowerCase().replace(/[^a-z0-9]/g, "");
     const loginUrl = `https://${subdomain}.skiclubpro.team/user/login`;
     
-    await supabase.from('plan_logs').insert({
-      plan_id,
-      msg: `Navigating to login: ${loginUrl}`
-    });
-
-    // Perform login via Browserbase
-    try {
-      const loginResult = await performLogin(session.id, browserbaseApiKey, loginUrl, credentials.email, credentials.password);
-      
-      if (loginResult.success) {
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: 'Login successful'
-        });
-      } else {
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Login failed: ${loginResult.error}`
-        });
-        
-        return jsonResponse({ 
-          ok: false, 
-          code: 'LOGIN_FAILED', 
-          msg: `Login failed: ${loginResult.error}`,
-          details: { loginError: loginResult.error }
-        }, 400);
-      }
-    } catch (error) {
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Login error: ${error.message}`
-      });
-      
-      return jsonResponse({ 
-        ok: false, 
-        code: 'LOGIN_EXCEPTION', 
-        msg: `Login error: ${error.message}`,
-        details: { error: error.message, stack: error.stack }
-      }, 500);
+    // Perform login with Playwright
+    await supabase.from("plan_logs").insert({ plan_id, msg: `Navigating to login: ${loginUrl}` });
+    const loginResult = await loginWithPlaywright(page, loginUrl, credentials.email, credentials.password);
+    if (!loginResult.success) {
+      await supabase.from("plan_logs").insert({ plan_id, msg: `Login failed: ${loginResult.error}` });
+      return jsonResponse({ ok:false, code:"LOGIN_FAILED", msg: loginResult.error }, 400);
     }
+    await supabase.from("plan_logs").insert({ plan_id, msg: "Login successful" });
 
     // Perform discovery
     await supabase.from('plan_logs').insert({
@@ -459,6 +427,27 @@ serve(async (req) => {
     }, 500);
   }
 });
+
+// Helper function for Playwright-based login
+async function loginWithPlaywright(page: any, loginUrl: string, email: string, password: string) {
+  console.log("Navigating to login URL:", loginUrl);
+  await page.goto(loginUrl, { waitUntil: "networkidle" });
+  // Wait for email input to appear (adjust if site differs)
+  await page.waitForSelector('input[type="email"], input[name*="email"], input[id*="email"]', { timeout: 15000 });
+  await page.fill('input[type="email"], input[name*="email"], input[id*="email"]', email);
+  await page.fill('input[type="password"], input[name*="password"], input[id*="password"]', password);
+
+  await Promise.all([
+    page.click('button[type="submit"], input[type="submit"], text=/login/i, text=/sign in/i'),
+    page.waitForNavigation({ waitUntil: "domcontentloaded" })
+  ]);
+
+  const bodyText = (await page.textContent("body"))?.toLowerCase() || "";
+  if (bodyText.includes("invalid") || bodyText.includes("incorrect") || bodyText.includes("error")) {
+    return { success:false, error:"Login appears to have failed" };
+  }
+  return { success:true };
+}
 
 // Helper function to perform login
 async function performLogin(sessionId: string, apiKey: string, loginUrl: string, email: string, password: string) {
