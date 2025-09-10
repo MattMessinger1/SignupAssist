@@ -20,16 +20,16 @@ serve(async (req) => {
 
     console.log('Plan scheduler running...');
 
-    // Find plans that need to be executed soon (within 5 minutes of open time)
+    // Find plans whose open time has arrived (up to 5 minutes late)
     const now = new Date();
-    const executionWindow = new Date(now.getTime() + 5 * 60 * 1000); // 5 minutes from now
+    const lateWindow = new Date(now.getTime() - 5 * 60 * 1000); // 5 minutes ago
 
     const { data: plansToExecute, error: fetchError } = await supabase
       .from('plans')
       .select('*')
       .eq('status', 'scheduled') // Only get scheduled plans (not cancelled, executed, etc.)
-      .gte('open_time', now.toISOString())
-      .lte('open_time', executionWindow.toISOString());
+      .gte('open_time', lateWindow.toISOString()) // Not more than 5 minutes late
+      .lte('open_time', now.toISOString()); // Open time has arrived
 
     if (fetchError) {
       console.error('Error fetching plans:', fetchError);
