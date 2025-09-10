@@ -504,41 +504,72 @@ serve(async (req) => {
       await supabase.from("plan_logs").insert({ plan_id, msg: "Proceeding to checkout..." });
       await clickByTexts(page, ["Checkout","Continue","Next"]);
 
-      // Handle CVV if requested
-      const afterCheckout = (await page.content()).toLowerCase();
-      const cvvNeeded = /cvv|cvc|security code/.test(afterCheckout);
-      if (cvvNeeded) {
-        await supabase.from("plan_logs").insert({ plan_id, msg: "CVV required at checkout" });
-        if (credentials.cvv) {
-          // Try common CVV selectors
-          const cvvSelectors = [
-            'input[name*="cvv"]','input[id*="cvv"]','input[name*="cvc"]','input[id*="cvc"]','input[autocomplete="cc-csc"]'
-          ];
-          let filled = false;
-          for (const sel of cvvSelectors) {
-            try { await page.fill(sel, credentials.cvv); filled = true; break; } catch {}
-          }
-          if (filled) {
-            await supabase.from("plan_logs").insert({ plan_id, msg: "CVV filled" });
-            await clickByTexts(page, ["Pay","Submit","Finish","Complete"]);
-          } else {
-            await supabase.from("plan_logs").insert({ plan_id, msg: "CVV field not found" });
-            return jsonResponse({ ok:false, code:"CVV_FIELD_NOT_FOUND", msg:"CVV field not found on page" }, 422);
-          }
-        } else {
-          await supabase.from("plan_logs").insert({ plan_id, msg: "CVV needed from user – marking action_required" });
-          return jsonResponse({ ok:true, success:false, code:"CVV_NEEDED", msg:"CVV required to complete payment" }, 200);
-        }
+      // ===== CHECKOUT & PAYMENT =====
+      await supabase.from('plan_logs').insert({ plan_id, msg: 'On checkout page – preparing to pay…' });
+      await page.waitForLoadState('domcontentloaded').catch(()=>{});
+      await page.waitForTimeout(500);
+
+      async function clickPayish() {
+        const btn = page.locator('button:has-text("Pay"), button:has-text("Complete"), button:has-text("Submit"), button:has-text("Finish"), input[type="submit"]');
+        if (await btn.count()) { await btn.first().click().catch(()=>{}); return true; }
+        return false;
       }
 
-      // Confirm success
-      const finalHtml = (await page.content()).toLowerCase();
-      const success = /(thank you|confirmation|order complete|success)/.test(finalHtml);
-      if (!success) {
-        await supabase.from("plan_logs").insert({ plan_id, msg: "Sign-up not confirmed" });
-        return jsonResponse({ ok:false, code:"SIGNUP_NOT_CONFIRMED", msg:"Could not confirm sign-up" }, 422);
+      let html = (await page.content()).toLowerCase();
+      let asksCvv = /(cvv|cvc|security code)/i.test(html);
+
+      if (asksCvv) {
+        await supabase.from('plan_logs').insert({ plan_id, msg: 'CVV requested – filling…' });
+        const cvvSelectors = [
+          'input[name*="cvv"]','input[id*="cvv"]',
+          'input[name*="cvc"]','input[id*="cvc"]',
+          'input[autocomplete="cc-csc"]'
+        ];
+        let filled = false;
+        for (const sel of cvvSelectors) {
+          try {
+            if (await page.locator(sel).count()) {
+              await page.locator(sel).first().fill(credentials.cvv);
+              filled = true; break;
+            }
+          } catch {}
+        }
+        if (!filled) {
+          await supabase.from('plan_logs').insert({ plan_id, msg: 'CVV field not found.' });
+          return jsonResponse({ ok:false, code:'CVV_FIELD_NOT_FOUND', msg:'CVV field not found on checkout page.' }, 422);
+        }
+        await clickPayish();
+      } else {
+        await supabase.from('plan_logs').insert({ plan_id, msg: 'No CVV requested – completing payment…' });
+        await clickPayish();
       }
-      await supabase.from("plan_logs").insert({ plan_id, msg: "🎉 Sign-up completed successfully!" });
+
+      await page.waitForLoadState('networkidle').catch(()=>{});
+      await page.waitForTimeout(1000);
+      html = (await page.content()).toLowerCase();
+
+      function looksConfirmed(t: string) {
+        return /(thank you|confirmation|order (complete|confirmed)|successfully (enrolled|registered))/i.test(t);
+      }
+
+      let confirmed = looksConfirmed(html);
+      if (!confirmed) {
+        await supabase.from('plan_logs').insert({ plan_id, msg: 'Confirmation not detected – retrying final submit once…' });
+        await clickPayish();
+        await page.waitForLoadState('networkidle').catch(()=>{});
+        await page.waitForTimeout(1500);
+        html = (await page.content()).toLowerCase();
+        confirmed = looksConfirmed(html);
+      }
+
+      if (!confirmed) {
+        const tail = html.slice(-200);
+        await supabase.from('plan_logs').insert({ plan_id, msg: `Sign-up not confirmed. Tail: ${tail}` });
+        return jsonResponse({ ok:false, code:'SIGNUP_NOT_CONFIRMED', msg:'Could not confirm sign-up after payment attempt.' }, 422);
+      }
+
+      await supabase.from('plan_logs').insert({ plan_id, msg: '🎉 Sign-up completed successfully!' });
+      try { await supabase.from('plans').update({ status: 'completed' }).eq('id', plan_id); } catch {}
 
       dlog(`Plan execution completed for plan_id: ${plan_id}`);
       
