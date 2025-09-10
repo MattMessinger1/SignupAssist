@@ -451,6 +451,14 @@ serve(async (req) => {
         }
       }
 
+      // ===== ADVISORY CHECK ON LISTING PAGE =====
+      try {
+        const listHtml = (await page.content()).toLowerCase();
+        if (/required:\s*20\d{2}-20\d{2}\s*full membership/i.test(listHtml)) {
+          await supabase.from('plan_logs').insert({ plan_id, msg: 'Program lists a required membership for this season.' });
+        }
+      } catch {}
+
       // Slot selection
       await supabase.from("plan_logs").insert({ plan_id, msg: `Selecting slot. Preferred: "${plan.preferred}"${plan.alternate?`, Alt: "${plan.alternate}"`:``}` });
       const used = await clickByTexts(page, [plan.preferred, plan.alternate].filter(Boolean));
@@ -490,6 +498,24 @@ serve(async (req) => {
       // Add to cart / register
       await supabase.from("plan_logs").insert({ plan_id, msg: "Clicking Add/Register/Cart..." });
       await clickByTexts(page, ["Add to cart","Add","Enroll","Register","Cart","Continue"]);
+
+      // ===== ENFORCE MEMBERSHIP AFTER ADD TO CART =====
+      try {
+        const cartHtml = (await page.content()).toLowerCase();
+        const membershipMsg = /(membership is required|please make sure you have the appropriate membership)/i.test(cartHtml);
+        const membershipItem = /membership/i.test(cartHtml); // crude check for a membership line item
+        if (membershipMsg && !membershipItem) {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: 'Membership required and not in cart. Aborting with guidance.'
+          });
+          return jsonResponse({
+            ok: false,
+            code: 'MEMBERSHIP_REQUIRED',
+            msg: 'This program requires a 2025–2026 membership. Please add Full or Limited membership to your account/cart, then re-run.'
+          }, 422);
+        }
+      } catch {}
 
       // Verify cart contains the chosen text
       const verifyText = used || plan.preferred;
