@@ -91,7 +91,8 @@ serve(async (req) => {
       credential_id: requestData.credential_id,
       phone: requestData.phone || null,
       status: 'scheduled',
-      paid: false
+      paid: false,
+      extras: requestData.extras || null
     };
 
     const { data: plan, error: insertError } = await supabase
