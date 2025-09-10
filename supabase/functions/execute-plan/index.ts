@@ -212,7 +212,7 @@ serve(async (req) => {
     
     await supabase.from('plan_logs').insert({
       plan_id,
-      msg: `Browser session created: ${session.id}`
+      msg: `✅ Browserbase session created: ${session.id}`
     });
 
     try {
@@ -247,7 +247,7 @@ serve(async (req) => {
 
       await supabase.from('plan_logs').insert({
         plan_id,
-        msg: 'Browser session closed - execution complete'
+        msg: `🛑 Browserbase session closed: ${session.id}`
       });
 
       return new Response(
@@ -262,6 +262,11 @@ serve(async (req) => {
         headers: {
           'X-BB-API-Key': browserbaseApiKey,
         }
+      });
+
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `🛑 Browserbase session closed: ${session.id}`
       });
 
       await supabase.from('plan_logs').insert({

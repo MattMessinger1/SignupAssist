@@ -384,7 +384,7 @@ serve(async (req) => {
     
     await supabase.from('plan_logs').insert({
       plan_id,
-      msg: `Browser session created: ${session.id}`
+      msg: `✅ Browserbase session created: ${session.id}`
     });
 
     // Determine subdomain from org name
@@ -474,7 +474,7 @@ serve(async (req) => {
 
     await supabase.from('plan_logs').insert({
       plan_id,
-      msg: 'Browser session closed - execution phase complete'
+      msg: `🛑 Browserbase session closed: ${session.id}`
     });
 
     console.log(`Plan execution completed for plan_id: ${plan_id}`);
