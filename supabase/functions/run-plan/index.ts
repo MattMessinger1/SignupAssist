@@ -404,6 +404,23 @@ serve(async (req) => {
       }
     }
 
+    // Add to cart / register
+    await supabase.from("plan_logs").insert({ plan_id, msg: "Clicking Add/Register/Cart..." });
+    await clickByTexts(page, ["Add to cart","Add","Enroll","Register","Cart","Continue"]);
+
+    // Verify cart contains the chosen text
+    const verifyText = used || plan.preferred;
+    const cartHtml = (await page.content()).toLowerCase();
+    if (!cartHtml.includes((verifyText||"").toLowerCase())) {
+      await supabase.from("plan_logs").insert({ plan_id, msg: "Cart verify failed" });
+      return jsonResponse({ ok:false, code:"VERIFY_FAILED", msg:"Item not visible in cart/summary" }, 422);
+    }
+    await supabase.from("plan_logs").insert({ plan_id, msg: `Verified cart contains: ${verifyText}` });
+
+    // Proceed to checkout
+    await supabase.from("plan_logs").insert({ plan_id, msg: "Proceeding to checkout..." });
+    await clickByTexts(page, ["Checkout","Continue","Next"]);
+
     // Close browser session
     console.log("Closing Browserbase session:", session.id);
     await fetch(`https://api.browserbase.com/v1/sessions/${session.id}`, {
