@@ -50,7 +50,7 @@ async function loadPlaywrightForDeno() {
   //   (globalThis as any).Buffer = Buffer;
   // }
 
-  // Import a Deno-targeted Playwright bundle (pinned primary, flexible fallback)
+  // Import a Playwright bundle that works in Deno (Node-style transpiled)
   try {
     return await import("https://esm.sh/v138/playwright-core@1.46.0?target=deno");
   } catch {
