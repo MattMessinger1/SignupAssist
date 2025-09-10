@@ -314,7 +314,8 @@ serve(async (req) => {
     });
 
     if (!sessionResponse.ok) {
-      const errorMsg = 'Failed to create browser session';
+      const errorText = await sessionResponse.text();
+      const errorMsg = `Failed to create browser session: ${sessionResponse.status} ${sessionResponse.statusText} - ${errorText}`;
       await supabase.from('plan_logs').insert({
         plan_id,
         msg: `Error: ${errorMsg}`
