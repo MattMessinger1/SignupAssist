@@ -386,6 +386,24 @@ serve(async (req) => {
       }
     }
 
+    // Slot selection
+    await supabase.from("plan_logs").insert({ plan_id, msg: `Selecting slot. Preferred: "${plan.preferred}"${plan.alternate?`, Alt: "${plan.alternate}"`:``}` });
+    const used = await clickByTexts(page, [plan.preferred, plan.alternate].filter(Boolean));
+    if (!used) { 
+      await supabase.from("plan_logs").insert({ plan_id, msg: "No preferred/alternate slot found" });
+      return jsonResponse({ ok:false, code:"SLOT_NOT_FOUND", msg:"Could not find slot" }, 404);
+    }
+    await supabase.from("plan_logs").insert({ plan_id, msg: `Selected slot: ${used}` });
+
+    // Child selection (if applicable)
+    if (plan.child_name) {
+      await supabase.from("plan_logs").insert({ plan_id, msg: `Choosing child: ${plan.child_name}` });
+      const picked = await clickByTexts(page, [plan.child_name]);
+      if (!picked) {
+        await supabase.from("plan_logs").insert({ plan_id, msg: "Child selector not found (continuing)" });
+      }
+    }
+
     // Close browser session
     console.log("Closing Browserbase session:", session.id);
     await fetch(`https://api.browserbase.com/v1/sessions/${session.id}`, {
@@ -661,4 +679,25 @@ async function performDiscovery(sessionId: string, apiKey: string, baseUrl: stri
   } catch (error) {
     return { success: false, error: error.message };
   }
+}
+
+async function clickByTexts(page: any, texts: string[]) {
+  for (const t of texts) {
+    const locator = page.getByRole("button", { name: new RegExp(t, "i") });
+    if (await locator.count().catch(() => 0)) {
+      try { 
+        await locator.first().click(); 
+        return t; 
+      } catch {}
+    }
+    // generic text selector fallback
+    const alt = page.locator(`text=${t}`);
+    if (await alt.count().catch(() => 0)) {
+      try { 
+        await alt.first().click(); 
+        return t; 
+      } catch {}
+    }
+  }
+  return null;
 }
