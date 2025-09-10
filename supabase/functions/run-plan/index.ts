@@ -317,6 +317,24 @@ serve(async (req) => {
       msg: `Using account: ${credentials.alias} (${credentials.email})`
     });
 
+    // ===== RESOLVE EXTRAS / AUTOS =====
+    const EXTRAS = (plan?.extras ?? {}) as any;
+
+    // Support both extras.* and top-level fallback (back-compat)
+    function isAuto(v: any) {
+      return v === null || v === undefined || v === '' || String(v).trim() === '__AUTO__';
+    }
+
+    const nordicRental = isAuto(EXTRAS.nordicRental) ? null : (EXTRAS.nordicRental ?? null);
+    const nordicColorGroupRaw = (EXTRAS.nordicColorGroup ?? null);
+    const volunteerRaw = (EXTRAS.volunteer ?? null);
+    const allowNoCvv =
+      (EXTRAS.allow_no_cvv === true || EXTRAS.allow_no_cvv === 'true' || plan.allow_no_cvv === true);
+
+    // Normalize autos
+    const nordicColorGroup = isAuto(nordicColorGroupRaw) ? null : nordicColorGroupRaw;
+    const volunteer = isAuto(volunteerRaw) ? null : volunteerRaw;
+
     // Create Browserbase session and connect Playwright
     const browserbaseApiKey = Deno.env.get("BROWSERBASE_API_KEY")!;
     const browserbaseProjectId = Deno.env.get("BROWSERBASE_PROJECT_ID")!;
