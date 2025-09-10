@@ -181,11 +181,17 @@ serve(async (req) => {
         );
       }
 
-      // Decrypt function (copied from cred-get)
-      async function decrypt(encryptedData: { iv: number[], ct: number[] }): Promise<string> {
+      // Decrypt function (matching cred-store implementation)
+      async function decrypt(encryptedString: string): Promise<string> {
+        // Parse the JSON string to get the encrypted data object
+        const encryptedData = JSON.parse(encryptedString);
+        
+        // Decode base64 key to bytes (matching cred-store)
+        const keyBytes = Uint8Array.from(atob(CRED_ENC_KEY), c => c.charCodeAt(0));
+        
         const key = await crypto.subtle.importKey(
           'raw',
-          new TextEncoder().encode(CRED_ENC_KEY.padEnd(32, '0').slice(0, 32)),
+          keyBytes,
           { name: 'AES-GCM' },
           false,
           ['decrypt']
