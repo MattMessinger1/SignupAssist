@@ -57,25 +57,46 @@ serve(async (req) => {
       msg: 'Attempt started - loading plan details...'
     });
 
-    // Get plan details with auth check
-    const { data: { user } } = await supabase.auth.getUser(authHeader.replace('Bearer ', ''));
-    if (!user) {
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: 'Error: Authentication failed'
-      });
-      return new Response(
-        JSON.stringify({ error: 'Authentication failed' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
+    // Check if this is a service role call (from scheduler) or user call
+    const token = authHeader.replace('Bearer ', '');
+    const isServiceRole = token === Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    
+    let plan;
+    let planError;
+    
+    if (isServiceRole) {
+      // Service role call from scheduler - no user auth needed
+      console.log('Service role call detected - fetching plan without user restriction');
+      const { data, error } = await supabase
+        .from('plans')
+        .select('*')
+        .eq('id', plan_id)
+        .maybeSingle();
+      plan = data;
+      planError = error;
+    } else {
+      // Regular user call - authenticate user first
+      const { data: { user } } = await supabase.auth.getUser(token);
+      if (!user) {
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: 'Error: Authentication failed'
+        });
+        return new Response(
+          JSON.stringify({ error: 'Authentication failed' }),
+          { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
 
-    const { data: plan, error: planError } = await supabase
-      .from('plans')
-      .select('*')
-      .eq('id', plan_id)
-      .eq('user_id', user.id)
-      .maybeSingle();
+      const { data, error } = await supabase
+        .from('plans')
+        .select('*')
+        .eq('id', plan_id)
+        .eq('user_id', user.id)
+        .maybeSingle();
+      plan = data;
+      planError = error;
+    }
 
     if (planError || !plan) {
       const errorMsg = 'Plan not found or access denied';
