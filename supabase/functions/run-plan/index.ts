@@ -506,6 +506,7 @@ serve(async (req) => {
 async function performLogin(sessionId: string, apiKey: string, loginUrl: string, email: string, password: string) {
   try {
     // Navigate to login page
+    console.log("Navigating to login URL:", loginUrl);
     const navigateResponse = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/navigate`, {
       method: 'POST',
       headers: {
@@ -516,7 +517,13 @@ async function performLogin(sessionId: string, apiKey: string, loginUrl: string,
     });
 
     if (!navigateResponse.ok) {
-      return { success: false, error: 'Failed to navigate to login page' };
+      const errorText = await navigateResponse.text().catch(() => '');
+      console.error('Navigation failed:', {
+        status: navigateResponse.status,
+        statusText: navigateResponse.statusText,
+        body: errorText
+      });
+      return { success: false, error: `Failed to navigate: ${navigateResponse.status} ${navigateResponse.statusText}` };
     }
 
     // Wait for page load
