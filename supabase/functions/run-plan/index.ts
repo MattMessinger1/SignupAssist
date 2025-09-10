@@ -382,11 +382,14 @@ serve(async (req) => {
       // Connect Playwright over CDP
       let page: any = null;
       try {
-        const playwright = await loadPlaywrightForDeno();
-        const { chromium } = playwright;
+        // Load Playwright only when needed
+        const { chromium } = await loadPlaywrightForDeno();
         browser = await chromium.connectOverCDP(session.connectUrl);
+
         const ctx = browser.contexts()[0] ?? await browser.newContext();
         page = ctx.pages()[0] ?? await ctx.newPage();
+
+        await supabase.from("plan_logs").insert({ plan_id, msg: "Playwright connected" });
         dlog("Connected Playwright to session:", session.id);
         await supabase.from("plan_logs").insert({ plan_id, msg: "Playwright connected to Browserbase" });
       } catch (e) {
