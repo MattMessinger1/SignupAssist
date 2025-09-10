@@ -357,36 +357,33 @@ serve(async (req) => {
     }
     await supabase.from("plan_logs").insert({ plan_id, msg: "Login successful" });
 
-    // Perform discovery
-    await supabase.from('plan_logs').insert({
-      plan_id,
-      msg: `Starting discovery on: ${plan.base_url}`
-    });
+    // Navigate to target page
+    const targetUrl = plan.discovered_url || plan.base_url || `https://${subdomain}.skiclubpro.team/dashboard`;
+    await supabase.from("plan_logs").insert({ plan_id, msg: `Opening target page: ${targetUrl}` });
+    await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
 
-    try {
-      const discoveryResult = await performDiscovery(session.id, browserbaseApiKey, plan.base_url);
+    // If no discovered URL, run discovery with Playwright
+    if (!plan.discovered_url) {
+      await supabase.from("plan_logs").insert({ plan_id, msg: "Starting discovery..." });
       
-      if (discoveryResult.success && discoveryResult.url) {
-        // Store discovered URL in plans table
-        await supabase.from('plans')
-          .update({ discovered_url: discoveryResult.url })
-          .eq('id', plan_id);
+      try {
+        const discoveryResult = await performPlaywrightDiscovery(page, plan.base_url);
+        
+        if (discoveryResult.success && discoveryResult.url) {
+          // Store discovered URL in plans table
+          await supabase.from('plans')
+            .update({ discovered_url: discoveryResult.url })
+            .eq('id', plan_id);
 
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Discovered URL: ${discoveryResult.url}`
-        });
-      } else {
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: 'Discovery completed - no signup links found'
-        });
+          // Navigate to discovered page
+          await page.goto(discoveryResult.url, { waitUntil: "domcontentloaded" });
+          await supabase.from("plan_logs").insert({ plan_id, msg: `Discovered URL: ${discoveryResult.url}` });
+        } else {
+          await supabase.from("plan_logs").insert({ plan_id, msg: "Discovery completed - no signup links found" });
+        }
+      } catch (error) {
+        await supabase.from("plan_logs").insert({ plan_id, msg: `Discovery error: ${error.message}` });
       }
-    } catch (error) {
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Discovery error: ${error.message}`
-      });
     }
 
     // Close browser session
@@ -447,6 +444,51 @@ async function loginWithPlaywright(page: any, loginUrl: string, email: string, p
     return { success:false, error:"Login appears to have failed" };
   }
   return { success:true };
+}
+
+// Helper function to perform discovery with Playwright
+async function performPlaywrightDiscovery(page: any, baseUrl: string) {
+  try {
+    // Navigate to base URL if not already there
+    await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+    
+    const targetTexts = ["Register", "Lessons", "Programs", "Class", "Enroll"];
+    const maxTime = 45000; // 45 seconds
+    const checkInterval = 2000; // 2 seconds
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < maxTime) {
+      // Get page content
+      const content = await page.content();
+      
+      // Look for links containing target text
+      for (const targetText of targetTexts) {
+        const regex = new RegExp(`<a[^>]*href="([^"]*)"[^>]*>[^<]*${targetText}[^<]*</a>`, 'i');
+        const match = content.match(regex);
+        
+        if (match) {
+          let url = match[1];
+          
+          // Convert relative URL to absolute
+          if (url.startsWith('/')) {
+            const baseUrlObj = new URL(baseUrl);
+            url = `${baseUrlObj.origin}${url}`;
+          } else if (!url.startsWith('http')) {
+            url = `${baseUrl}/${url}`;
+          }
+          
+          return { success: true, url, text: targetText };
+        }
+      }
+
+      // Wait before next check
+      await new Promise(resolve => setTimeout(resolve, checkInterval));
+    }
+
+    return { success: true, url: null }; // No links found within time limit
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
 }
 
 // Helper function to perform login
