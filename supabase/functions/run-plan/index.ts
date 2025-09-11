@@ -39,16 +39,16 @@ interface BrowserbaseContext {
 async function loadPlaywrightForDeno() {
   if (!(globalThis as any).process) (globalThis as any).process = { env: {} } as any;
 
-  try { await import("https://esm.sh/node/events?target=deno"); } catch {}
-  try { await import("https://esm.sh/node/util?target=deno"); } catch {}
-  try { await import("https://esm.sh/node/timers?target=deno"); } catch {}
-  try { await import("https://esm.sh/node/stream?target=deno"); } catch {}
+  await import("https://esm.sh/node/events?target=deno");
+  await import("https://esm.sh/node/util?target=deno");
+  await import("https://esm.sh/node/timers?target=deno");
+  await import("https://esm.sh/node/stream?target=deno");
 
-  // Optional Buffer shim (if you hit Buffer errors later)
-  // if (!(globalThis as any).Buffer) {
-  //   const { Buffer } = await import("https://esm.sh/buffer@6.0.3?target=deno");
-  //   (globalThis as any).Buffer = Buffer;
-  // }
+  // Optional, if you later hit Buffer errors:
+  if (!(globalThis as any).Buffer) {
+    const { Buffer } = await import("https://esm.sh/buffer@6.0.3?target=deno");
+    (globalThis as any).Buffer = Buffer;
+  }
 
   // Import Node bundle (stable) + use polyfills
   try {
