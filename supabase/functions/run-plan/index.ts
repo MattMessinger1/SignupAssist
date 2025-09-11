@@ -391,7 +391,18 @@ serve(async (req) => {
       try {
         // Load Playwright only when needed
         const { chromium } = await loadPlaywrightForDeno(plan_id, supabase);
+        
+        await supabase.from("plan_logs").insert({
+          plan_id,
+          msg: "PLAYWRIGHT_CONNECT_START"
+        });
+        
         browser = await chromium.connectOverCDP(session.connectUrl);
+        
+        await supabase.from("plan_logs").insert({
+          plan_id,
+          msg: "PLAYWRIGHT_CONNECT_SUCCESS"
+        });
 
         const ctx = browser.contexts()[0] ?? await browser.newContext();
         page = ctx.pages()[0] ?? await ctx.newPage();
@@ -401,7 +412,10 @@ serve(async (req) => {
         await supabase.from("plan_logs").insert({ plan_id, msg: "Playwright connected to Browserbase" });
       } catch (e) {
         console.error("Playwright connect error:", e);
-        await supabase.from("plan_logs").insert({ plan_id, msg: `Error: Playwright connect error ${e?.message||e}` });
+        await supabase.from("plan_logs").insert({
+          plan_id,
+          msg: "PLAYWRIGHT_CONNECT_FAILED: " + (e?.message ?? String(e))
+        });
         return jsonResponse({ ok:false, code:"PLAYWRIGHT_CONNECT_FAILED", msg:"Cannot connect Playwright" }, 500);
       }
 
