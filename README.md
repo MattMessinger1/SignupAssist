@@ -71,6 +71,29 @@ To set this up:
 
 This helps with production debugging by providing more detailed logs for troubleshooting.
 
+## Deploying Edge Functions
+
+To deploy Supabase Edge Functions to your project (pyoszlfqqvljwocrrafl), follow these steps:
+
+1. **Prerequisites**: Ensure you have the [Supabase CLI](https://supabase.com/docs/reference/cli) installed and are logged in:
+   ```sh
+   supabase login
+   ```
+
+2. **Deploy all functions**: Run the deployment script to deploy all edge functions at once:
+   ```sh
+   scripts/deploy_edge_functions.sh
+   ```
+   This script will automatically deploy all functions in the `supabase/functions/` directory (excluding `_shared`). Already-deployed functions will be safely redeployed with the latest changes.
+
+3. **Deploy a single function**: If you only want to deploy a specific function:
+   ```sh
+   supabase functions deploy <function-name>
+   ```
+   For example: `supabase functions deploy cred-store`
+
+The deployment script skips the `_shared` folder and only deploys directories that contain an `index.*` file.
+
 ## How can I deploy this project?
 
 Simply open [Lovable](https://lovable.dev/projects/659643f5-6853-4cee-9629-8b9d4d6c7eb3) and click on Share -> Publish.
