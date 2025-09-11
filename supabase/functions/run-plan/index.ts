@@ -44,12 +44,13 @@ async function loadPlaywrightForDeno(plan_id?: string, supabase?: any) {
   try { await import("https://esm.sh/node/timers?target=deno"); } catch {}
   try { await import("https://esm.sh/node/stream?target=deno"); } catch {}
 
+  // Import Node ES2022 bundle (un-pinned, reliable with polyfills)
   try {
-    const mod = await import("https://esm.sh/v138/playwright-core@1.46.0/es2022");
+    const mod = await import("https://esm.sh/playwright-core@1.46.0/es2022");
     if (plan_id && supabase) {
       await supabase.from("plan_logs").insert({
         plan_id,
-        msg: "Playwright bundle loaded: es2022"
+        msg: "Playwright bundle loaded: es2022 (un-pinned)"
       });
     }
     return mod;
@@ -57,7 +58,7 @@ async function loadPlaywrightForDeno(plan_id?: string, supabase?: any) {
     if (plan_id && supabase) {
       await supabase.from("plan_logs").insert({
         plan_id,
-        msg: `PLAYWRIGHT LOAD ERROR: ${err.message}`
+        msg: "PLAYWRIGHT_IMPORT_FAILED: " + (err?.message ?? String(err))
       });
     }
     throw err;
