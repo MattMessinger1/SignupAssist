@@ -63,8 +63,6 @@ async function loadPlaywrightForDeno(plan_id?: string, supabase?: any) {
     throw err;
   }
 }
-}
-
 serve(async (req) => {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
