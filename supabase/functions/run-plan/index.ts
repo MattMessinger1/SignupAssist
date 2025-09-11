@@ -1,13 +1,13 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.57.4';
+import { chromium } from "playwright-core";
+import { createClient } from "@supabase/supabase-js";
 
 // ===== POLICY CONSTANTS =====
 const CAPTCHA_AUTOSOLVE_ENABLED = false; // NEVER call a CAPTCHA solver - SMS + verify link only
 const PER_USER_WEEKLY_LIMIT = 3; // Maximum plans per user per 7 days  
 const SMS_IMMEDIATE_ON_ACTION_REQUIRED = true; // Send SMS immediately when action required
 
-// Debug logging helper - set DEBUG_VERBOSE=1 in Supabase function secrets to enable verbose logs
-const DEBUG_VERBOSE = Deno.env.get("DEBUG_VERBOSE") === "1";
+// Debug logging helper - set DEBUG_VERBOSE=1 in environment to enable verbose logs
+const DEBUG_VERBOSE = process.env.DEBUG_VERBOSE === "1";
 function dlog(...args: any[]) { 
   if (DEBUG_VERBOSE) console.log(...args); 
 }
@@ -19,11 +19,8 @@ const corsHeaders = {
 };
 
 // Structured JSON response helper
-function jsonResponse(data: any, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { 'Content-Type': 'application/json', ...corsHeaders }
-  });
+function jsonResponse(res: any, data: any, status = 200) {
+  return res.status(status).json(data);
 }
 
 interface BrowserbaseSession {
@@ -35,39 +32,11 @@ interface BrowserbaseContext {
   id: string;
 }
 
-// --- Node shim + Playwright loader for Deno Edge ---
-async function loadPlaywrightForDeno(plan_id?: string, supabase?: any) {
-  if (!(globalThis as any).process) (globalThis as any).process = { env: {} } as any;
-
-  try { await import("https://esm.sh/node/events?target=deno"); } catch {}
-  try { await import("https://esm.sh/node/util?target=deno"); } catch {}
-  try { await import("https://esm.sh/node/timers?target=deno"); } catch {}
-  try { await import("https://esm.sh/node/stream?target=deno"); } catch {}
-
-  // Import Node ES2022 bundle (un-pinned, reliable with polyfills)
-  try {
-    const mod = await import("https://esm.sh/playwright-core@1.46.0/es2022");
-    if (plan_id && supabase) {
-      await supabase.from("plan_logs").insert({
-        plan_id,
-        msg: "Playwright bundle loaded: es2022 (un-pinned)"
-      });
-    }
-    return mod;
-  } catch (err) {
-    if (plan_id && supabase) {
-      await supabase.from("plan_logs").insert({
-        plan_id,
-        msg: "PLAYWRIGHT_IMPORT_FAILED: " + (err?.message ?? String(err))
-      });
-    }
-    throw err;
-  }
-}
-serve(async (req) => {
+// Start the server
+async function handler(req: any, res: any) {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders });
+    return res.status(200).set(corsHeaders).send();
   }
 
   try {
@@ -80,40 +49,40 @@ serve(async (req) => {
       'CRED_ENC_KEY'
     ];
     
-    const missingEnvVars = requiredEnvVars.filter(varName => !Deno.env.get(varName));
+    const missingEnvVars = requiredEnvVars.filter(varName => !process.env[varName]);
     if (missingEnvVars.length > 0) {
       console.error('Missing environment variables:', missingEnvVars);
-      return jsonResponse({ 
+      return res.status(500).json({ 
         ok: false, 
         code: 'MISSING_ENV', 
         msg: `Missing environment variables: ${missingEnvVars.join(', ')}`,
         details: { missingVars: missingEnvVars }
-      }, 500);
+      });
     }
 
     const supabase = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
     );
 
-    const authHeader = req.headers.get('Authorization');
+    const authHeader = req.headers.authorization;
     if (!authHeader) {
-      return jsonResponse({ 
+      return res.status(401).json({ 
         ok: false, 
         code: 'MISSING_AUTH', 
         msg: 'Authorization header required' 
-      }, 401);
+      });
     }
 
-    const body = await req.json().catch(() => ({}));
+    const body = req.body || {};
     const { plan_id } = body;
 
     if (!plan_id) {
-      return jsonResponse({ 
+      return res.status(400).json({ 
         ok: false, 
         code: 'MISSING_PLAN_ID', 
         msg: 'plan_id is required in request body' 
-      }, 400);
+      });
     }
 
     console.log(`Starting plan execution for plan_id: ${plan_id}`);
@@ -126,7 +95,7 @@ serve(async (req) => {
 
     // Check if this is a service role call (from scheduler) or user call
     const token = authHeader.replace('Bearer ', '');
-    const isServiceRole = token === Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    const isServiceRole = token === process.env.SUPABASE_SERVICE_ROLE_KEY;
     
     let plan;
     let planError;
@@ -149,11 +118,11 @@ serve(async (req) => {
           plan_id,
           msg: 'Error: Authentication failed'
         });
-        return jsonResponse({ 
+        return res.status(401).json({ 
           ok: false, 
           code: 'AUTH_FAILED', 
           msg: 'User authentication failed - invalid token' 
-        }, 401);
+        });
       }
 
       const { data, error } = await supabase
@@ -240,7 +209,7 @@ serve(async (req) => {
       }
 
       // Decrypt credentials using the encryption key
-      const CRED_ENC_KEY = Deno.env.get('CRED_ENC_KEY');
+      const CRED_ENC_KEY = process.env.CRED_ENC_KEY;
       if (!CRED_ENC_KEY) {
         const errorMsg = 'Encryption key not configured';
         await supabase.from('plan_logs').insert({
@@ -364,8 +333,8 @@ serve(async (req) => {
     const volunteer = isAuto(volunteerRaw) ? null : volunteerRaw;
 
     // Create Browserbase session and connect Playwright
-    const browserbaseApiKey = Deno.env.get("BROWSERBASE_API_KEY")!;
-    const browserbaseProjectId = Deno.env.get("BROWSERBASE_PROJECT_ID")!;
+    const browserbaseApiKey = process.env.BROWSERBASE_API_KEY!;
+    const browserbaseProjectId = process.env.BROWSERBASE_PROJECT_ID!;
     
     let session: any = null;
     let browser: any = null;
@@ -389,8 +358,11 @@ serve(async (req) => {
       // Connect Playwright over CDP
       let page: any = null;
       try {
-        // Load Playwright only when needed
-        const { chromium } = await loadPlaywrightForDeno(plan_id, supabase);
+        // Log Playwright bundle loading
+        await supabase.from("plan_logs").insert({
+          plan_id,
+          msg: "Playwright bundle loaded: native Node.js"
+        });
         
         await supabase.from("plan_logs").insert({
           plan_id,
@@ -675,18 +647,30 @@ serve(async (req) => {
   } catch (error) {
     console.error('Error in run-plan function:', error);
     
-    return jsonResponse({ 
+      return res.status(500).json({ 
+        ok: false, 
+        code: 'UNEXPECTED_ERROR', 
+        msg: 'Internal server error',
+        details: { 
+          error: error.message, 
+          stack: error.stack,
+          name: error.name 
+        }
+      });
+    }
+  } catch (outerError) {
+    console.error('Outer error in run-plan function:', outerError);
+    return res.status(500).json({ 
       ok: false, 
-      code: 'UNEXPECTED_ERROR', 
-      msg: 'Internal server error',
-      details: { 
-        error: error.message, 
-        stack: error.stack,
-        name: error.name 
-      }
-    }, 500);
+      code: 'FATAL_ERROR', 
+      msg: 'Fatal server error'
+    });
   }
-});
+}
+
+// Export the handler for Node.js environments
+export { handler };
+export default handler;
 
 // Helper function for Playwright-based login
 async function loginWithPlaywright(page: any, loginUrl: string, email: string, password: string) {
