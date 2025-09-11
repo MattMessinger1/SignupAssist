@@ -1,0 +1,11 @@
+{
+  "name": "cga-worker",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.mjs",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.57.4",
+    "express": "^4.19.2",
+    "playwright-core": "^1.46.0"
+  }
+}
