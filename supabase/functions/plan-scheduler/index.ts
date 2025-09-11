@@ -20,16 +20,17 @@ serve(async (req) => {
 
     console.log('Plan scheduler running...');
 
-    // Find plans whose open time has arrived (up to 5 minutes late)
+    // Find plans ready for execution (60 seconds before signup time, up to 5 minutes late)
     const now = new Date();
     const lateWindow = new Date(now.getTime() - 5 * 60 * 1000); // 5 minutes ago
+    const earlyExecutionTime = new Date(now.getTime() + 60 * 1000); // 60 seconds from now
 
     const { data: plansToExecute, error: fetchError } = await supabase
       .from('plans')
       .select('*')
       .eq('status', 'scheduled') // Only get scheduled plans (not cancelled, executed, etc.)
       .gte('open_time', lateWindow.toISOString()) // Not more than 5 minutes late
-      .lte('open_time', now.toISOString()); // Open time has arrived
+      .lte('open_time', earlyExecutionTime.toISOString()); // Execute 60s early
 
     if (fetchError) {
       console.error('Error fetching plans:', fetchError);
@@ -77,6 +78,12 @@ serve(async (req) => {
         await supabase.from('plan_logs').insert({
           plan_id: plan.id,
           msg: 'Automated execution started by scheduler'
+        });
+
+        // Log early execution strategy
+        await supabase.from('plan_logs').insert({
+          plan_id: plan.id,
+          msg: 'Scheduled run-plan 60s early to allow for cold start and session setup'
         });
 
         // Execute the plan by calling run-plan function
