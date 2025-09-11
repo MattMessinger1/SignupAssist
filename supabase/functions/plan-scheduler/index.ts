@@ -14,8 +14,8 @@ serve(async (req) => {
 
   try {
     const supabase = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+      Deno.env.get('SB_URL') ?? '',
+      Deno.env.get('SB_SERVICE_ROLE_KEY') ?? '',
     );
 
     console.log('Plan scheduler running...');
@@ -92,7 +92,7 @@ serve(async (req) => {
           .invoke('run-plan', {
             body: { plan_id: plan.id },
             headers: {
-              'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`
+              'Authorization': `Bearer ${Deno.env.get('SB_SERVICE_ROLE_KEY')}`
             }
           });
 
