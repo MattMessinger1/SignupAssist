@@ -50,8 +50,12 @@ async function loadPlaywrightForDeno() {
   //   (globalThis as any).Buffer = Buffer;
   // }
 
-  // Import a Playwright bundle that works in Deno (un-pinned, reliable)
-  return await import("https://esm.sh/playwright-core@1.46.0?target=deno");
+  // Import Node bundle (stable) + use polyfills
+  try {
+    return await import("https://esm.sh/v138/playwright-core@1.46.0/es2022");
+  } catch {
+    return await import("https://esm.sh/playwright-core@1.46.0/es2022");
+  }
 }
 
 serve(async (req) => {
