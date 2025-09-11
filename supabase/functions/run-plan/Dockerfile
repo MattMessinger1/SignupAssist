@@ -1,6 +1,5 @@
 FROM node:20-slim
 
-# Install dependencies for Playwright
 RUN apt-get update && apt-get install -y \
     wget \
     ca-certificates \
@@ -22,16 +21,11 @@ RUN apt-get update && apt-get install -y \
     libxshmfence1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working dir
 WORKDIR /app
 
-# Copy package files if you have them
 COPY package*.json ./
-
-# Install Node deps including Playwright
 RUN npm install && npx playwright install --with-deps chromium
 
-# Copy function source
 COPY . .
 
 CMD ["node", "index.js"]
