@@ -644,7 +644,7 @@ async function handleCheckoutWithCVV(sessionId: string, apiKey: string, plan: an
             plan_id: plan.id, 
             type: 'captcha' 
           },
-          headers: { Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}` }
+          headers: { Authorization: `Bearer ${Deno.env.get('SB_SERVICE_ROLE_KEY')}` }
         });
 
       if (captchaError || !captchaChallenge?.success) {
@@ -747,7 +747,7 @@ async function handleCheckoutWithCVV(sessionId: string, apiKey: string, plan: an
               plan_id: plan.id, 
               type: 'cvv' 
             },
-            headers: { Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}` }
+            headers: { Authorization: `Bearer ${Deno.env.get('SB_SERVICE_ROLE_KEY')}` }
           });
 
         if (challengeError || !challengeResponse?.success) {
