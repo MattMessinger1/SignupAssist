@@ -36,34 +36,33 @@ interface BrowserbaseContext {
 }
 
 // --- Node shim + Playwright loader for Deno Edge ---
-async function loadPlaywrightForDeno(supabase: any, plan_id: string) {
+async function loadPlaywrightForDeno(plan_id?: string, supabase?: any) {
   if (!(globalThis as any).process) (globalThis as any).process = { env: {} } as any;
 
-  await import("https://esm.sh/node/events?target=deno");
-  await import("https://esm.sh/node/util?target=deno");
-  await import("https://esm.sh/node/timers?target=deno");
-  await import("https://esm.sh/node/stream?target=deno");
+  try { await import("https://esm.sh/node/events?target=deno"); } catch {}
+  try { await import("https://esm.sh/node/util?target=deno"); } catch {}
+  try { await import("https://esm.sh/node/timers?target=deno"); } catch {}
+  try { await import("https://esm.sh/node/stream?target=deno"); } catch {}
 
-  // Optional, if you later hit Buffer errors:
-  if (!(globalThis as any).Buffer) {
-    const { Buffer } = await import("https://esm.sh/buffer@6.0.3?target=deno");
-    (globalThis as any).Buffer = Buffer;
-  }
-
-  // Import Node bundle (stable) + use polyfills
-  let playwright;
   try {
-    playwright = await import("https://esm.sh/v138/playwright-core@1.46.0/es2022");
-  } catch {
-    playwright = await import("https://esm.sh/playwright-core@1.46.0/es2022");
+    const mod = await import("https://esm.sh/v138/playwright-core@1.46.0/es2022");
+    if (plan_id && supabase) {
+      await supabase.from("plan_logs").insert({
+        plan_id,
+        msg: "Playwright bundle loaded: es2022"
+      });
+    }
+    return mod;
+  } catch (err) {
+    if (plan_id && supabase) {
+      await supabase.from("plan_logs").insert({
+        plan_id,
+        msg: `PLAYWRIGHT LOAD ERROR: ${err.message}`
+      });
+    }
+    throw err;
   }
-  
-  await supabase.from("plan_logs").insert({
-    plan_id,
-    msg: "Playwright bundle loaded: es2022"
-  });
-  
-  return playwright;
+}
 }
 
 serve(async (req) => {
@@ -392,7 +391,7 @@ serve(async (req) => {
       let page: any = null;
       try {
         // Load Playwright only when needed
-        const { chromium } = await loadPlaywrightForDeno(supabase, plan_id);
+        const { chromium } = await loadPlaywrightForDeno(plan_id, supabase);
         browser = await chromium.connectOverCDP(session.connectUrl);
 
         const ctx = browser.contexts()[0] ?? await browser.newContext();
