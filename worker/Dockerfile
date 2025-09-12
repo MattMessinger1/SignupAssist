@@ -1,6 +1,6 @@
 FROM node:20-slim
 
-WORKDIR /app
+WORKDIR /app/worker
 COPY package*.json ./
 RUN npm ci --omit=dev
 
