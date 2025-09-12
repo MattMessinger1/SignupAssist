@@ -8,6 +8,7 @@ import { ArrowLeft, ExternalLink, DollarSign, Calendar, Target, Clock, X } from 
 import Header from "@/components/Header";
 import LiveLog from "@/components/LiveLog";
 import { useToast } from "@/hooks/use-toast";
+import { runPlan } from "@/lib/api";
 
 interface Plan {
   id: string;
@@ -163,29 +164,17 @@ export default function PlanDetail() {
         description: "Attempting to execute plan for testing..."
       });
 
-      const { data, error } = await supabase.functions.invoke('run-plan', {
-        body: { plan_id: plan.id }
-      });
+      // Get the user's session token
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        throw new Error('Not authenticated');
+      }
 
-      if (error) {
-        console.error('Execution error:', error);
-        
-        // Extract detailed error information
-        let errorDetails = error.message;
-        if (error.context?.body) {
-          try {
-            const errorBody = typeof error.context.body === 'string' 
-              ? JSON.parse(error.context.body) 
-              : error.context.body;
-            
-            if (errorBody.code && errorBody.msg) {
-              errorDetails = `${errorBody.code}: ${errorBody.msg}`;
-              console.log('Error details:', errorBody.details);
-            }
-          } catch (parseError) {
-            console.log('Could not parse error response:', error.context.body);
-          }
-        }
+      const response = await runPlan(plan.id, session.access_token);
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const errorDetails = errorData.message || `HTTP ${response.status}: ${response.statusText}`;
         
         toast({
           variant: "destructive",
@@ -195,18 +184,7 @@ export default function PlanDetail() {
         return;
       }
 
-      if (data && !data.ok) {
-        const errorDetails = data.code 
-          ? `${data.code}: ${data.msg}` 
-          : data.msg || 'Unknown execution error';
-        
-        toast({
-          variant: "destructive",
-          title: "Execution Failed", 
-          description: errorDetails
-        });
-        return;
-      }
+      const data = await response.json();
 
       toast({
         title: "Success",
@@ -220,7 +198,7 @@ export default function PlanDetail() {
       toast({
         variant: "destructive",
         title: "Error",
-        description: "Failed to test execution"
+        description: "Failed to test execution: " + (error as Error).message
       });
     }
   };
