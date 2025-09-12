@@ -47,3 +47,4 @@ app.post("/run-plan", async (req, res) => {
 
 const port = process.env.PORT || 8080;
 app.listen(port, "0.0.0.0", () => console.log(`worker listening on 0.0.0.0:${port}`));
+
