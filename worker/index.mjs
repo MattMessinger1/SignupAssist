@@ -1,3 +1,11 @@
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("🔥 Unhandled Rejection:", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("🔥 Uncaught Exception:", err);
+});
+
 console.log("🚀 Worker starting up...");
 import express from "express";
 import { createClient } from "@supabase/supabase-js";
@@ -35,8 +43,21 @@ app.post("/run-plan", async (req, res) => {
   console.log("📡 /run-plan hit with plan_id:", plan_id);
 
   try {
+    console.log("🗄️ Attempting Supabase insert: worker: received job");
+    const supabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE_KEY
+    );
+
+    // Log that worker received the job
+    await supabase.from('plan_logs').insert({
+      plan_id: plan_id,
+      msg: 'Worker received job'
+    });
+
     console.log("🔑 Using Browserbase project:", process.env.BROWSERBASE_PROJECT_ID);
 
+    console.log("📡 Creating Browserbase session…");
     const bbResp = await fetch("https://api.browserbase.com/v1/sessions", {
       method: "POST",
       headers: {
@@ -49,6 +70,7 @@ app.post("/run-plan", async (req, res) => {
       })
     });
 
+    console.log("📡 Waiting for Browserbase response…");
     console.log("📡 Browserbase response status:", bbResp.status);
 
     if (!bbResp.ok) throw new Error("Failed to create Browserbase session");
@@ -56,9 +78,16 @@ app.post("/run-plan", async (req, res) => {
     const session = await bbResp.json();
     console.log("✅ Browserbase session created:", session.id);
 
+    console.log("🗄️ Logging Browserbase session to Supabase…");
+    await supabase.from('plan_logs').insert({
+      plan_id: plan_id,
+      msg: `Browserbase session created: ${session.id}`
+    });
+
+    console.log("✅ Browserbase session complete, responding to client.");
     res.json({ ok: true, sessionId: session.id, plan_id });
   } catch (err) {
-    console.error("❌ Browserbase error:", err);
+    console.error("❌ Error in /run-plan:", err);
     res.status(500).json({ ok: false, error: String(err) });
   }
 });
