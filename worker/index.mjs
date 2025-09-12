@@ -1,3 +1,4 @@
+console.log("🚀 Worker starting up...");
 import express from "express";
 
 const app = express();
