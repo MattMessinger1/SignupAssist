@@ -1,6 +1,6 @@
 FROM node:20-slim
 
-WORKDIR /app
+WORKDIR /app/worker
 
 # Install dependencies
 COPY worker/package*.json ./
