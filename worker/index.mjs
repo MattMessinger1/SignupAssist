@@ -5,8 +5,16 @@ import { createClient } from "@supabase/supabase-js";
 const app = express();
 app.use(express.json());
 
+// Health check route
+app.get("/health", (req, res) => {
+  res.json({ ok: true });
+});
+
 app.post("/run-plan", async (req, res) => {
-  const plan_id = req.body?.plan_id || "unknown";
+  const { plan_id } = req.body;
+  if (!plan_id) {
+    return res.status(400).json({ error: "plan_id is required" });
+  }
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
   try {
