@@ -86,15 +86,33 @@ serve(async (req) => {
           msg: 'Scheduled run-plan 60s early to allow for cold start and session setup'
         });
 
-        // Execute the plan by calling run-plan function
-        const { data: executionResult, error: executionError } = await supabase
-          .functions
-          .invoke('run-plan', {
-            body: { plan_id: plan.id },
+        // Execute the plan by calling Railway worker
+        const workerUrl = Deno.env.get("WORKER_BASE_URL");
+        if (!workerUrl) {
+          throw new Error("WORKER_BASE_URL not set");
+        }
+
+        let executionResult;
+        let executionError;
+
+        try {
+          const resp = await fetch(`${workerUrl}/run-plan`, {
+            method: "POST",
             headers: {
-              'Authorization': `Bearer ${Deno.env.get('SB_SERVICE_ROLE_KEY')}`
-            }
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${Deno.env.get("SB_SERVICE_ROLE_KEY")!}`
+            },
+            body: JSON.stringify({ plan_id: plan.id })
           });
+
+          executionResult = await resp.json();
+          
+          if (!resp.ok) {
+            executionError = new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+          }
+        } catch (error) {
+          executionError = error;
+        }
 
         if (executionError) {
           console.error(`Failed to execute plan ${plan.id}:`, executionError);
