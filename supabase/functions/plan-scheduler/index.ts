@@ -92,99 +92,30 @@ serve(async (req) => {
           throw new Error("WORKER_BASE_URL not set");
         }
 
-        let executionResult;
-        let executionError;
+        const resp = await fetch(`${workerUrl}/run-plan`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${Deno.env.get("SB_SERVICE_ROLE_KEY")!}`
+          },
+          body: JSON.stringify({ plan_id: plan.id })
+        });
 
-        try {
-          const resp = await fetch(`${workerUrl}/run-plan`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${Deno.env.get("SB_SERVICE_ROLE_KEY")!}`
-            },
-            body: JSON.stringify({ plan_id: plan.id })
-          });
-
-          executionResult = await resp.json();
-          
-          if (!resp.ok) {
-            executionError = new Error(`HTTP ${resp.status}: ${resp.statusText}`);
-          }
-        } catch (error) {
-          executionError = error;
+        if (!resp.ok) {
+          throw new Error(`Worker call failed: ${resp.status} ${resp.statusText}`);
         }
 
-        if (executionError) {
-          console.error(`Failed to execute plan ${plan.id}:`, executionError);
-          
-          // Extract detailed error information from the improved error response
-          let errorDetails = executionError.message;
-          if (executionError.context?.body) {
-            try {
-              const errorBody = typeof executionError.context.body === 'string' 
-                ? JSON.parse(executionError.context.body) 
-                : executionError.context.body;
-              
-              if (errorBody.code && errorBody.msg) {
-                errorDetails = `${errorBody.code}: ${errorBody.msg}`;
-                if (errorBody.details) {
-                  console.log(`Plan ${plan.id} error details:`, errorBody.details);
-                }
-              }
-            } catch (parseError) {
-              console.log(`Could not parse error body for plan ${plan.id}:`, executionError.context.body);
-            }
-          }
-          
-          // Update status back to failed if execution failed
-          await supabase
-            .from('plans')
-            .update({ status: 'failed' })
-            .eq('id', plan.id);
+        const executionResult = await resp.json();
+        console.log(`Worker response for plan ${plan.id}:`, executionResult);
 
-          await supabase.from('plan_logs').insert({
-            plan_id: plan.id,
-            msg: `Scheduled execution failed: ${errorDetails}`
-          });
-
-          results.push({ 
-            planId: plan.id, 
-            success: false, 
-            error: errorDetails 
-          });
-        } else if (executionResult && !executionResult.ok) {
-          // Handle structured error responses that don't throw but return ok: false
-          const errorDetails = executionResult.code 
-            ? `${executionResult.code}: ${executionResult.msg}` 
-            : executionResult.msg || 'Unknown execution error';
-          
-          console.error(`Plan ${plan.id} execution returned error:`, executionResult);
-          
-          await supabase
-            .from('plans')
-            .update({ status: 'failed' })
-            .eq('id', plan.id);
-
-          await supabase.from('plan_logs').insert({
-            plan_id: plan.id,
-            msg: `Scheduled execution failed: ${errorDetails}`
-          });
-
-          results.push({ 
-            planId: plan.id, 
-            success: false, 
-            error: errorDetails 
-          });
-        } else {
-          console.log(`Successfully executed plan ${plan.id}`);
-          executedCount++;
-          results.push({ 
-            planId: plan.id, 
-            success: true,
-            child_name: plan.child_name,
-            org: plan.org
-          });
-        }
+        console.log(`Successfully executed plan ${plan.id}`);
+        executedCount++;
+        results.push({ 
+          planId: plan.id, 
+          success: true,
+          child_name: plan.child_name,
+          org: plan.org
+        });
 
       } catch (error) {
         console.error(`Error processing plan ${plan.id}:`, error);
