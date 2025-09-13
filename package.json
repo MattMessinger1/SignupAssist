@@ -4,8 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node worker/index.mjs"
-  },
+  "start": "node worker/index.mjs",
+  "build:dev": "vite build --mode development"
+},
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.12",
     "@radix-ui/react-alert-dialog": "^1.1.15",
