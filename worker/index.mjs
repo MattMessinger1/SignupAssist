@@ -456,13 +456,29 @@ app.post("/run-plan", async (req, res) => {
         msg: error.message 
       });
     } finally {
-      // Clean up browser connection
+      // Clean up browser connection and Browserbase session
       if (browser) {
         try {
           await browser.close();
           await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Browser connection closed" });
         } catch (e) {
           console.error("Error closing browser:", e);
+        }
+      }
+      
+      // Close Browserbase session
+      if (session) {
+        try {
+          await fetch(`https://api.browserbase.com/v1/sessions/${session.id}`, {
+            method: "DELETE",
+            headers: { "X-BB-API-Key": process.env.BROWSERBASE_API_KEY }
+          });
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: "Worker: Browserbase session closed" 
+          });
+        } catch (e) {
+          console.error("Error closing Browserbase session:", e);
         }
       }
     }
@@ -966,6 +982,12 @@ async function executeSignup(page, plan, credentials, supabase) {
       return nordicResult;
     }
     
+    // Handle payment with saved card + CVV
+    const paymentResult = await handleSavedCardPayment(page, plan, credentials, supabase);
+    if (!paymentResult.success) {
+      return paymentResult;
+    }
+    
     // Check for success or action required
     const content = await page.content().catch(() => '');
     const currentUrl = page.url();
@@ -1011,6 +1033,226 @@ async function executeSignup(page, plan, credentials, supabase) {
       success: false, 
       error: `Signup execution failed: ${error.message}`,
       code: 'SIGNUP_EXECUTION_ERROR'
+    };
+  }
+}
+
+// Handle saved card payment with CVV
+async function handleSavedCardPayment(page, plan, credentials, supabase) {
+  try {
+    const plan_id = plan.id;
+    const EXTRAS = (plan?.extras ?? {});
+    const allowNoCvv = (EXTRAS.allow_no_cvv === true || EXTRAS.allow_no_cvv === 'true' || plan.allow_no_cvv === true);
+    
+    // Wait a moment for any page transitions
+    await page.waitForTimeout(2000);
+    
+    // Check if we're on a payment/checkout page
+    const content = await page.content().catch(() => '');
+    const currentUrl = page.url();
+    
+    const isPaymentPage = content.toLowerCase().includes('payment') || 
+                         content.toLowerCase().includes('checkout') ||
+                         content.toLowerCase().includes('billing') ||
+                         currentUrl.includes('payment') ||
+                         currentUrl.includes('checkout') ||
+                         currentUrl.includes('billing');
+    
+    if (!isPaymentPage) {
+      await supabase.from("plan_logs").insert({ 
+        plan_id, 
+        msg: "Worker: No payment page detected, continuing..." 
+      });
+      return { success: true };
+    }
+    
+    await supabase.from("plan_logs").insert({ 
+      plan_id, 
+      msg: "Worker: Payment page detected, processing..." 
+    });
+    
+    // Look for CVV field
+    const cvvSelectors = [
+      'input[name*="cvv"]',
+      'input[id*="cvv"]',
+      'input[name*="security"]',
+      'input[id*="security"]',
+      'input[placeholder*="CVV"]',
+      'input[placeholder*="Security"]',
+      'input[placeholder*="CVC"]',
+      'input[name*="cvc"]',
+      'input[id*="cvc"]'
+    ];
+    
+    let cvvField = null;
+    for (const selector of cvvSelectors) {
+      const fields = await page.$$(selector);
+      if (fields.length > 0) {
+        cvvField = fields[0];
+        break;
+      }
+    }
+    
+    if (cvvField) {
+      // CVV field found - need to fill it
+      if (!credentials.cvv || String(credentials.cvv).trim().length === 0) {
+        if (!allowNoCvv) {
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: "Worker: CVV required but not available" 
+          });
+          
+          // Update plan status to failed
+          await supabase
+            .from('plans')
+            .update({ status: 'failed' })
+            .eq('id', plan_id);
+          
+          return { 
+            success: false, 
+            error: 'CVV required but not available in credentials',
+            code: 'CVV_REQUIRED'
+          };
+        } else {
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: "Worker: CVV field present but allow_no_cvv is true, continuing..." 
+          });
+        }
+      } else {
+        // Fill CVV field
+        await cvvField.fill(String(credentials.cvv));
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: "Worker: CVV entered for payment" 
+        });
+      }
+    } else {
+      await supabase.from("plan_logs").insert({ 
+        plan_id, 
+        msg: "Worker: No CVV field found on payment page" 
+      });
+    }
+    
+    // Look for payment submit button
+    const paymentButtonSelectors = [
+      'button:has-text("Pay")',
+      'button:has-text("Complete")',
+      'button:has-text("Submit")',
+      'button:has-text("Place Order")',
+      'button:has-text("Confirm")',
+      'input[type="submit"][value*="Pay"]',
+      'input[type="submit"][value*="Complete"]',
+      'input[type="submit"][value*="Submit"]',
+      'button[type="submit"]',
+      'input[type="submit"]'
+    ];
+    
+    let paymentButtonClicked = false;
+    for (const selector of paymentButtonSelectors) {
+      const buttons = await page.$$(selector);
+      if (buttons.length > 0) {
+        await buttons[0].click();
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: "Worker: Payment submitted" 
+        });
+        paymentButtonClicked = true;
+        break;
+      }
+    }
+    
+    if (paymentButtonClicked) {
+      // Wait for payment processing
+      await page.waitForTimeout(5000);
+      
+      // Check for payment success/failure
+      const updatedContent = await page.content().catch(() => '');
+      const updatedUrl = page.url();
+      
+      // Check for payment failure indicators
+      const failureIndicators = [
+        'declined', 'failed', 'error', 'invalid', 'rejected'
+      ];
+      
+      const hasFailure = failureIndicators.some(indicator => 
+        updatedContent.toLowerCase().includes(indicator)
+      );
+      
+      if (hasFailure) {
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: "Worker: Payment failed - detected failure indicators" 
+        });
+        
+        // Update plan status to failed
+        await supabase
+          .from('plans')
+          .update({ status: 'failed' })
+          .eq('id', plan_id);
+        
+        return { 
+          success: false, 
+          error: 'Payment failed - card declined or invalid',
+          code: 'PAYMENT_FAILED'
+        };
+      }
+      
+      // Check for success indicators
+      const successIndicators = [
+        'success', 'complete', 'confirmed', 'thank you', 'receipt'
+      ];
+      
+      const hasSuccess = successIndicators.some(indicator => 
+        updatedContent.toLowerCase().includes(indicator)
+      ) || updatedUrl.includes('success') || updatedUrl.includes('complete');
+      
+      if (hasSuccess) {
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: "Worker: Payment completed successfully" 
+        });
+        
+        // Update plan status to completed
+        await supabase
+          .from('plans')
+          .update({ 
+            status: 'completed',
+            completed_at: new Date().toISOString()
+          })
+          .eq('id', plan_id);
+        
+        return { 
+          success: true,
+          requiresAction: false,
+          details: { message: 'Payment completed successfully' }
+        };
+      }
+    }
+    
+    await supabase.from("plan_logs").insert({ 
+      plan_id, 
+      msg: "Worker: Payment processing completed, status unclear" 
+    });
+    
+    return { success: true };
+    
+  } catch (error) {
+    await supabase.from("plan_logs").insert({ 
+      plan_id: plan.id, 
+      msg: `Worker: Payment processing error: ${error.message}` 
+    });
+    
+    // Update plan status to failed on error
+    await supabase
+      .from('plans')
+      .update({ status: 'failed' })
+      .eq('id', plan.id);
+    
+    return { 
+      success: false, 
+      error: `Payment processing failed: ${error.message}`,
+      code: 'PAYMENT_PROCESSING_ERROR'
     };
   }
 }
