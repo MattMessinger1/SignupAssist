@@ -1,4 +1,4 @@
-import { chromium } from "playwright-core";
+import { chromium } from "https://esm.sh/playwright-core@1.46.0";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.57.4";
 
 // ===== POLICY CONSTANTS =====
