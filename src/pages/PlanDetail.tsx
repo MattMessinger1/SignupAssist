@@ -22,6 +22,7 @@ interface Plan {
   base_url: string;
   child_name: string;
   phone?: string;
+  extras?: any;
 }
 
 export default function PlanDetail() {
@@ -357,6 +358,33 @@ export default function PlanDetail() {
                   </div>
                 )}
               </div>
+
+              {/* Nordic Kids Add-ons Section */}
+              {plan.extras && (plan.extras.nordicRental || plan.extras.nordicColorGroup || plan.extras.volunteer) && (
+                <div className="mb-6">
+                  <h3 className="font-medium text-lg mb-3 text-blue-800">Nordic Kids Add-ons</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 bg-blue-50/50 rounded-lg border border-blue-200">
+                    {plan.extras.nordicRental && (
+                      <div>
+                        <p className="font-medium text-blue-900">Rental Equipment</p>
+                        <p className="text-sm text-blue-700 capitalize">{plan.extras.nordicRental.replace('-', ' ')}</p>
+                      </div>
+                    )}
+                    {plan.extras.nordicColorGroup && (
+                      <div>
+                        <p className="font-medium text-blue-900">Color Group</p>
+                        <p className="text-sm text-blue-700 capitalize">{plan.extras.nordicColorGroup}</p>
+                      </div>
+                    )}
+                    {plan.extras.volunteer && (
+                      <div>
+                        <p className="font-medium text-blue-900">Volunteer Option</p>
+                        <p className="text-sm text-blue-700 capitalize">{plan.extras.volunteer}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {shouldShowPayButton && (
                 <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg">
