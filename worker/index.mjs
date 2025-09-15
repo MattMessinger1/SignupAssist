@@ -555,13 +555,350 @@ async function discoverSignupUrls(page, childName) {
   }
 }
 
+// Handle Nordic Kids add-on form automation
+async function handleNordicAddons(page, plan, supabase) {
+  try {
+    const plan_id = plan.id;
+    
+    // Wait a moment for any page transitions
+    await page.waitForTimeout(2000);
+    
+    // Check if we're on a Nordic add-on page
+    const content = await page.content().catch(() => '');
+    const currentUrl = page.url();
+    
+    // Look for Nordic-specific indicators
+    const isNordicPage = content.toLowerCase().includes('nordic') || 
+                        content.includes('add-on') || 
+                        content.includes('addon') ||
+                        currentUrl.includes('addon') ||
+                        currentUrl.includes('add-on');
+    
+    if (!isNordicPage) {
+      await supabase.from("plan_logs").insert({ 
+        plan_id, 
+        msg: "Worker: No Nordic add-on form detected, continuing..." 
+      });
+      return { success: true };
+    }
+    
+    await supabase.from("plan_logs").insert({ 
+      plan_id, 
+      msg: "Worker: Nordic add-on form detected, processing..." 
+    });
+    
+    const EXTRAS = (plan?.extras ?? {});
+    
+    // Handle Rental field
+    const rentalValue = EXTRAS.nordicRental;
+    if (rentalValue) {
+      // Look for rental dropdown or radio buttons
+      const rentalSelectors = [
+        'select[name*="rental"], select[id*="rental"]',
+        'input[type="radio"][name*="rental"]',
+        'input[type="checkbox"][name*="rental"]'
+      ];
+      
+      let rentalHandled = false;
+      for (const selector of rentalSelectors) {
+        const elements = await page.$$(selector);
+        if (elements.length > 0) {
+          const element = elements[0];
+          const tagName = await element.evaluate(el => el.tagName.toLowerCase());
+          
+          if (tagName === 'select') {
+            // Handle dropdown
+            const options = await element.$$('option');
+            for (const option of options) {
+              const optionText = await option.textContent();
+              if (optionText && optionText.toLowerCase().includes(rentalValue.toLowerCase())) {
+                await element.selectOption({ label: optionText });
+                await supabase.from("plan_logs").insert({ 
+                  plan_id, 
+                  msg: `Worker: Rental selected: ${optionText}` 
+                });
+                rentalHandled = true;
+                break;
+              }
+            }
+          } else {
+            // Handle radio buttons/checkboxes
+            for (const radioElement of elements) {
+              const label = await page.evaluate(el => {
+                const labelEl = document.querySelector(`label[for="${el.id}"]`);
+                return labelEl ? labelEl.textContent : el.closest('label')?.textContent || '';
+              }, radioElement);
+              
+              if (label && label.toLowerCase().includes(rentalValue.toLowerCase())) {
+                await radioElement.click();
+                await supabase.from("plan_logs").insert({ 
+                  plan_id, 
+                  msg: `Worker: Rental selected: ${label}` 
+                });
+                rentalHandled = true;
+                break;
+              }
+            }
+          }
+          
+          if (rentalHandled) break;
+        }
+      }
+      
+      if (!rentalHandled) {
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: `Worker: Error: Required rental option '${rentalValue}' not found` 
+        });
+        return { 
+          success: false, 
+          error: `Required rental option '${rentalValue}' not found`,
+          code: 'RENTAL_REQUIRED'
+        };
+      }
+    }
+    
+    // Handle Color Group field
+    const colorGroupValue = EXTRAS.nordicColorGroup;
+    const colorGroupSelectors = [
+      'select[name*="color"], select[id*="color"]',
+      'input[type="radio"][name*="color"]',
+      'input[type="checkbox"][name*="color"]'
+    ];
+    
+    let colorGroupHandled = false;
+    for (const selector of colorGroupSelectors) {
+      const elements = await page.$$(selector);
+      if (elements.length > 0) {
+        const element = elements[0];
+        const tagName = await element.evaluate(el => el.tagName.toLowerCase());
+        
+        if (tagName === 'select') {
+          const options = await element.$$('option');
+          let selectedOption = null;
+          
+          // Try to find matching color group
+          if (colorGroupValue) {
+            for (const option of options) {
+              const optionText = await option.textContent();
+              if (optionText && optionText.toLowerCase().includes(colorGroupValue.toLowerCase())) {
+                selectedOption = optionText;
+                await element.selectOption({ label: optionText });
+                break;
+              }
+            }
+          }
+          
+          // Default to first option if not found or not specified
+          if (!selectedOption && options.length > 1) {
+            const firstOption = await options[1].textContent(); // Skip first empty option
+            await element.selectOption({ index: 1 });
+            selectedOption = firstOption;
+          }
+          
+          if (selectedOption) {
+            await supabase.from("plan_logs").insert({ 
+              plan_id, 
+              msg: `Worker: Color group: ${selectedOption}` 
+            });
+            colorGroupHandled = true;
+          }
+        } else {
+          // Handle radio buttons - select first or matching
+          let selectedLabel = null;
+          
+          if (colorGroupValue) {
+            for (const radioElement of elements) {
+              const label = await page.evaluate(el => {
+                const labelEl = document.querySelector(`label[for="${el.id}"]`);
+                return labelEl ? labelEl.textContent : el.closest('label')?.textContent || '';
+              }, radioElement);
+              
+              if (label && label.toLowerCase().includes(colorGroupValue.toLowerCase())) {
+                await radioElement.click();
+                selectedLabel = label;
+                break;
+              }
+            }
+          }
+          
+          // Default to first option
+          if (!selectedLabel && elements.length > 0) {
+            await elements[0].click();
+            selectedLabel = await page.evaluate(el => {
+              const labelEl = document.querySelector(`label[for="${el.id}"]`);
+              return labelEl ? labelEl.textContent : el.closest('label')?.textContent || 'First option';
+            }, elements[0]);
+          }
+          
+          if (selectedLabel) {
+            await supabase.from("plan_logs").insert({ 
+              plan_id, 
+              msg: `Worker: Color group: ${selectedLabel}` 
+            });
+            colorGroupHandled = true;
+          }
+        }
+        
+        if (colorGroupHandled) break;
+      }
+    }
+    
+    // Handle Volunteer field
+    const volunteerValue = EXTRAS.volunteer;
+    const volunteerSelectors = [
+      'input[type="checkbox"][name*="volunteer"]',
+      'input[type="radio"][name*="volunteer"]',
+      'select[name*="volunteer"], select[id*="volunteer"]'
+    ];
+    
+    let volunteerHandled = false;
+    for (const selector of volunteerSelectors) {
+      const elements = await page.$$(selector);
+      if (elements.length > 0) {
+        const element = elements[0];
+        const tagName = await element.evaluate(el => el.tagName.toLowerCase());
+        
+        if (tagName === 'select') {
+          let selectedOption = null;
+          const options = await element.$$('option');
+          
+          if (volunteerValue) {
+            for (const option of options) {
+              const optionText = await option.textContent();
+              if (optionText && optionText.toLowerCase().includes(volunteerValue.toLowerCase())) {
+                await element.selectOption({ label: optionText });
+                selectedOption = optionText;
+                break;
+              }
+            }
+          }
+          
+          // Default to first non-empty option
+          if (!selectedOption && options.length > 1) {
+            const firstOption = await options[1].textContent();
+            await element.selectOption({ index: 1 });
+            selectedOption = firstOption;
+          }
+          
+          if (selectedOption) {
+            await supabase.from("plan_logs").insert({ 
+              plan_id, 
+              msg: `Worker: Volunteer selected: ${selectedOption}` 
+            });
+            volunteerHandled = true;
+          }
+        } else {
+          // Handle checkboxes/radio buttons
+          let selectedLabel = null;
+          
+          if (volunteerValue) {
+            for (const checkboxElement of elements) {
+              const label = await page.evaluate(el => {
+                const labelEl = document.querySelector(`label[for="${el.id}"]`);
+                return labelEl ? labelEl.textContent : el.closest('label')?.textContent || '';
+              }, checkboxElement);
+              
+              if (label && label.toLowerCase().includes(volunteerValue.toLowerCase())) {
+                await checkboxElement.click();
+                selectedLabel = label;
+                break;
+              }
+            }
+          }
+          
+          // Default to first checkbox
+          if (!selectedLabel && elements.length > 0) {
+            await elements[0].click();
+            selectedLabel = await page.evaluate(el => {
+              const labelEl = document.querySelector(`label[for="${el.id}"]`);
+              return labelEl ? labelEl.textContent : el.closest('label')?.textContent || 'First option';
+            }, elements[0]);
+          }
+          
+          if (selectedLabel) {
+            await supabase.from("plan_logs").insert({ 
+              plan_id, 
+              msg: `Worker: Volunteer selected: ${selectedLabel}` 
+            });
+            volunteerHandled = true;
+          }
+        }
+        
+        if (volunteerHandled) break;
+      }
+    }
+    
+    // Handle donation - always skip by filling "0"
+    const donationSelectors = [
+      'input[name*="donation"], input[id*="donation"]',
+      'input[name*="donate"], input[id*="donate"]',
+      'input[placeholder*="donation"], input[placeholder*="donate"]'
+    ];
+    
+    for (const selector of donationSelectors) {
+      const elements = await page.$$(selector);
+      for (const element of elements) {
+        const inputType = await element.getAttribute('type');
+        if (inputType === 'text' || inputType === 'number' || !inputType) {
+          await element.fill('0');
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: "Worker: Donation skipped (0)" 
+          });
+          break;
+        }
+      }
+    }
+    
+    // Look for Next/Continue button
+    const nextButtonSelectors = [
+      'button:has-text("Next")',
+      'button:has-text("Continue")',
+      'input[type="submit"][value*="Next"]',
+      'input[type="submit"][value*="Continue"]',
+      'button[type="submit"]',
+      'input[type="submit"]'
+    ];
+    
+    let nextButtonClicked = false;
+    for (const selector of nextButtonSelectors) {
+      const buttons = await page.$$(selector);
+      if (buttons.length > 0) {
+        await buttons[0].click();
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: "Worker: Nordic add-ons completed, clicked Next/Continue" 
+        });
+        nextButtonClicked = true;
+        break;
+      }
+    }
+    
+    if (nextButtonClicked) {
+      await page.waitForTimeout(3000); // Wait for navigation
+    }
+    
+    return { success: true };
+    
+  } catch (error) {
+    await supabase.from("plan_logs").insert({ 
+      plan_id: plan.id, 
+      msg: `Worker: Nordic add-on error: ${error.message}` 
+    });
+    return { 
+      success: false, 
+      error: `Nordic add-on processing failed: ${error.message}`,
+      code: 'NORDIC_ADDON_ERROR'
+    };
+  }
+}
+
 // Start server
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Worker listening on 0.0.0.0:${PORT}`);
 });
-
-// Execute signup process
 async function executeSignup(page, plan, credentials, supabase) {
   try {
     const plan_id = plan.id;
@@ -621,6 +958,12 @@ async function executeSignup(page, plan, credentials, supabase) {
         plan_id, 
         msg: "Worker: Signup form submitted" 
       });
+    }
+    
+    // Check for Nordic Kids add-on form after initial signup
+    const nordicResult = await handleNordicAddons(page, plan, supabase);
+    if (!nordicResult.success) {
+      return nordicResult;
     }
     
     // Check for success or action required
