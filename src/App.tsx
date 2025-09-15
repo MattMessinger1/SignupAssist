@@ -20,12 +20,7 @@ const App = () => (
     <TooltipProvider>
       <Toaster />
       <Sonner />
-      <BrowserRouter 
-        future={{
-          v7_startTransition: true,
-          v7_relativeSplatPath: true
-        }}
-      >
+      <BrowserRouter>
         <Routes>
           <Route path="/" element={<AuthGate><div /></AuthGate>} />
           <Route path="/login" element={<Auth />} />
