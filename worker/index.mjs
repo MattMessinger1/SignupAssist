@@ -6,13 +6,24 @@ import { chromium } from "playwright-core";
 const app = express();
 app.use(express.json());
 
+// ===== POLICY CONSTANTS =====
+const CAPTCHA_AUTOSOLVE_ENABLED = false; // NEVER call a CAPTCHA solver - SMS + verify link only
+const PER_USER_WEEKLY_LIMIT = 3; // Maximum plans per user per 7 days  
+const SMS_IMMEDIATE_ON_ACTION_REQUIRED = true; // Send SMS immediately when action required
+
+// Debug logging helper - set DEBUG_VERBOSE=1 in environment to enable verbose logs
+const DEBUG_VERBOSE = process.env.DEBUG_VERBOSE === "1";
+function dlog(...args) { 
+  if (DEBUG_VERBOSE) console.log(...args); 
+}
+
 // Health check
 app.get("/health", (req, res) => {
   console.log("⚡ Health check hit");
   res.json({ ok: true });
 });
 
-// Run-plan endpoint
+// Run-plan endpoint - full automation logic
 app.post("/run-plan", async (req, res) => {
   const plan_id = req.body?.plan_id || "unknown";
   console.log(`🎯 /run-plan request for plan_id: ${plan_id}`);
@@ -22,46 +33,644 @@ app.post("/run-plan", async (req, res) => {
   }
 
   try {
+    // ===== UPFRONT ENVIRONMENT VALIDATION =====
+    const requiredEnvVars = [
+      'SUPABASE_URL',
+      'SUPABASE_SERVICE_ROLE_KEY', 
+      'BROWSERBASE_API_KEY',
+      'BROWSERBASE_PROJECT_ID',
+      'CRED_ENC_KEY'
+    ];
+    
+    const missingEnvVars = requiredEnvVars.filter(varName => !process.env[varName]);
+    if (missingEnvVars.length > 0) {
+      console.error('Missing environment variables:', missingEnvVars);
+      return res.status(500).json({ 
+        ok: false, 
+        code: 'MISSING_ENV', 
+        msg: `Missing environment variables: ${missingEnvVars.join(', ')}`,
+        details: { missingVars: missingEnvVars }
+      });
+    }
+
     const supabase = createClient(
       process.env.SUPABASE_URL,
       process.env.SUPABASE_SERVICE_ROLE_KEY
     );
 
-    await supabase.from("plan_logs").insert({ plan_id, msg: "worker: received job" });
+    console.log(`Starting plan execution for plan_id: ${plan_id}`);
 
-    // Create Browserbase session
-    const bbResp = await fetch("https://api.browserbase.com/v1/sessions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-BB-API-Key": process.env.BROWSERBASE_API_KEY
-      },
-      body: JSON.stringify({
-        projectId: process.env.BROWSERBASE_PROJECT_ID,
-        keepAlive: true
-      })
+    // Log the start of the attempt
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: 'Worker: Attempt started - loading plan details...'
     });
 
-    if (!bbResp.ok) throw new Error("Failed to create Browserbase session");
-    const session = await bbResp.json();
-    await supabase.from("plan_logs").insert({ plan_id, msg: `worker: session ${session.id}` });
+    // Fetch plan details using service role
+    const { data: plan, error: planError } = await supabase
+      .from('plans')
+      .select('*')
+      .eq('id', plan_id)
+      .maybeSingle();
 
-    // Connect Playwright to remote browser
-    const browser = await chromium.connectOverCDP(session.connectUrl);
-    const ctx = browser.contexts()[0] ?? await browser.newContext();
-    const page = ctx.pages()[0] ?? await ctx.newPage();
+    if (planError || !plan) {
+      const errorMsg = 'Plan not found or access denied';
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker Error: ${errorMsg}`
+      });
+      
+      return res.status(404).json({ 
+        ok: false, 
+        code: 'PLAN_NOT_FOUND', 
+        msg: errorMsg,
+        details: { plan_id, planError: planError?.message }
+      });
+    }
 
-    await page.goto("https://example.com");
-    await supabase.from("plan_logs").insert({ plan_id, msg: "worker: navigated to example.com" });
+    // ===== SINGLE-EXECUTION POLICY =====
+    if (plan.status !== 'scheduled' && plan.status !== 'action_required' && plan.status !== 'executing') {
+      console.log(`Ignoring execution request for plan ${plan_id} with status '${plan.status}' - only 'scheduled', 'action_required', or 'executing' plans can be executed`);
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: Execution ignored - plan status is '${plan.status}' (cannot execute ${plan.status === 'cancelled' ? 'cancelled' : plan.status} plans)`
+      });
+      
+      return res.status(200).json({ 
+        ok: false, 
+        code: 'INVALID_PLAN_STATUS', 
+        msg: `Plan execution ignored - status is '${plan.status}'`,
+        details: { 
+          current_status: plan.status, 
+          allowed_statuses: ['scheduled', 'action_required', 'executing'] 
+        }
+      });
+    }
 
-    await browser.close();
+    // Log plan details found
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: Plan loaded: ${plan.child_name} at ${plan.org} - proceeding with execution`
+    });
 
-    res.json({ ok: true, sessionId: session.id, plan_id });
-  } catch (err) {
-    console.error("❌ Error in /run-plan:", err);
-    res.status(500).json({ ok: false, error: String(err) });
+    // Update plan status to executing
+    await supabase
+      .from('plans')
+      .update({ status: 'executing' })
+      .eq('id', plan_id);
+
+    // Fetch credentials using service role
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: 'Worker: Retrieving account credentials...'
+    });
+
+    const { data: credentialData, error: credError } = await supabase
+      .from('account_credentials')
+      .select('id, user_id, alias, provider_slug, email_enc, password_enc, cvv_enc')
+      .eq('id', plan.credential_id)
+      .eq('user_id', plan.user_id)
+      .single();
+
+    if (credError || !credentialData) {
+      const errorMsg = 'Failed to retrieve credentials';
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker Error: ${errorMsg}`
+      });
+      
+      return res.status(404).json({ 
+        ok: false, 
+        code: 'CREDENTIALS_NOT_FOUND', 
+        msg: errorMsg,
+        details: { credential_id: plan.credential_id, credError: credError?.message }
+      });
+    }
+
+    // Decrypt credentials using the encryption key
+    const CRED_ENC_KEY = process.env.CRED_ENC_KEY;
+    if (!CRED_ENC_KEY) {
+      const errorMsg = 'Encryption key not configured';
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker Error: ${errorMsg}`
+      });
+      
+      return res.status(500).json({ 
+        ok: false, 
+        code: 'MISSING_ENCRYPTION_KEY', 
+        msg: errorMsg 
+      });
+    }
+
+    // Decrypt function (matching cred-store implementation)
+    async function decrypt(encryptedString) {
+      // Parse the JSON string to get the encrypted data object
+      const encryptedData = JSON.parse(encryptedString);
+      
+      // Decode base64 key to bytes (matching cred-store)
+      const keyBytes = Uint8Array.from(atob(CRED_ENC_KEY), c => c.charCodeAt(0));
+      
+      const key = await crypto.subtle.importKey(
+        'raw',
+        keyBytes,
+        { name: 'AES-GCM' },
+        false,
+        ['decrypt']
+      );
+
+      const iv = new Uint8Array(encryptedData.iv);
+      const ct = new Uint8Array(encryptedData.ct);
+
+      const decrypted = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv },
+        key,
+        ct
+      );
+
+      const decoder = new TextDecoder();
+      return decoder.decode(decrypted);
+    }
+
+    let credentials;
+    try {
+      const email = await decrypt(credentialData.email_enc);
+      const password = await decrypt(credentialData.password_enc);
+      const cvv = credentialData.cvv_enc ? await decrypt(credentialData.cvv_enc) : null;
+
+      credentials = {
+        alias: credentialData.alias,
+        email,
+        password,
+        cvv
+      };
+    } catch (decryptError) {
+      const errorMsg = 'Failed to decrypt credentials';
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker Error: ${errorMsg}`
+      });
+      
+      return res.status(500).json({ 
+        ok: false, 
+        code: 'DECRYPTION_FAILED', 
+        msg: errorMsg,
+        details: { error: decryptError.message }
+      });
+    }
+
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: Using account: ${credentials.alias} (${credentials.email})`
+    });
+
+    // ===== RESOLVE EXTRAS / AUTOS =====
+    const EXTRAS = (plan?.extras ?? {});
+
+    // Support both extras.* and top-level fallback (back-compat)
+    function isAuto(v) {
+      return v === null || v === undefined || v === '' || String(v).trim() === '__AUTO__';
+    }
+
+    const nordicRental = isAuto(EXTRAS.nordicRental) ? null : (EXTRAS.nordicRental ?? null);
+    const nordicColorGroupRaw = (EXTRAS.nordicColorGroup ?? null);
+    const volunteerRaw = (EXTRAS.volunteer ?? null);
+    const allowNoCvv =
+      (EXTRAS.allow_no_cvv === true || EXTRAS.allow_no_cvv === 'true' || plan.allow_no_cvv === true);
+
+    // Normalize autos
+    const nordicColorGroup = isAuto(nordicColorGroupRaw) ? null : nordicColorGroupRaw;
+    const volunteer = isAuto(volunteerRaw) ? null : volunteerRaw;
+
+    // Create Browserbase session and connect Playwright
+    const browserbaseApiKey = process.env.BROWSERBASE_API_KEY;
+    const browserbaseProjectId = process.env.BROWSERBASE_PROJECT_ID;
+    
+    let session = null;
+    let browser = null;
+    
+    try {
+      const sessionResp = await fetch("https://api.browserbase.com/v1/sessions", {
+        method: "POST",
+        headers: { "X-BB-API-Key": browserbaseApiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: browserbaseProjectId })
+      });
+      if (!sessionResp.ok) {
+        const t = await sessionResp.text().catch(()=>"");
+        console.error("Session create failed:", sessionResp.status, sessionResp.statusText, t);
+        await supabase.from("plan_logs").insert({ plan_id, msg: `Worker Error: Browserbase session failed ${sessionResp.status}` });
+        return res.status(500).json({ ok:false, code:"BROWSERBASE_SESSION_FAILED", msg:"Cannot create browser session" });
+      }
+      session = await sessionResp.json();
+      dlog("Browserbase session created:", session);
+      await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: ✅ Browserbase session created: ${session.id}` });
+
+      // Connect Playwright over CDP
+      let page = null;
+      try {
+        await supabase.from("plan_logs").insert({
+          plan_id,
+          msg: "Worker: PLAYWRIGHT_CONNECT_START"
+        });
+        
+        browser = await chromium.connectOverCDP(session.connectUrl);
+        
+        await supabase.from("plan_logs").insert({
+          plan_id,
+          msg: "Worker: PLAYWRIGHT_CONNECT_SUCCESS"
+        });
+
+        const ctx = browser.contexts()[0] ?? await browser.newContext();
+        page = ctx.pages()[0] ?? await ctx.newPage();
+
+        await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Playwright connected" });
+        dlog("Connected Playwright to session:", session.id);
+        await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Playwright connected to Browserbase" });
+      } catch (e) {
+        console.error("Playwright connect error:", e);
+        await supabase.from("plan_logs").insert({
+          plan_id,
+          msg: "Worker: PLAYWRIGHT_CONNECT_FAILED: " + (e?.message ?? String(e))
+        });
+        return res.status(500).json({ ok:false, code:"PLAYWRIGHT_CONNECT_FAILED", msg:"Cannot connect Playwright" });
+      }
+
+      // Compute login URL from plan
+      const subdomain = (plan.org || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      const loginUrl = `https://${subdomain}.skiclubpro.team/user/login`;
+      
+      // Perform login with Playwright
+      await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Navigating to login: ${loginUrl}` });
+      const loginResult = await loginWithPlaywright(page, loginUrl, credentials.email, credentials.password);
+      if (!loginResult.success) {
+        await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Login failed: ${loginResult.error}` });
+        return res.status(400).json({ ok:false, code:"LOGIN_FAILED", msg: loginResult.error });
+      }
+      await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Login successful" });
+
+      //// ===== PAYMENT READINESS GATE =====
+      await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Checking payment readiness…' });
+
+      // We handle saved-card + CVV flows; allow override if site never asks for CVV.
+      const hasCVV = !!(credentials?.cvv && String(credentials.cvv).trim().length > 0);
+      if (!allowNoCvv && !hasCVV) {
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: 'Worker: Payment not ready: saved card CVV required or set extras.allow_no_cvv=true'
+        });
+        return res.status(422).json({
+          ok: false,
+          code: 'PAYMENT_NOT_READY',
+          msg: 'Saved card CVV required (or set extras.allow_no_cvv=true if checkout never requests CVV).'
+        });
+      }
+
+      // Optional probe: if full card fields appear, we can't proceed (we don't collect PAN)
+      try {
+        const origin = plan.base_url ? new URL(plan.base_url) : new URL(`https://${subdomain}.skiclubpro.team/`);
+        const cartUrl = new URL('/cart', origin).toString();
+        await page.goto(cartUrl, { waitUntil: 'domcontentloaded' });
+        const probe = (await page.content()).toLowerCase();
+        const fullCard = /(card number|cardnumber|name on card|expiration|exp month|exp year)/i.test(probe);
+        if (fullCard && !allowNoCvv) {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: 'Worker: Detected full-card fields; saved card required. Aborting.'
+          });
+          return res.status(422).json({
+            ok: false,
+            code: 'PAYMENT_NOT_READY',
+            msg: 'Checkout requires full card entry. Save a card on your SkiClubPro account first.'
+          });
+        }
+      } catch { /* non-fatal */ }
+
+      // Navigate to target page
+      const targetUrl = plan.discovered_url || plan.base_url || `https://${subdomain}.skiclubpro.team/dashboard`;
+      await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Opening target page: ${targetUrl}` });
+      await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
+
+      // If no discovered URL, run discovery with Playwright
+      if (!plan.discovered_url) {
+        await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Starting discovery..." });
+        
+        try {
+          const discoveredUrls = await discoverSignupUrls(page, plan.child_name);
+          
+          if (discoveredUrls.length === 0) {
+            await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: No signup URLs found for child" });
+            return res.status(404).json({ 
+              ok: false, 
+              code: 'NO_SIGNUP_URLS', 
+              msg: 'No matching signup opportunities found for this child' 
+            });
+          }
+          
+          // Update the plan with discovered URLs
+          const discoveredUrl = discoveredUrls[0];
+          await supabase
+            .from('plans')
+            .update({ discovered_url: discoveredUrl })
+            .eq('id', plan_id);
+            
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: `Worker: Discovered signup URL: ${discoveredUrl}` 
+          });
+          
+          plan.discovered_url = discoveredUrl;
+        } catch (discoveryError) {
+          console.error("Discovery error:", discoveryError);
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: `Worker: Discovery failed: ${discoveryError.message}` 
+          });
+          return res.status(500).json({ 
+            ok: false, 
+            code: 'DISCOVERY_FAILED', 
+            msg: discoveryError.message 
+          });
+        }
+      }
+
+      // Navigate to discovered/target URL
+      const finalUrl = plan.discovered_url || targetUrl;
+      await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Navigating to signup: ${finalUrl}` });
+      await page.goto(finalUrl, { waitUntil: "domcontentloaded" });
+
+      // Execute the signup
+      const signupResult = await executeSignup(page, plan, credentials, supabase);
+      
+      if (!signupResult.success) {
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: `Worker: Signup failed: ${signupResult.error}` 
+        });
+        return res.status(signupResult.statusCode || 400).json({ 
+          ok: false, 
+          code: signupResult.code || 'SIGNUP_FAILED', 
+          msg: signupResult.error,
+          details: signupResult.details 
+        });
+      }
+
+      await supabase.from("plan_logs").insert({ 
+        plan_id, 
+        msg: "Worker: Signup completed successfully" 
+      });
+
+      // Update plan status
+      await supabase
+        .from('plans')
+        .update({ 
+          status: signupResult.requiresAction ? 'action_required' : 'completed',
+          completed_at: signupResult.requiresAction ? null : new Date().toISOString()
+        })
+        .eq('id', plan_id);
+
+      res.json({ 
+        ok: true, 
+        msg: signupResult.requiresAction ? 'Signup initiated - action required' : 'Signup completed successfully',
+        requiresAction: signupResult.requiresAction,
+        details: signupResult.details,
+        sessionId: session.id,
+        plan_id
+      });
+
+    } catch (error) {
+      console.error("Execution error:", error);
+      await supabase.from("plan_logs").insert({ 
+        plan_id, 
+        msg: `Worker: Execution error: ${error.message}` 
+      });
+      
+      // Update plan status to failed
+      await supabase
+        .from('plans')
+        .update({ status: 'failed' })
+        .eq('id', plan_id);
+
+      res.status(500).json({ 
+        ok: false, 
+        code: 'EXECUTION_ERROR', 
+        msg: error.message 
+      });
+    } finally {
+      // Clean up browser connection
+      if (browser) {
+        try {
+          await browser.close();
+          await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Browser connection closed" });
+        } catch (e) {
+          console.error("Error closing browser:", e);
+        }
+      }
+    }
+  } catch (error) {
+    console.error("❌ Worker error in /run-plan:", error);
+    res.status(500).json({ ok: false, error: String(error) });
   }
 });
+
+// Login with Playwright
+async function loginWithPlaywright(page, loginUrl, email, password) {
+  try {
+    await page.goto(loginUrl, { waitUntil: 'domcontentloaded' });
+    
+    // Wait for email field and fill it
+    await page.waitForSelector('input[type="email"], input[name*="email"], input[id*="email"]', { timeout: 10000 });
+    await page.fill('input[type="email"], input[name*="email"], input[id*="email"]', email);
+    
+    // Fill password field
+    await page.fill('input[type="password"], input[name*="password"], input[id*="password"]', password);
+    
+    // Click login button
+    await page.click('button[type="submit"], input[type="submit"], button:has-text("Login"), button:has-text("Sign in")');
+    
+    // Wait for navigation or success indicator
+    await page.waitForTimeout(3000);
+    
+    // Check if we're logged in (look for dashboard or profile indicators)
+    const currentUrl = page.url();
+    const content = await page.content();
+    
+    if (currentUrl.includes('dashboard') || currentUrl.includes('profile') || 
+        content.includes('logout') || content.includes('sign out')) {
+      return { success: true };
+    }
+    
+    // Check for error messages
+    const errorSelectors = [
+      '.error', '.alert-danger', '[class*="error"]', '[class*="invalid"]'
+    ];
+    
+    for (const selector of errorSelectors) {
+      const errorElement = await page.$(selector);
+      if (errorElement) {
+        const errorText = await errorElement.textContent();
+        if (errorText && errorText.trim()) {
+          return { success: false, error: `Login failed: ${errorText.trim()}` };
+        }
+      }
+    }
+    
+    return { success: false, error: 'Login failed - please check credentials' };
+  } catch (error) {
+    return { success: false, error: `Login error: ${error.message}` };
+  }
+}
+
+// Discover signup URLs
+async function discoverSignupUrls(page, childName) {
+  const urls = [];
+  
+  try {
+    // Look for links containing signup, register, events, etc.
+    const linkSelectors = [
+      `a[href*="signup"]:has-text("${childName}")`,
+      `a[href*="register"]:has-text("${childName}")`,
+      `a[href*="event"]:has-text("${childName}")`,
+      'a[href*="signup"]',
+      'a[href*="register"]',
+      'a[href*="event"]'
+    ];
+    
+    for (const selector of linkSelectors) {
+      const links = await page.$$(selector);
+      for (const link of links) {
+        const href = await link.getAttribute('href');
+        if (href) {
+          const fullUrl = new URL(href, page.url()).toString();
+          if (!urls.includes(fullUrl)) {
+            urls.push(fullUrl);
+          }
+        }
+      }
+    }
+    
+    return urls;
+  } catch (error) {
+    console.error("Discovery error:", error);
+    return [];
+  }
+}
+
+// Start server
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`✅ Worker listening on 0.0.0.0:${PORT}`);
+});
+
+// Execute signup process
+async function executeSignup(page, plan, credentials, supabase) {
+  try {
+    const plan_id = plan.id;
+    
+    await supabase.from("plan_logs").insert({ 
+      plan_id, 
+      msg: "Worker: Starting signup process..." 
+    });
+    
+    // Look for signup forms
+    const forms = await page.$$('form');
+    
+    if (forms.length === 0) {
+      return { 
+        success: false, 
+        error: 'No signup form found on page',
+        code: 'NO_SIGNUP_FORM'
+      };
+    }
+    
+    // Try to fill out the signup form
+    await supabase.from("plan_logs").insert({ 
+      plan_id, 
+      msg: "Worker: Filling signup form..." 
+    });
+    
+    // Fill common form fields
+    const nameFields = await page.$$('input[name*="name"], input[id*="name"]');
+    if (nameFields.length > 0) {
+      await nameFields[0].fill(plan.child_name);
+    }
+    
+    const emailFields = await page.$$('input[type="email"], input[name*="email"]');
+    if (emailFields.length > 0) {
+      await emailFields[0].fill(credentials.email);
+    }
+    
+    // Handle payment if CVV is available
+    if (credentials.cvv) {
+      const cvvFields = await page.$$('input[name*="cvv"], input[name*="security"], input[placeholder*="CVV"]');
+      if (cvvFields.length > 0) {
+        await cvvFields[0].fill(credentials.cvv);
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: "Worker: CVV entered for payment" 
+        });
+      }
+    }
+    
+    // Submit the form
+    const submitButtons = await page.$$('button[type="submit"], input[type="submit"], button:has-text("Submit"), button:has-text("Register")');
+    if (submitButtons.length > 0) {
+      await submitButtons[0].click();
+      await page.waitForTimeout(3000);
+      
+      await supabase.from("plan_logs").insert({ 
+        plan_id, 
+        msg: "Worker: Signup form submitted" 
+      });
+    }
+    
+    // Check for success or action required
+    const content = await page.content().catch(() => '');
+    const currentUrl = page.url();
+    
+    // Check for confirmation or success messages
+    if (content.includes('confirm') || content.includes('verification') || 
+        content.includes('check your email') || currentUrl.includes('confirm')) {
+      return { 
+        success: true, 
+        requiresAction: true,
+        details: { message: 'Email confirmation required' }
+      };
+    }
+    
+    // Check for payment confirmation
+    if (content.includes('payment') && content.includes('confirm')) {
+      return { 
+        success: true, 
+        requiresAction: true,
+        details: { message: 'Payment confirmation required' }
+      };
+    }
+    
+    // Check for success
+    if (content.includes('success') || content.includes('registered') || 
+        content.includes('signed up') || currentUrl.includes('success')) {
+      return { 
+        success: true, 
+        requiresAction: false,
+        details: { message: 'Signup completed successfully' }
+      };
+    }
+    
+    // Default to requiring action if we can't determine the outcome
+    return { 
+      success: true, 
+      requiresAction: true,
+      details: { message: 'Signup submitted - please check for confirmation' }
+    };
+    
+  } catch (error) {
+    return { 
+      success: false, 
+      error: `Signup execution failed: ${error.message}`,
+      code: 'SIGNUP_EXECUTION_ERROR'
+    };
+  }
+}
 
 // Start server
 const PORT = process.env.PORT || 8080;

@@ -173,8 +173,7 @@ export default function PlanDetail() {
       const response = await runPlan(plan.id, session.access_token);
       
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        const errorDetails = errorData.message || `HTTP ${response.status}: ${response.statusText}`;
+        const errorDetails = response.data?.msg || response.data?.message || 'Execution failed';
         
         toast({
           variant: "destructive",
@@ -184,11 +183,9 @@ export default function PlanDetail() {
         return;
       }
 
-      const data = await response.json();
-
       toast({
         title: "Success",
-        description: "Plan execution completed successfully"
+        description: response.data?.msg || "Plan execution completed successfully"
       });
 
       // Reload the plan to show updated status

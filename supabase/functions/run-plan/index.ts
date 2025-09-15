@@ -1,16 +1,4 @@
-import { chromium } from "https://esm.sh/playwright-core@1.46.0";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.57.4";
-
-// ===== POLICY CONSTANTS =====
-const CAPTCHA_AUTOSOLVE_ENABLED = false; // NEVER call a CAPTCHA solver - SMS + verify link only
-const PER_USER_WEEKLY_LIMIT = 3; // Maximum plans per user per 7 days  
-const SMS_IMMEDIATE_ON_ACTION_REQUIRED = true; // Send SMS immediately when action required
-
-// Debug logging helper - set DEBUG_VERBOSE=1 in Supabase function secrets to enable verbose logs
-const DEBUG_VERBOSE = process.env.DEBUG_VERBOSE === "1";
-function dlog(...args: any[]) { 
-  if (DEBUG_VERBOSE) console.log(...args); 
-}
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -20,173 +8,168 @@ const corsHeaders = {
 
 // Structured JSON response helper
 function jsonResponse(data: any, status = 200) {
-  return {
-    statusCode: status,
-    headers: { 'Content-Type': 'application/json', ...corsHeaders },
-    body: JSON.stringify(data)
-  };
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json', ...corsHeaders }
+  });
 }
 
-interface BrowserbaseSession {
-  id: string;
-  status: string;
-}
-
-interface BrowserbaseContext {
-  id: string;
-}
-
-export default async function handler(req: any, res: any) {
+Deno.serve(async (req) => {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
-    return res.status(200).setHeader('Access-Control-Allow-Origin', '*')
-      .setHeader('Access-Control-Allow-Headers', 'authorization, x-client-info, apikey, content-type')
-      .setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-      .end();
+    return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    // ===== UPFRONT ENVIRONMENT VALIDATION =====
+    // ===== ENVIRONMENT VALIDATION =====
     const requiredEnvVars = [
       'SUPABASE_URL',
-      'SUPABASE_SERVICE_ROLE_KEY', 
-      'BROWSERBASE_API_KEY',
-      'BROWSERBASE_PROJECT_ID',
-      'CRED_ENC_KEY'
+      'SUPABASE_SERVICE_ROLE_KEY',
+      'WORKER_BASE_URL'
     ];
     
-    const missingEnvVars = requiredEnvVars.filter(varName => !process.env[varName]);
+    const missingEnvVars = requiredEnvVars.filter(varName => !Deno.env.get(varName));
     if (missingEnvVars.length > 0) {
       console.error('Missing environment variables:', missingEnvVars);
-      const response = jsonResponse({ 
+      return jsonResponse({ 
         ok: false, 
         code: 'MISSING_ENV', 
         msg: `Missing environment variables: ${missingEnvVars.join(', ')}`,
         details: { missingVars: missingEnvVars }
       }, 500);
-      return res.status(response.statusCode).json(JSON.parse(response.body));
     }
 
     const supabase = createClient(
-      process.env.SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     );
 
-    const authHeader = req.headers.authorization;
+    const authHeader = req.headers.get('authorization');
     if (!authHeader) {
-      const response = jsonResponse({ 
+      return jsonResponse({ 
         ok: false, 
         code: 'MISSING_AUTH', 
         msg: 'Authorization header required' 
       }, 401);
-      return res.status(response.statusCode).json(JSON.parse(response.body));
     }
 
-    const body = req.body || {};
+    const body = await req.json().catch(() => ({}));
     const { plan_id } = body;
 
     if (!plan_id) {
-      const response = jsonResponse({ 
+      return jsonResponse({ 
         ok: false, 
         code: 'MISSING_PLAN_ID', 
         msg: 'plan_id is required in request body' 
       }, 400);
-      return res.status(response.statusCode).json(JSON.parse(response.body));
     }
 
-    console.log(`Starting plan execution for plan_id: ${plan_id}`);
+    console.log(`Edge function: Plan execution request for plan_id: ${plan_id}`);
 
-    // Log the start of the attempt
+    // Log the proxy request
     await supabase.from('plan_logs').insert({
       plan_id,
-      msg: 'Attempt started - loading plan details...'
+      msg: 'Edge function: Validating user and forwarding to worker...'
     });
 
-    // Check if this is a service role call (from scheduler) or user call
+    // Authenticate user (not service role calls)
     const token = authHeader.replace('Bearer ', '');
-    const isServiceRole = token === process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const isServiceRole = token === Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
     
-    let plan;
-    let planError;
-    
-    if (isServiceRole) {
-      // Service role call from scheduler - no user auth needed
-      dlog('Service role call detected - fetching plan without user restriction');
-      const { data, error } = await supabase
-        .from('plans')
-        .select('*')
-        .eq('id', plan_id)
-        .maybeSingle();
-      plan = data;
-      planError = error;
-    } else {
+    if (!isServiceRole) {
       // Regular user call - authenticate user first
       const { data: { user } } = await supabase.auth.getUser(token);
       if (!user) {
         await supabase.from('plan_logs').insert({
           plan_id,
-          msg: 'Error: Authentication failed'
+          msg: 'Edge function: Authentication failed'
         });
-        const response = jsonResponse({ 
+        return jsonResponse({ 
           ok: false, 
           code: 'AUTH_FAILED', 
           msg: 'User authentication failed - invalid token' 
         }, 401);
-        return res.status(response.statusCode).json(JSON.parse(response.body));
       }
 
-      const { data, error } = await supabase
+      // Verify plan belongs to user
+      const { data: plan, error: planError } = await supabase
         .from('plans')
-        .select('*')
+        .select('id, user_id')
         .eq('id', plan_id)
         .eq('user_id', user.id)
         .maybeSingle();
-      plan = data;
-      planError = error;
+
+      if (planError || !plan) {
+        const errorMsg = 'Plan not found or access denied';
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Edge function: ${errorMsg}`
+        });
+        
+        return jsonResponse({ 
+          ok: false, 
+          code: 'PLAN_NOT_FOUND', 
+          msg: errorMsg,
+          details: { plan_id, planError: planError?.message }
+        }, 404);
+      }
     }
 
-    if (planError || !plan) {
-      const errorMsg = 'Plan not found or access denied';
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Error: ${errorMsg}`
-      });
-      
-      const response = jsonResponse({ 
-        ok: false, 
-        code: 'PLAN_NOT_FOUND', 
-        msg: errorMsg,
-        details: { plan_id, planError: planError?.message }
-      }, 404);
-      return res.status(response.statusCode).json(JSON.parse(response.body));
-    }
-
-    // ===== SINGLE-EXECUTION POLICY =====
-    // Only execute plans with status 'scheduled', 'action_required', or 'executing'
-    if (plan.status !== 'scheduled' && plan.status !== 'action_required' && plan.status !== 'executing') {
-      console.log(`Ignoring execution request for plan ${plan_id} with status '${plan.status}' - only 'scheduled', 'action_required', or 'executing' plans can be executed`);
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Execution ignored - plan status is '${plan.status}' (cannot execute ${plan.status === 'cancelled' ? 'cancelled' : plan.status} plans)`
-      });
-      
-      const response = jsonResponse({ 
-        ok: false, 
-        code: 'INVALID_PLAN_STATUS', 
-        msg: `Plan execution ignored - status is '${plan.status}'`,
-        details: { 
-          current_status: plan.status, 
-          allowed_statuses: ['scheduled', 'action_required', 'executing'] 
-        }
-      }, 200);
-      return res.status(response.statusCode).json(JSON.parse(response.body));
-    }
-
-    // Log plan details found
+    // Forward to Railway worker with service role key
+    const workerUrl = `${Deno.env.get('WORKER_BASE_URL')}/run-plan`;
+    
     await supabase.from('plan_logs').insert({
       plan_id,
-      msg: `Plan loaded: ${plan.child_name} at ${plan.org} - proceeding with execution`
+      msg: `Edge function: Forwarding to worker at ${workerUrl}`
     });
+
+    try {
+      const workerResponse = await fetch(workerUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`
+        },
+        body: JSON.stringify({ plan_id })
+      });
+
+      if (!workerResponse.ok) {
+        const errorText = await workerResponse.text().catch(() => 'Unknown error');
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Edge function: Worker request failed: ${workerResponse.status} ${errorText}`
+        });
+        
+        return jsonResponse({
+          ok: false,
+          code: 'WORKER_REQUEST_FAILED',
+          msg: `Worker request failed: ${workerResponse.status}`,
+          details: { status: workerResponse.status, error: errorText }
+        }, 502);
+      }
+
+      const workerData = await workerResponse.json();
+      
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: 'Edge function: Successfully forwarded to worker'
+      });
+
+      return jsonResponse({
+        ok: true,
+        msg: 'Plan execution started on worker',
+        ...workerData
+      });
+
+  } catch (error: any) {
+    console.error("Edge function handler error:", error);
+    return jsonResponse({ 
+      ok: false, 
+      code: 'HANDLER_ERROR', 
+      msg: error.message 
+    }, 500);
+  }
+});
 
     // Handle credential retrieval based on call type
     let credentials;
