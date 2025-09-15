@@ -54,6 +54,10 @@ export default function Plan() {
     alternate_time: "",
     alternate_class_name: "",
     phone: "",
+    // Nordic add-ons
+    nordicRental: "",
+    nordicColorGroup: "",
+    volunteer: "",
     // Payment authorization fields
     expected_lesson_cost: "",
     maximum_charge_limit: "",
@@ -136,6 +140,12 @@ export default function Plan() {
       const localDateTime = new Date(formData.open_time);
       const adjustedOpenTime = fromZonedTime(localDateTime, formData.timezone).toISOString();
 
+      // Build extras object for Nordic add-ons
+      const extras: any = {};
+      if (formData.nordicRental) extras.nordicRental = formData.nordicRental;
+      if (formData.nordicColorGroup) extras.nordicColorGroup = formData.nordicColorGroup;
+      if (formData.volunteer) extras.volunteer = formData.volunteer;
+
       const payload = {
         user_id: user.id,
         provider_slug: 'skiclubpro',
@@ -150,7 +160,8 @@ export default function Plan() {
         preferred_class_name: formData.preferred_class_name || null,
         alternate_class_name: formData.alternate_class_name || null,
         credential_id: formData.credential_id,
-        phone: formData.phone || null
+        phone: formData.phone || null,
+        extras: Object.keys(extras).length > 0 ? extras : null
       };
 
       // Use create-plan edge function instead of direct insert (includes rate limiting)
@@ -191,6 +202,10 @@ export default function Plan() {
         alternate_time: "",
         alternate_class_name: "",
         phone: "",
+        // Nordic add-ons
+        nordicRental: "",
+        nordicColorGroup: "",
+        volunteer: "",
         // Payment authorization fields
         expected_lesson_cost: "",
         maximum_charge_limit: "",
@@ -548,6 +563,76 @@ export default function Plan() {
                     Used for SMS notifications when manual action is required (E.164 format)
                   </p>
                 </div>
+
+                {/* Nordic Add-ons Section */}
+                <Card className="border-blue-200 bg-blue-50/30">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-blue-800">Nordic Kids Add-ons (Optional)</CardTitle>
+                    <CardDescription className="text-blue-700">
+                      Configure options for Nordic Kids lessons (applies to Wednesday classes)
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="nordicRental">Rental Equipment</Label>
+                        <Select 
+                          value={formData.nordicRental} 
+                          onValueChange={(value) => setFormData(prev => ({ ...prev, nordicRental: value }))}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select rental option" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="full-rental">Full Rental Package</SelectItem>
+                            <SelectItem value="skis-only">Skis Only</SelectItem>
+                            <SelectItem value="boots-only">Boots Only</SelectItem>
+                            <SelectItem value="no-rental">No Rental Needed</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <p className="text-xs text-blue-700">Required for Nordic classes</p>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="nordicColorGroup">Color Group</Label>
+                        <Select 
+                          value={formData.nordicColorGroup} 
+                          onValueChange={(value) => setFormData(prev => ({ ...prev, nordicColorGroup: value }))}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select color group" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="red">Red Group</SelectItem>
+                            <SelectItem value="blue">Blue Group</SelectItem>
+                            <SelectItem value="green">Green Group</SelectItem>
+                            <SelectItem value="yellow">Yellow Group</SelectItem>
+                            <SelectItem value="purple">Purple Group</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <p className="text-xs text-blue-700">Defaults to first available option</p>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="volunteer">Volunteer Preference</Label>
+                        <Select 
+                          value={formData.volunteer} 
+                          onValueChange={(value) => setFormData(prev => ({ ...prev, volunteer: value }))}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select volunteer option" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="yes">Yes, I can volunteer</SelectItem>
+                            <SelectItem value="no">No, cannot volunteer</SelectItem>
+                            <SelectItem value="maybe">Maybe, contact me</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <p className="text-xs text-blue-700">Defaults to first available option</p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
 
                 {/* Payment Disclosure and Authorization Section */}
                 <Card className="border-amber-200 bg-amber-50/50">
