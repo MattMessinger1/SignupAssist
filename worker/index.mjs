@@ -982,7 +982,7 @@ async function handleNordicAddons(page, plan, supabase) {
     }
     
     // After add-ons, check for cart page and handle checkout flow
-    const currentUrl = page.url();
+    currentUrl = page.url();
     if (currentUrl.includes('/cart')) {
       await supabase.from("plan_logs").insert({ 
         plan_id, 
