@@ -169,7 +169,7 @@ Deno.serve(async (req) => {
       msg: error.message 
     }, 500);
   }
-});
+);
 
     // Handle credential retrieval based on call type
     let credentials;
