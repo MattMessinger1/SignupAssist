@@ -491,17 +491,22 @@ app.post("/run-plan", async (req, res) => {
 // Login with Playwright
 async function loginWithPlaywright(page, loginUrl, email, password) {
   try {
+    console.log("Worker: Navigating to login");
     await page.goto(loginUrl, { waitUntil: 'domcontentloaded' });
     
     // Wait for email field and fill it
-    await page.waitForSelector('input[type="email"], input[name*="email"], input[id*="email"]', { timeout: 10000 });
-    await page.fill('input[type="email"], input[name*="email"], input[id*="email"]', email);
+    console.log("Worker: Filling email");
+    await page.waitForSelector('#edit-name, input[name="name"], input[type="text"]', { timeout: 20000 });
+    await page.fill('#edit-name, input[name="name"], input[type="text"]', email);
     
-    // Fill password field
-    await page.fill('input[type="password"], input[name*="password"], input[id*="password"]', password);
+    // Wait for password field and fill it
+    console.log("Worker: Filling password");
+    await page.waitForSelector('#edit-pass, input[name="pass"], input[type="password"]', { timeout: 20000 });
+    await page.fill('#edit-pass, input[name="pass"], input[type="password"]', password);
     
     // Click login button
-    await page.click('button[type="submit"], input[type="submit"], button:has-text("Login"), button:has-text("Sign in")');
+    console.log("Worker: Clicking login button");
+    await page.click('#edit-submit, button[type="submit"]');
     
     // Wait for navigation or success indicator
     await page.waitForTimeout(3000);
@@ -512,6 +517,7 @@ async function loginWithPlaywright(page, loginUrl, email, password) {
     
     if (currentUrl.includes('dashboard') || currentUrl.includes('profile') || 
         content.includes('logout') || content.includes('sign out')) {
+      console.log("Worker: Login successful");
       return { success: true };
     }
     
