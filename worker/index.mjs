@@ -520,86 +520,136 @@ async function loginWithPlaywright(page, loginUrl, email, password) {
   }
 }
 
-// Blackhawk-specific discovery: Find and click Register for Nordic Kids Wednesday
+// Blackhawk-specific discovery: Find and click Register using multiple strategies
 async function discoverBlackhawkRegistration(page, plan, supabase) {
   const plan_id = plan.id;
+  const baseUrl = page.url().split('/').slice(0, 3).join('/');
   
   try {
-    // Navigate to registration page
-    const baseUrl = page.url().split('/').slice(0, 3).join('/'); // Get base domain
-    const registrationUrl = `${baseUrl}/registration`;
-    
-    await supabase.from("plan_logs").insert({ 
-      plan_id, 
-      msg: `Worker: Navigating to registration page: ${registrationUrl}` 
-    });
-    
-    await page.goto(registrationUrl, { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(2000); // Wait for page to fully load
-    
-    // Look for plan.preferred text program (e.g., "Nordic Kids Wednesday")
-    const targetText = plan.preferred || "Nordic Kids Wednesday";
-    const content = (await page.content()).toLowerCase();
-    if (!content.includes(targetText.toLowerCase())) {
-      // Try alternative registration events page
-      const eventsUrl = `${baseUrl}/registration/events`;
+    // Strategy 3: Direct Program ID (fast path)
+    if (plan.program_id) {
+      const directUrl = `${baseUrl}/registration/${plan.program_id}/start`;
+      
       await supabase.from("plan_logs").insert({ 
         plan_id, 
-        msg: `Worker: ${targetText} not found, trying events page: ${eventsUrl}` 
+        msg: `Worker: Navigated directly to program ID ${plan.program_id}` 
       });
       
-      await page.goto(eventsUrl, { waitUntil: "domcontentloaded" });
+      await page.goto(directUrl, { waitUntil: "domcontentloaded" });
       await page.waitForTimeout(2000);
       
-      const eventsContent = (await page.content()).toLowerCase();
-      if (!eventsContent.includes(targetText.toLowerCase())) {
-        throw new Error(`${targetText} program not found on registration pages`);
-      }
-    }
-    
-    await supabase.from("plan_logs").insert({ 
-      plan_id, 
-      msg: `Worker: Located program text: ${targetText}` 
-    });
-    
-    // Use the exact locator approach specified by the user
-    try {
-      const registerButton = page.locator(`text=${targetText}`).first().locator('button:has-text("Register")');
-      
-      if (await registerButton.count() > 0) {
-        await registerButton.scrollIntoViewIfNeeded();
-        await registerButton.waitFor({ state: "visible" });
-        await registerButton.click();
-        
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: `Worker: Register clicked for ${targetText}` 
-        });
-      } else {
-        throw new Error(`No Register button found for ${targetText}`);
-      }
-    } catch (error) {
-      throw new Error(`Failed to click Register button: ${error.message}`);
-    }
-    
-    // Wait for navigation to /registration/*/start
-    try {
-      await page.waitForURL(/\/registration\/.*\/start/, { timeout: 30000 });
-      return { success: true, startUrl: page.url() };
-    } catch (error) {
-      // Check if we're on a start-like page anyway
+      // Verify we're on a valid start page
       const currentUrl = page.url();
-      if (currentUrl.includes('/registration/') && (currentUrl.includes('/start') || currentUrl.includes('participant'))) {
+      if (currentUrl.includes('/registration/') && currentUrl.includes('/start')) {
         return { success: true, startUrl: currentUrl };
       }
-      
-      throw new Error(`Failed to navigate to start page after clicking Register: ${error.message}`);
     }
+    
+    // Strategy 1: Program Name
+    const targetText = plan.preferred || "Nordic Kids Wednesday";
+    const registrationUrls = [`${baseUrl}/registration`, `${baseUrl}/registration/events`];
+    
+    for (const registrationUrl of registrationUrls) {
+      await supabase.from("plan_logs").insert({ 
+        plan_id, 
+        msg: `Worker: Trying program name discovery at: ${registrationUrl}` 
+      });
+      
+      await page.goto(registrationUrl, { waitUntil: "domcontentloaded" });
+      await page.waitForTimeout(2000);
+      
+      const content = (await page.content()).toLowerCase();
+      if (content.includes(targetText.toLowerCase())) {
+        try {
+          const registerButton = page.locator(`text=${targetText}`).first().locator('button:has-text("Register")');
+          
+          if (await registerButton.count() > 0) {
+            await registerButton.scrollIntoViewIfNeeded();
+            await registerButton.waitFor({ state: "visible" });
+            await registerButton.click();
+            
+            await supabase.from("plan_logs").insert({ 
+              plan_id, 
+              msg: "Worker: Program found by name" 
+            });
+            
+            // Wait for navigation to start page
+            await page.waitForURL(/\/registration\/.*\/start/, { timeout: 30000 });
+            return { success: true, startUrl: page.url() };
+          }
+        } catch (error) {
+          // Continue to next strategy
+          console.log(`Program name strategy failed: ${error.message}`);
+        }
+      }
+    }
+    
+    // Strategy 2: Session Time (fallback)
+    if (plan.session_time || plan.time) {
+      const sessionTime = plan.session_time || plan.time;
+      
+      for (const registrationUrl of registrationUrls) {
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: `Worker: Trying session time discovery for: ${sessionTime}` 
+        });
+        
+        await page.goto(registrationUrl, { waitUntil: "domcontentloaded" });
+        await page.waitForTimeout(2000);
+        
+        const content = (await page.content()).toLowerCase();
+        if (content.includes(sessionTime.toLowerCase())) {
+          try {
+            // Try multiple register button selectors
+            const registerSelectors = [
+              'button:has-text("Register")',
+              'input[type="submit"][value*="Register"]'
+            ];
+            
+            for (const selector of registerSelectors) {
+              const buttons = await page.$$(selector);
+              for (const button of buttons) {
+                // Check if this button is near the session time text
+                const buttonText = await button.textContent() || '';
+                if (buttonText.toLowerCase().includes('register')) {
+                  await button.scrollIntoViewIfNeeded();
+                  await button.waitForElementState('visible');
+                  await button.click();
+                  
+                  await supabase.from("plan_logs").insert({ 
+                    plan_id, 
+                    msg: "Worker: Program found by time" 
+                  });
+                  
+                  // Wait for navigation to start page
+                  await page.waitForURL(/\/registration\/.*\/start/, { timeout: 30000 });
+                  return { success: true, startUrl: page.url() };
+                }
+              }
+            }
+          } catch (error) {
+            // Continue to failure
+            console.log(`Session time strategy failed: ${error.message}`);
+          }
+        }
+      }
+    }
+    
+    // All strategies failed
+    await supabase.from("plan_logs").insert({ 
+      plan_id, 
+      msg: "Worker: Program discovery failed" 
+    });
+    
+    return { 
+      success: false, 
+      error: "All discovery strategies failed - program not found by name, time, or direct ID" 
+    };
     
   } catch (error) {
     await supabase.from("plan_logs").insert({ 
       plan_id, 
-      msg: `Worker: Blackhawk registration discovery failed: ${error.message}` 
+      msg: `Worker: Blackhawk registration discovery error: ${error.message}` 
     });
     
     return { 
