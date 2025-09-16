@@ -981,6 +981,136 @@ async function handleNordicAddons(page, plan, supabase) {
       await page.waitForTimeout(3000); // Wait for navigation
     }
     
+    // After add-ons, check for cart page and handle checkout flow
+    const currentUrl = page.url();
+    if (currentUrl.includes('/cart')) {
+      await supabase.from("plan_logs").insert({ 
+        plan_id, 
+        msg: "Worker: Cart page detected" 
+      });
+      
+      // Click Checkout button
+      const checkoutSelectors = [
+        'button:has-text("Checkout")',
+        '#edit-checkout'
+      ];
+      
+      let checkoutClicked = false;
+      for (const selector of checkoutSelectors) {
+        const buttons = await page.$$(selector);
+        if (buttons.length > 0) {
+          await buttons[0].click();
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: "Worker: Clicked Checkout button" 
+          });
+          checkoutClicked = true;
+          break;
+        }
+      }
+      
+      if (checkoutClicked) {
+        // Wait for navigation to /checkout/*/installments
+        try {
+          await page.waitForURL(/\/checkout\/.*\/installments/, { timeout: 30000 });
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: "Worker: Navigated to installments page" 
+          });
+          
+          // On installments page: ensure saved card radio button is selected
+          const savedCardRadios = await page.$$('input[type="radio"]');
+          if (savedCardRadios.length > 0) {
+            // Select first radio button (saved card)
+            const isChecked = await savedCardRadios[0].isChecked();
+            if (!isChecked) {
+              await savedCardRadios[0].click();
+              await supabase.from("plan_logs").insert({ 
+                plan_id, 
+                msg: "Worker: Selected saved card payment method" 
+              });
+            }
+          }
+          
+          // Click Continue to Review
+          const continueButtons = await page.$$('button:has-text("Continue to Review")');
+          if (continueButtons.length > 0) {
+            await continueButtons[0].click();
+            await supabase.from("plan_logs").insert({ 
+              plan_id, 
+              msg: "Worker: Clicked Continue to Review" 
+            });
+            
+            // Wait for navigation to /checkout/*/review
+            try {
+              await page.waitForURL(/\/checkout\/.*\/review/, { timeout: 30000 });
+              await supabase.from("plan_logs").insert({ 
+                plan_id, 
+                msg: "Worker: Navigated to review page" 
+              });
+              
+              // On review page: click Pay and complete purchase
+              const payButtons = await page.$$('button:has-text("Pay and complete purchase")');
+              if (payButtons.length > 0) {
+                await payButtons[0].click();
+                await supabase.from("plan_logs").insert({ 
+                  plan_id, 
+                  msg: "Worker: Clicked Pay and complete purchase" 
+                });
+                
+                // Wait for confirmation URL or text
+                try {
+                  // Wait for confirmation page or success text
+                  await Promise.race([
+                    page.waitForURL(/\/(complete|thank-you)/, { timeout: 30000 }),
+                    page.waitForSelector('text="Thank you"', { timeout: 30000 }),
+                    page.waitForSelector('text="Registration complete"', { timeout: 30000 }),
+                    page.waitForSelector('text="success"', { timeout: 30000 })
+                  ]);
+                  
+                  await supabase.from("plan_logs").insert({ 
+                    plan_id, 
+                    msg: "Worker: Payment confirmed" 
+                  });
+                  
+                  // Update plan status to completed
+                  await supabase
+                    .from('plans')
+                    .update({ 
+                      status: 'completed',
+                      completed_at: new Date().toISOString()
+                    })
+                    .eq('id', plan_id);
+                  
+                } catch (confirmError) {
+                  await supabase.from("plan_logs").insert({ 
+                    plan_id, 
+                    msg: "Worker: Signup may not have completed, manual check required" 
+                  });
+                  
+                  // Set status to action_required
+                  await supabase
+                    .from('plans')
+                    .update({ status: 'action_required' })
+                    .eq('id', plan_id);
+                }
+              }
+            } catch (reviewError) {
+              await supabase.from("plan_logs").insert({ 
+                plan_id, 
+                msg: "Worker: Failed to navigate to review page" 
+              });
+            }
+          }
+        } catch (installmentsError) {
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: "Worker: Failed to navigate to installments page" 
+          });
+        }
+      }
+    }
+    
     // Always return success to ensure non-blocking execution
     return { success: true };
     
