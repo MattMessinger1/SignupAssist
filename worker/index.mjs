@@ -295,9 +295,24 @@ app.post("/run-plan", async (req, res) => {
         return res.status(500).json({ ok:false, code:"PLAYWRIGHT_CONNECT_FAILED", msg:"Cannot connect Playwright" });
       }
 
-      // Compute login URL from plan
-      const subdomain = (plan.org || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-      const loginUrl = `https://${subdomain}.skiclubpro.team/user/login`;
+      // Normalize plan.base_url to root domain
+      let normalizedBaseUrl;
+      if (plan.base_url) {
+        try {
+          const url = new URL(plan.base_url);
+          normalizedBaseUrl = `${url.protocol}//${url.host}`;
+        } catch {
+          // Fallback if base_url is invalid
+          const subdomain = (plan.org || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+          normalizedBaseUrl = `https://${subdomain}.skiclubpro.team`;
+        }
+      } else {
+        const subdomain = (plan.org || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        normalizedBaseUrl = `https://${subdomain}.skiclubpro.team`;
+      }
+      
+      const loginUrl = `${normalizedBaseUrl}/user/login`;
+      console.log(`Worker: Normalized login URL = ${loginUrl}`);
       
       // Perform login with Playwright
       await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Navigating to login: ${loginUrl}` });
