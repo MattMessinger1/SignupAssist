@@ -637,40 +637,58 @@ async function handleNordicAddons(page, plan, supabase) {
     
     const EXTRAS = (plan?.extras ?? {});
     
-    // Handle Rental field
+    // Handle Rental field - non-blocking
     const rentalValue = EXTRAS.nordicRental;
-    if (rentalValue) {
-      // Look for rental dropdown or radio buttons
-      const rentalSelectors = [
-        'select[name*="rental"], select[id*="rental"]',
-        'input[type="radio"][name*="rental"]',
-        'input[type="checkbox"][name*="rental"]'
-      ];
-      
-      let rentalHandled = false;
-      for (const selector of rentalSelectors) {
-        const elements = await page.$$(selector);
-        if (elements.length > 0) {
-          const element = elements[0];
-          const tagName = await element.evaluate(el => el.tagName.toLowerCase());
+    const rentalSelectors = [
+      'select[name*="rental"], select[id*="rental"]',
+      'input[type="radio"][name*="rental"]',
+      'input[type="checkbox"][name*="rental"]'
+    ];
+    
+    let rentalHandled = false;
+    for (const selector of rentalSelectors) {
+      const elements = await page.$$(selector);
+      if (elements.length > 0) {
+        const element = elements[0];
+        const tagName = await element.evaluate(el => el.tagName.toLowerCase());
+        
+        if (tagName === 'select') {
+          // Handle dropdown
+          const options = await element.$$('option');
+          let selectedOption = null;
           
-          if (tagName === 'select') {
-            // Handle dropdown
-            const options = await element.$$('option');
+          // Try to match provided rental value
+          if (rentalValue) {
             for (const option of options) {
               const optionText = await option.textContent();
               if (optionText && optionText.toLowerCase().includes(rentalValue.toLowerCase())) {
                 await element.selectOption({ label: optionText });
-                await supabase.from("plan_logs").insert({ 
-                  plan_id, 
-                  msg: `Worker: Rental selected: ${optionText}` 
-                });
-                rentalHandled = true;
+                selectedOption = optionText;
                 break;
               }
             }
-          } else {
-            // Handle radio buttons/checkboxes
+          }
+          
+          // Default to first visible option if not provided or not found
+          if (!selectedOption && options.length > 1) {
+            const firstOption = await options[1].textContent(); // Skip first empty option
+            await element.selectOption({ index: 1 });
+            selectedOption = firstOption;
+          }
+          
+          if (selectedOption) {
+            const logMsg = rentalValue && selectedOption.toLowerCase().includes(rentalValue.toLowerCase()) 
+              ? `Worker: Rental selected: ${selectedOption}`
+              : `Worker: Defaulted to first rental option: ${selectedOption}`;
+            await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
+            rentalHandled = true;
+          }
+        } else {
+          // Handle radio buttons/checkboxes
+          let selectedLabel = null;
+          
+          // Try to match provided rental value
+          if (rentalValue) {
             for (const radioElement of elements) {
               const label = await page.evaluate(el => {
                 const labelEl = document.querySelector(`label[for="${el.id}"]`);
@@ -679,34 +697,49 @@ async function handleNordicAddons(page, plan, supabase) {
               
               if (label && label.toLowerCase().includes(rentalValue.toLowerCase())) {
                 await radioElement.click();
-                await supabase.from("plan_logs").insert({ 
-                  plan_id, 
-                  msg: `Worker: Rental selected: ${label}` 
-                });
-                rentalHandled = true;
+                selectedLabel = label;
                 break;
               }
             }
           }
           
-          if (rentalHandled) break;
+          // Default to first option if not found or not provided
+          if (!selectedLabel && elements.length > 0) {
+            await elements[0].click();
+            selectedLabel = await page.evaluate(el => {
+              const labelEl = document.querySelector(`label[for="${el.id}"]`);
+              return labelEl ? labelEl.textContent : el.closest('label')?.textContent || 'First option';
+            }, elements[0]);
+          }
+          
+          if (selectedLabel) {
+            const logMsg = rentalValue && selectedLabel.toLowerCase().includes(rentalValue.toLowerCase()) 
+              ? `Worker: Rental selected: ${selectedLabel}`
+              : `Worker: Defaulted to first rental option: ${selectedLabel}`;
+            await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
+            rentalHandled = true;
+          }
         }
-      }
-      
-      if (!rentalHandled) {
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: `Worker: Error: Required rental option '${rentalValue}' not found` 
-        });
-        return { 
-          success: false, 
-          error: `Required rental option '${rentalValue}' not found`,
-          code: 'RENTAL_REQUIRED'
-        };
+        
+        if (rentalHandled) break;
       }
     }
     
-    // Handle Color Group field
+    if (!rentalHandled) {
+      if (rentalValue) {
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: `Worker: Rental field not found, skipping rental selection` 
+        });
+      } else {
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: "Worker: No rental field detected, skipping" 
+        });
+      }
+    }
+    
+    // Handle Color Group field - non-blocking
     const colorGroupValue = EXTRAS.nordicColorGroup;
     const colorGroupSelectors = [
       'select[name*="color"], select[id*="color"]',
@@ -745,10 +778,10 @@ async function handleNordicAddons(page, plan, supabase) {
           }
           
           if (selectedOption) {
-            await supabase.from("plan_logs").insert({ 
-              plan_id, 
-              msg: `Worker: Color group: ${selectedOption}` 
-            });
+            const logMsg = colorGroupValue && selectedOption.toLowerCase().includes(colorGroupValue.toLowerCase()) 
+              ? `Worker: Color group selected: ${selectedOption}`
+              : `Worker: Defaulted to first color group option: ${selectedOption}`;
+            await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
             colorGroupHandled = true;
           }
         } else {
@@ -780,10 +813,10 @@ async function handleNordicAddons(page, plan, supabase) {
           }
           
           if (selectedLabel) {
-            await supabase.from("plan_logs").insert({ 
-              plan_id, 
-              msg: `Worker: Color group: ${selectedLabel}` 
-            });
+            const logMsg = colorGroupValue && selectedLabel.toLowerCase().includes(colorGroupValue.toLowerCase()) 
+              ? `Worker: Color group selected: ${selectedLabel}`
+              : `Worker: Defaulted to first color group option: ${selectedLabel}`;
+            await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
             colorGroupHandled = true;
           }
         }
@@ -792,7 +825,14 @@ async function handleNordicAddons(page, plan, supabase) {
       }
     }
     
-    // Handle Volunteer field
+    if (!colorGroupHandled) {
+      await supabase.from("plan_logs").insert({ 
+        plan_id, 
+        msg: "Worker: Color group skipped" 
+      });
+    }
+    
+    // Handle Volunteer field - non-blocking
     const volunteerValue = EXTRAS.volunteer;
     const volunteerSelectors = [
       'input[type="checkbox"][name*="volunteer"]',
@@ -830,10 +870,10 @@ async function handleNordicAddons(page, plan, supabase) {
           }
           
           if (selectedOption) {
-            await supabase.from("plan_logs").insert({ 
-              plan_id, 
-              msg: `Worker: Volunteer selected: ${selectedOption}` 
-            });
+            const logMsg = volunteerValue && selectedOption.toLowerCase().includes(volunteerValue.toLowerCase()) 
+              ? `Worker: Volunteer selected: ${selectedOption}`
+              : `Worker: Defaulted to first volunteer option: ${selectedOption}`;
+            await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
             volunteerHandled = true;
           }
         } else {
@@ -865,16 +905,23 @@ async function handleNordicAddons(page, plan, supabase) {
           }
           
           if (selectedLabel) {
-            await supabase.from("plan_logs").insert({ 
-              plan_id, 
-              msg: `Worker: Volunteer selected: ${selectedLabel}` 
-            });
+            const logMsg = volunteerValue && selectedLabel.toLowerCase().includes(volunteerValue.toLowerCase()) 
+              ? `Worker: Volunteer selected: ${selectedLabel}`
+              : `Worker: Defaulted to first volunteer option: ${selectedLabel}`;
+            await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
             volunteerHandled = true;
           }
         }
         
         if (volunteerHandled) break;
       }
+    }
+    
+    if (!volunteerHandled) {
+      await supabase.from("plan_logs").insert({ 
+        plan_id, 
+        msg: "Worker: Volunteer skipped" 
+      });
     }
     
     // Handle donation - always skip by filling "0"
@@ -899,7 +946,7 @@ async function handleNordicAddons(page, plan, supabase) {
       }
     }
     
-    // Look for Next/Continue button
+    // Look for Next/Continue button - non-blocking
     const nextButtonSelectors = [
       'button:has-text("Next")',
       'button:has-text("Continue")',
@@ -923,22 +970,27 @@ async function handleNordicAddons(page, plan, supabase) {
       }
     }
     
+    if (!nextButtonClicked) {
+      await supabase.from("plan_logs").insert({ 
+        plan_id, 
+        msg: "Worker: No Next button found, continuing" 
+      });
+    }
+    
     if (nextButtonClicked) {
       await page.waitForTimeout(3000); // Wait for navigation
     }
     
+    // Always return success to ensure non-blocking execution
     return { success: true };
     
   } catch (error) {
     await supabase.from("plan_logs").insert({ 
       plan_id: plan.id, 
-      msg: `Worker: Nordic add-on error: ${error.message}` 
+      msg: `Worker: Nordic add-on error (non-blocking): ${error.message}` 
     });
-    return { 
-      success: false, 
-      error: `Nordic add-on processing failed: ${error.message}`,
-      code: 'NORDIC_ADDON_ERROR'
-    };
+    // Even on error, return success to continue execution
+    return { success: true };
   }
 }
 
