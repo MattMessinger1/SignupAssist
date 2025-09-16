@@ -537,108 +537,49 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
     await page.goto(registrationUrl, { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(2000); // Wait for page to fully load
     
-    // Look for Nordic Kids Wednesday program
+    // Look for plan.preferred text program (e.g., "Nordic Kids Wednesday")
+    const targetText = plan.preferred || "Nordic Kids Wednesday";
     const content = (await page.content()).toLowerCase();
-    if (!content.includes('nordic kids wednesday')) {
+    if (!content.includes(targetText.toLowerCase())) {
       // Try alternative registration events page
       const eventsUrl = `${baseUrl}/registration/events`;
       await supabase.from("plan_logs").insert({ 
         plan_id, 
-        msg: `Worker: Nordic Kids Wednesday not found, trying events page: ${eventsUrl}` 
+        msg: `Worker: ${targetText} not found, trying events page: ${eventsUrl}` 
       });
       
       await page.goto(eventsUrl, { waitUntil: "domcontentloaded" });
       await page.waitForTimeout(2000);
       
       const eventsContent = (await page.content()).toLowerCase();
-      if (!eventsContent.includes('nordic kids wednesday')) {
-        throw new Error('Nordic Kids Wednesday program not found on registration pages');
+      if (!eventsContent.includes(targetText.toLowerCase())) {
+        throw new Error(`${targetText} program not found on registration pages`);
       }
     }
-    
-    // Find rows containing "Nordic Kids Wednesday" text
-    const nordicRows = page.locator('text=Nordic Kids Wednesday');
-    const rowCount = await nordicRows.count();
     
     await supabase.from("plan_logs").insert({ 
       plan_id, 
-      msg: `Worker: Found ${rowCount} rows containing "Nordic Kids Wednesday"` 
+      msg: `Worker: Located program text: ${targetText}` 
     });
     
-    let registerClicked = false;
-    
-    // Try to find Register button in Nordic Kids Wednesday rows
-    for (let i = 0; i < rowCount; i++) {
-      const row = nordicRows.nth(i);
+    // Use the exact locator approach specified by the user
+    try {
+      const registerButton = page.locator(`text=${targetText}`).first().locator('button:has-text("Register")');
       
-      // Look for ancestor container that might contain the Register button
-      const containerSelectors = [
-        'xpath=ancestor::tr',
-        'xpath=ancestor::div[contains(@class,"row")]',
-        'xpath=ancestor::div[contains(@class,"program")]', 
-        'xpath=ancestor::section',
-        'xpath=ancestor::div[contains(@class,"event")]'
-      ];
-      
-      for (const containerSelector of containerSelectors) {
-        try {
-          const container = row.locator(containerSelector).first();
-          
-          // Try different Register button selectors within the container
-          const registerSelectors = [
-            'button:has-text("Register")',
-            'a:has-text("Register")', 
-            'input[type="submit"][value*="Register" i]',
-            '[value*="Register" i]'
-          ];
-          
-          for (const registerSelector of registerSelectors) {
-            const registerButton = container.locator(registerSelector).first();
-            
-            if (await registerButton.count() > 0) {
-              await registerButton.scrollIntoViewIfNeeded();
-              await registerButton.waitFor({ state: "visible" });
-              await registerButton.click();
-              
-              await supabase.from("plan_logs").insert({ 
-                plan_id, 
-                msg: "Worker: ✅ Register button clicked for Nordic Kids Wednesday" 
-              });
-              
-              registerClicked = true;
-              break;
-            }
-          }
-          
-          if (registerClicked) break;
-        } catch (error) {
-          // Continue to next container selector
-          continue;
-        }
-      }
-      
-      if (registerClicked) break;
-    }
-    
-    if (!registerClicked) {
-      // Fallback: click first Register button if Nordic Kids Wednesday text is on page
-      const fallbackElements = await page.$$(registerSelectors[0]);
-      if (fallbackElements.length > 0) {
-        await fallbackElements[0].scrollIntoViewIfNeeded();
-        await fallbackElements[0].waitFor({ state: "visible" });
-        await fallbackElements[0].click();
+      if (await registerButton.count() > 0) {
+        await registerButton.scrollIntoViewIfNeeded();
+        await registerButton.waitFor({ state: "visible" });
+        await registerButton.click();
         
         await supabase.from("plan_logs").insert({ 
           plan_id, 
-          msg: "Worker: Register clicked (fallback) for Nordic Kids Wednesday" 
+          msg: `Worker: Register clicked for ${targetText}` 
         });
-        
-        registerClicked = true;
+      } else {
+        throw new Error(`No Register button found for ${targetText}`);
       }
-    }
-    
-    if (!registerClicked) {
-      throw new Error('No Register button found for Nordic Kids Wednesday');
+    } catch (error) {
+      throw new Error(`Failed to click Register button: ${error.message}`);
     }
     
     // Wait for navigation to /registration/*/start
@@ -736,7 +677,7 @@ async function handleBlackhawkOptions(page, plan, supabase) {
   
   await supabase.from("plan_logs").insert({ 
     plan_id, 
-    msg: "Worker: Processing Blackhawk options page..." 
+    msg: `Worker: Current URL: ${currentUrl}` 
   });
   
   try {
@@ -1045,12 +986,10 @@ async function handleBlackhawkOptions(page, plan, supabase) {
     
     // Click Next to proceed to cart
     const nextButtonSelectors = [
+      '#edit-submit',
+      'button#edit-submit',
       'button:has-text("Next")',
-      'button:has-text("Continue")',
-      'input[type="submit"][value*="Next" i]',
-      'input[type="submit"][value*="Continue" i]',
-      'button[type="submit"]',
-      'input[type="submit"]'
+      'input[type="submit"][value*="Next"]'
     ];
     
     const clicked = await reliableClick(page, nextButtonSelectors, plan_id, supabase, "Next");
@@ -1077,7 +1016,7 @@ async function handleBlackhawkOptions(page, plan, supabase) {
     });
   }
   
-  // Always return success to ensure non-blocking execution
+  // Always return success to ensure non-blocking execution - handleNordicAddons never sets final status
   return { success: true };
 }
 
@@ -1090,7 +1029,7 @@ async function executeSignup(page, plan, credentials, supabase) {
       msg: "Worker: Starting Blackhawk multi-step signup process..." 
     });
     
-    // Step 1: Blackhawk Registration Discovery - Find and click Register for Nordic Kids Wednesday
+    // Step 1: Discovery & Register - Navigate to /registration and click Register button
     const discoveryResult = await discoverBlackhawkRegistration(page, plan, supabase);
     if (!discoveryResult.success) {
       return { 
@@ -1100,8 +1039,13 @@ async function executeSignup(page, plan, credentials, supabase) {
       };
     }
     
-    // Step 2: Start Page - Select participant
-    const currentUrl = page.url();
+    // Step 2: Start Page (/registration/*/start) - Select participant from dropdown
+    let currentUrl = page.url();
+    await supabase.from("plan_logs").insert({ 
+      plan_id, 
+      msg: `Worker: Current URL: ${currentUrl}` 
+    });
+    
     if (currentUrl.match(/\/registration\/.*\/start/)) {
       await supabase.from("plan_logs").insert({ 
         plan_id, 
@@ -1114,7 +1058,7 @@ async function executeSignup(page, plan, credentials, supabase) {
         'select[id*="participant"]',
         'select[name*="child"]',
         'select[id*="child"]',
-        'select' // fallback to any select element
+        'select'
       ];
       
       let participantSelected = false;
@@ -1131,7 +1075,7 @@ async function executeSignup(page, plan, credentials, supabase) {
               await selectElement.selectOption({ label: optionText });
               await supabase.from("plan_logs").insert({ 
                 plan_id, 
-                msg: `Worker: Participant selected: ${optionText}` 
+                msg: `Worker: Participant selected: ${plan.child_name}` 
               });
               participantSelected = true;
               break;
@@ -1144,7 +1088,7 @@ async function executeSignup(page, plan, credentials, supabase) {
             await selectElement.selectOption({ index: 1 });
             await supabase.from("plan_logs").insert({ 
               plan_id, 
-              msg: `Worker: Participant selected (fallback): ${firstOption}` 
+              msg: `Worker: Participant selected: ${firstOption}` 
             });
             participantSelected = true;
           }
@@ -1153,292 +1097,244 @@ async function executeSignup(page, plan, credentials, supabase) {
         }
       }
       
-      if (!participantSelected) {
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: "Worker: No participant dropdown found, continuing..." 
-        });
-      }
-      
-      // Click Next to go to options page
+      // Click Next button using robust selectors
       const nextSelectors = [
+        '#edit-submit',
+        'button#edit-submit',
         'button:has-text("Next")',
-        'button:has-text("Continue")',
-        'input[type="submit"][value*="Next" i]',
-        'input[type="submit"][value*="Continue" i]',
-        'button[type="submit"]'
+        'input[type="submit"][value*="Next"]'
       ];
       
       const nextClicked = await reliableClick(page, nextSelectors, plan_id, supabase, "Next");
       if (nextClicked) {
         try {
           await page.waitForURL(/\/registration\/.*\/options/, { timeout: 30000 });
-          await supabase.from("plan_logs").insert({ 
-            plan_id, 
-            msg: "Worker: Navigated to options page" 
-          });
         } catch (error) {
           await supabase.from("plan_logs").insert({ 
             plan_id, 
             msg: `Worker: Navigation to options may have failed: ${error.message}` 
           });
         }
-      } else {
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: "Worker: No Next button found on start page" 
-        });
       }
     }
     
-    // Step 3: Options Page - Handle add-ons
-    const optionsUrl = page.url();
-    if (optionsUrl.match(/\/registration\/.*\/options/)) {
-      await supabase.from("plan_logs").insert({ 
-        plan_id, 
-        msg: "Worker: On options page, processing add-ons..." 
-      });
-      
-      // Handle add-ons using the dedicated function
-      await handleBlackhawkOptions(page, plan, supabase);
-      
-      // Function handles Next click and navigation to cart
-    }
-    
-    // Step 4: Cart and Checkout State Machine
-    let maxStateLoops = 10; // Prevent infinite loops
-    let currentLoop = 0;
-    
+    // Step 3: Options Page (/registration/*/options) - Fill add-ons
+    currentUrl = page.url();
     await supabase.from("plan_logs").insert({ 
       plan_id, 
-      msg: "Worker: Starting checkout state machine..." 
+      msg: `Worker: Current URL: ${currentUrl}` 
     });
     
-    while (currentLoop < maxStateLoops) {
-      currentLoop++;
-      const stateUrl = page.url();
-      
+    if (currentUrl.match(/\/registration\/.*\/options/)) {
+      // Handle add-ons using the dedicated function (never sets final status)
+      await handleBlackhawkOptions(page, plan, supabase);
+    }
+    
+    // Step 4: Cart Page (/cart) - Click Checkout button
+    currentUrl = page.url();
+    await supabase.from("plan_logs").insert({ 
+      plan_id, 
+      msg: `Worker: Current URL: ${currentUrl}` 
+    });
+    
+    if (currentUrl.includes('/cart')) {
       await supabase.from("plan_logs").insert({ 
         plan_id, 
-        msg: `Worker: Current URL: ${stateUrl}` 
+        msg: "Worker: On cart page" 
       });
       
-      if (stateUrl.includes('/cart')) {
-        // Cart state: click Checkout button
-        const checkoutSelectors = [
-          'button:has-text("Checkout")',
-          '#edit-checkout',
-          'input[type="submit"][value*="Checkout" i]',
-          '[value*="Checkout" i]'
-        ];
-        
-        const checkoutClicked = await reliableClick(page, checkoutSelectors, plan_id, supabase, "Checkout");
-        if (checkoutClicked) {
-          // Wait for navigation to installments page
-          try {
-            await page.waitForURL(/\/checkout\/\d+\/installments/, { timeout: 30000 });
-            continue; // Go to next iteration to handle installments state
-          } catch (error) {
-            await supabase.from("plan_logs").insert({ 
-              plan_id, 
-              msg: `Worker: Failed to navigate to installments page: ${error.message}` 
-            });
-            break;
-          }
-        } else {
+      const checkoutSelectors = [
+        '#edit-checkout',
+        'button#edit-checkout',
+        'button:has-text("Checkout")'
+      ];
+      
+      const checkoutClicked = await reliableClick(page, checkoutSelectors, plan_id, supabase, "Checkout");
+      if (checkoutClicked) {
+        try {
+          await page.waitForURL(/\/checkout\/.*\/installments/, { timeout: 30000 });
+        } catch (error) {
           await supabase.from("plan_logs").insert({ 
             plan_id, 
-            msg: "Worker: No checkout button found, breaking state machine" 
+            msg: `Worker: Failed to navigate to installments page: ${error.message}` 
           });
-          break;
         }
-        
-      } else if (stateUrl.match(/\/checkout\/\d+\/installments/)) {
-        // Installments state: ensure saved card selected and click Continue to Review
-        
-        // Ensure saved card radio button is selected
-        const savedCardRadios = await page.$$('input[type="radio"]');
-        if (savedCardRadios.length > 0) {
-          const isChecked = await savedCardRadios[0].isChecked();
-          if (!isChecked) {
-            await savedCardRadios[0].scrollIntoViewIfNeeded();
-            await savedCardRadios[0].click();
-            await supabase.from("plan_logs").insert({ 
-              plan_id, 
-              msg: "Worker: Selected saved card payment method" 
-            });
-          }
+      }
+    }
+    
+    // Step 5: Installments Page (/checkout/*/installments) - Select payment method and continue
+    currentUrl = page.url();
+    await supabase.from("plan_logs").insert({ 
+      plan_id, 
+      msg: `Worker: Current URL: ${currentUrl}` 
+    });
+    
+    if (currentUrl.match(/\/checkout\/.*\/installments/)) {
+      // Ensure saved card is selected (default to first radio if none)
+      const savedCardRadios = await page.$$('input[type="radio"]');
+      if (savedCardRadios.length > 0) {
+        const isChecked = await savedCardRadios[0].isChecked();
+        if (!isChecked) {
+          await savedCardRadios[0].scrollIntoViewIfNeeded();
+          await savedCardRadios[0].click();
         }
-        
-        // Click Continue to Review
-        const continueSelectors = [
-          'button:has-text("Continue to Review")',
-          'input[type="submit"][value*="Continue" i]',
-          '[value*="Continue" i]'
-        ];
-        
-        const continueClicked = await reliableClick(page, continueSelectors, plan_id, supabase, "Continue to Review");
-        if (continueClicked) {
-          // Wait for navigation to review page
-          try {
-            await page.waitForURL(/\/checkout\/\d+\/review/, { timeout: 30000 });
-            continue; // Go to next iteration to handle review state
-          } catch (error) {
-            await supabase.from("plan_logs").insert({ 
-              plan_id, 
-              msg: `Worker: Failed to navigate to review page: ${error.message}` 
-            });
-            break;
-          }
-        } else {
-          await supabase.from("plan_logs").insert({ 
-            plan_id, 
-            msg: "Worker: No continue button found, breaking state machine" 
-          });
-          break;
-        }
-        
-      } else if (stateUrl.match(/\/checkout\/\d+\/review/)) {
-        // Review state: click Pay and complete purchase
-        
-        // Fill CVV if available and field exists
-        if (credentials.cvv) {
-          const cvvSelectors = [
-            'input[name*="cvv"]', 'input[id*="cvv"]', 'input[name*="security"]',
-            'input[id*="security"]', 'input[placeholder*="CVV"]', 'input[name*="cvc"]'
-          ];
-          
-          for (const selector of cvvSelectors) {
-            const cvvFields = await page.$$(selector);
-            if (cvvFields.length > 0) {
-              await cvvFields[0].fill(String(credentials.cvv));
-              await supabase.from("plan_logs").insert({ 
-                plan_id, 
-                msg: "Worker: CVV entered for payment" 
-              });
-              break;
-            }
-          }
-        }
-        
-        const paySelectors = [
-          'button:has-text("Pay and complete purchase")',
-          'button:has-text("Complete Purchase")',
-          'button:has-text("Pay Now")',
-          'input[type="submit"][value*="Complete" i]',
-          'input[type="submit"][value*="Pay" i]',
-          '[value*="Complete" i]'
-        ];
-        
-        const payClicked = await reliableClick(page, paySelectors, plan_id, supabase, "Pay and complete purchase");
-        if (payClicked) {
-          // Wait for completion page or success indicators
-          try {
-            await Promise.race([
-              page.waitForURL(/\/checkout\/\d+\/complete/, { timeout: 30000 }),
-              page.waitForURL(/\/(complete|thank-you|success|confirmation)/, { timeout: 30000 }),
-              page.waitForSelector('text=/Thank you|Registration complete|successfully registered/i', { timeout: 30000 })
-            ]);
-            
-            // Check current state after payment
-            const finalUrl = page.url();
-            const finalContent = await page.content().catch(() => '');
-            
-            await supabase.from("plan_logs").insert({ 
-              plan_id, 
-              msg: `Worker: After payment - URL: ${finalUrl}` 
-            });
-            
-            // Success criteria check
-            const hasSuccessUrl = finalUrl.match(/\/checkout\/\d+\/complete/) || 
-                                 finalUrl.includes('/complete') || 
-                                 finalUrl.includes('/thank-you') || 
-                                 finalUrl.includes('/success') || 
-                                 finalUrl.includes('/confirmation');
-            
-            const hasSuccessText = /(Thank you|Registration complete|successfully registered)/i.test(finalContent);
-            
-            if (hasSuccessUrl || hasSuccessText) {
-              await supabase.from("plan_logs").insert({ 
-                plan_id, 
-                msg: "Worker: Signup completed successfully" 
-              });
-              
-              return { 
-                success: true, 
-                requiresAction: false,
-                details: { message: 'Signup completed successfully' }
-              };
-            } else {
-              break; // Exit state machine to handle as action required
-            }
-          } catch (error) {
-            await supabase.from("plan_logs").insert({ 
-              plan_id, 
-              msg: `Worker: Payment confirmation timeout: ${error.message}` 
-            });
-            break; // Exit state machine to handle as action required
-          }
-        } else {
-          await supabase.from("plan_logs").insert({ 
-            plan_id, 
-            msg: "Worker: No payment button found, breaking state machine" 
-          });
-          break;
-        }
-        
-      } else if (stateUrl.match(/\/checkout\/\d+\/complete/)) {
-        // Complete state: success
         await supabase.from("plan_logs").insert({ 
           plan_id, 
-          msg: "Worker: Signup completed successfully" 
+          msg: "Worker: Payment method selected" 
         });
-        
-        return { 
-          success: true, 
-          requiresAction: false,
-          details: { message: 'Signup completed successfully' }
-        };
-        
-      } else {
-        // Unknown state: check for success indicators before breaking
-        const content = await page.content().catch(() => '');
-        const hasSuccessText = /(Thank you|Registration complete|successfully registered)/i.test(content);
-        const hasSuccessUrl = stateUrl.includes('/complete') || 
-                             stateUrl.includes('/success') || 
-                             stateUrl.includes('/confirmation');
-        
-        if (hasSuccessText || hasSuccessUrl) {
+      }
+      
+      const continueSelectors = [
+        '#edit-actions-next',
+        'button#edit-actions-next',
+        'button:has-text("Continue to Review")'
+      ];
+      
+      const continueClicked = await reliableClick(page, continueSelectors, plan_id, supabase, "Continue to Review");
+      if (continueClicked) {
+        try {
+          await page.waitForURL(/\/checkout\/.*\/review/, { timeout: 30000 });
+        } catch (error) {
           await supabase.from("plan_logs").insert({ 
             plan_id, 
-            msg: "Worker: Signup completed successfully" 
+            msg: `Worker: Failed to navigate to review page: ${error.message}` 
           });
+        }
+      }
+    }
+    
+    // Step 6: Review Page (/checkout/*/review) - Complete purchase
+    currentUrl = page.url();
+    await supabase.from("plan_logs").insert({ 
+      plan_id, 
+      msg: `Worker: Current URL: ${currentUrl}` 
+    });
+    
+    if (currentUrl.match(/\/checkout\/.*\/review/)) {
+      // Fill CVV if available and field exists
+      if (credentials.cvv) {
+        const cvvSelectors = [
+          'input[name*="cvv"]', 'input[id*="cvv"]', 'input[name*="security"]',
+          'input[id*="security"]', 'input[placeholder*="CVV"]', 'input[name*="cvc"]'
+        ];
+        
+        for (const selector of cvvSelectors) {
+          const cvvFields = await page.$$(selector);
+          if (cvvFields.length > 0) {
+            await cvvFields[0].fill(String(credentials.cvv));
+            await supabase.from("plan_logs").insert({ 
+              plan_id, 
+              msg: "Worker: CVV entered for payment" 
+            });
+            break;
+          }
+        }
+      }
+      
+      const paySelectors = [
+        'button:has-text("Pay and complete purchase")'
+      ];
+      
+      const payClicked = await reliableClick(page, paySelectors, plan_id, supabase, "Pay and complete purchase");
+      if (payClicked) {
+        // Wait for completion and detect success
+        try {
+          await Promise.race([
+            page.waitForURL(/\/checkout\/.*\/complete/, { timeout: 30000 }),
+            page.waitForSelector('text=/Thank you|Registration complete|successfully registered/i', { timeout: 30000 })
+          ]);
+          
+          const finalUrl = page.url();
+          const finalContent = await page.content().catch(() => '');
+          
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: `Worker: After payment - URL: ${finalUrl}` 
+          });
+          
+          // Check for success indicators
+          const hasSuccessUrl = finalUrl.match(/\/checkout\/.*\/complete/) || 
+                               finalUrl.includes('/complete') || 
+                               finalUrl.includes('/thank-you') || 
+                               finalUrl.includes('/success');
+          
+          const hasSuccessText = /(Thank you|Registration complete|successfully registered)/i.test(finalContent);
+          
+          if (hasSuccessUrl || hasSuccessText) {
+            await supabase.from("plan_logs").insert({ 
+              plan_id, 
+              msg: "Worker: Signup confirmed" 
+            });
+            
+            // Update plan status to completed - only executeSignup decides final success/failure
+            await supabase
+              .from('plans')
+              .update({ 
+                status: 'completed',
+                completed_at: new Date().toISOString()
+              })
+              .eq('id', plan_id);
+            
+            return { 
+              success: true, 
+              requiresAction: false,
+              details: { message: 'Signup completed successfully' }
+            };
+          } else {
+            // Success not detected
+            await supabase.from("plan_logs").insert({ 
+              plan_id, 
+              msg: "Worker: Signup may not have completed, manual check required" 
+            });
+            
+            // Update plan status to action_required
+            await supabase
+              .from('plans')
+              .update({ status: 'action_required' })
+              .eq('id', plan_id);
+            
+            return { 
+              success: true, 
+              requiresAction: true,
+              details: { message: 'Signup may not have completed, manual check required' }
+            };
+          }
+        } catch (error) {
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: `Worker: Payment confirmation timeout: ${error.message}` 
+          });
+          
+          // Update plan status to action_required
+          await supabase
+            .from('plans')
+            .update({ status: 'action_required' })
+            .eq('id', plan_id);
           
           return { 
             success: true, 
-            requiresAction: false,
-            details: { message: 'Signup completed successfully' }
+            requiresAction: true,
+            details: { message: 'Payment confirmation timeout, manual check required' }
           };
         }
-        
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: `Worker: Unknown checkout state, breaking state machine. URL: ${stateUrl}` 
-        });
-        break;
       }
     }
     
-    // If we exit the state machine without success, mark as action required
+    // If we reach here without completing, mark as action required
     await supabase.from("plan_logs").insert({ 
       plan_id, 
       msg: "Worker: Signup may not have completed, manual check required" 
     });
     
+    await supabase
+      .from('plans')
+      .update({ status: 'action_required' })
+      .eq('id', plan_id);
+    
     return { 
       success: true, 
       requiresAction: true,
-      details: { message: 'Signup may not have completed, manual check required' }
+      details: { message: 'Signup flow incomplete, manual check required' }
     };
     
   } catch (error) {
