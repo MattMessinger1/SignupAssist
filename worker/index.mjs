@@ -518,68 +518,51 @@ async function loginWithPlaywright(page, loginUrl, email, password) {
     await page.waitForSelector('#edit-name', { timeout: 20000 });
     await page.waitForSelector('#edit-pass', { timeout: 20000 });
     
-    // Wait for email field and fill it
+    // Fill email field
     console.log("Worker: Filling email");
-    try {
-      await page.waitForSelector('#edit-name, input[name="name"], input[type="text"]', { timeout: 20000 });
-      await page.fill('#edit-name, input[name="name"], input[type="text"]', email);
-    } catch (error) {
-      console.log(`Worker: Email selector not found. Page content length: ${(await page.content()).length}`);
-      throw error;
-    }
+    await page.fill('#edit-name', email);
     
-    // Wait for password field and fill it
+    // Fill password field  
     console.log("Worker: Filling password");
-    try {
-      await page.waitForSelector('#edit-pass, input[name="pass"], input[type="password"]', { timeout: 20000 });
-      await page.fill('#edit-pass, input[name="pass"], input[type="password"]', password);
-    } catch (error) {
-      console.log(`Worker: Password selector not found. Page content length: ${(await page.content()).length}`);
-      throw error;
-    }
+    await page.fill('#edit-pass', password);
     
     // Click login button
     console.log("Worker: Clicking login button");
-    await page.click('#edit-submit, button[type="submit"]');
+    await page.click('#edit-submit');
     
-    // Wait for post-login element instead of networkidle
+    // Wait for dashboard URL after login
     try {
-      await page.waitForFunction(() => {
-        return window.location.href.includes('/dashboard') || 
-               document.body.innerText.includes('logout') || 
-               document.body.innerText.includes('sign out');
-      }, { timeout: 30000 });
-      console.log("Worker: Login successful");
-    } catch (error) {
-      console.log("Worker: Post-login element not found, checking current state");
-    }
-    
-    // Check if we're logged in (look for dashboard or profile indicators)
-    const currentUrl = page.url();
-    const content = await page.content();
-    
-    if (currentUrl.includes('dashboard') || currentUrl.includes('profile') || 
-        content.includes('logout') || content.includes('sign out')) {
+      await page.waitForURL(/dashboard/, { timeout: 30000 });
       console.log("Worker: Login successful");
       return { success: true };
-    }
-    
-    // Check for error messages
-    const errorSelectors = [
-      '.error', '.alert-danger', '[class*="error"]', '[class*="invalid"]'
-    ];
-    
-    for (const selector of errorSelectors) {
-      const errorElement = await page.$(selector);
-      if (errorElement) {
-        const errorText = await errorElement.textContent();
-        if (errorText && errorText.trim()) {
-          return { success: false, error: `Login failed: ${errorText.trim()}` };
+    } catch (error) {
+      // Fallback: check current URL and content for login success indicators
+      const currentUrl = page.url();
+      const content = await page.content();
+      
+      if (currentUrl.includes('dashboard') || currentUrl.includes('profile') || 
+          content.includes('logout') || content.includes('sign out')) {
+        console.log("Worker: Login successful");
+        return { success: true };
+      }
+      
+      // Check for error messages
+      const errorSelectors = [
+        '.error', '.alert-danger', '[class*="error"]', '[class*="invalid"]'
+      ];
+      
+      for (const selector of errorSelectors) {
+        const errorElement = await page.$(selector);
+        if (errorElement) {
+          const errorText = await errorElement.textContent();
+          if (errorText && errorText.trim()) {
+            return { success: false, error: `Login failed: ${errorText.trim()}` };
+          }
         }
       }
+      
+      return { success: false, error: 'Login failed - please check credentials' };
     }
-    
-    return { success: false, error: 'Login failed - please check credentials' };
   } catch (error) {
     return { success: false, error: `Login error: ${error.message}` };
   }
