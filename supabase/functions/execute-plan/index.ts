@@ -437,7 +437,90 @@ async function executeBookingFlow(sessionId: string, apiKey: string, plan: any, 
   }
 }
 
-// Helper function to find and click an element with enhanced fuzzy matching
+// String similarity helper using Jaro-Winkler algorithm
+function jaroWinklerSimilarity(s1: string, s2: string): number {
+  const jaro = jaroSimilarity(s1, s2);
+  const prefix = commonPrefix(s1, s2);
+  return jaro + (0.1 * prefix * (1 - jaro));
+}
+
+function jaroSimilarity(s1: string, s2: string): number {
+  if (s1.length === 0 && s2.length === 0) return 1;
+  if (s1.length === 0 || s2.length === 0) return 0;
+  
+  const matchDistance = Math.floor(Math.max(s1.length, s2.length) / 2) - 1;
+  const s1Matches = new Array(s1.length).fill(false);
+  const s2Matches = new Array(s2.length).fill(false);
+  
+  let matches = 0;
+  let transpositions = 0;
+  
+  // Find matches
+  for (let i = 0; i < s1.length; i++) {
+    const start = Math.max(0, i - matchDistance);
+    const end = Math.min(i + matchDistance + 1, s2.length);
+    
+    for (let j = start; j < end; j++) {
+      if (s2Matches[j] || s1[i] !== s2[j]) continue;
+      s1Matches[i] = true;
+      s2Matches[j] = true;
+      matches++;
+      break;
+    }
+  }
+  
+  if (matches === 0) return 0;
+  
+  // Count transpositions
+  let j = 0;
+  for (let i = 0; i < s1.length; i++) {
+    if (!s1Matches[i]) continue;
+    while (!s2Matches[j]) j++;
+    if (s1[i] !== s2[j]) transpositions++;
+    j++;
+  }
+  
+  return (matches / s1.length + matches / s2.length + (matches - transpositions / 2) / matches) / 3;
+}
+
+function commonPrefix(s1: string, s2: string): number {
+  let prefix = 0;
+  for (let i = 0; i < Math.min(s1.length, s2.length, 4); i++) {
+    if (s1[i] === s2[i]) prefix++;
+    else break;
+  }
+  return prefix;
+}
+
+// Helper function to parse visible text nodes from HTML content
+function extractVisibleTextNodes(htmlContent: string): string[] {
+  const textNodes: string[] = [];
+  
+  // Remove script and style content
+  const cleanContent = htmlContent
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '');
+  
+  // Extract text content from HTML tags, focusing on clickable elements
+  const clickableTagPattern = /<(button|a|div|span|td|th|li|p|h1|h2|h3|h4|h5|h6)[^>]*>([\s\S]*?)<\/\1>/gi;
+  let match;
+  
+  while ((match = clickableTagPattern.exec(cleanContent)) !== null) {
+    const textContent = match[2]
+      .replace(/<[^>]*>/g, ' ') // Remove inner HTML tags
+      .replace(/\s+/g, ' ') // Normalize whitespace
+      .trim();
+    
+    if (textContent && textContent.length > 2 && textContent.length < 200) {
+      textNodes.push(textContent);
+    }
+  }
+  
+  return [...new Set(textNodes)]; // Remove duplicates
+}
+
+// Helper function to find and click an element with enhanced fuzzy matching and similarity scoring
 async function findAndClickElement(sessionId: string, apiKey: string, text: string, elementType: string, className?: string): Promise<boolean> {
   try {
     // Get page content
@@ -452,7 +535,7 @@ async function findAndClickElement(sessionId: string, apiKey: string, text: stri
 
     const content = await contentResponse.text();
     
-    // Enhanced fuzzy matching strategies
+    // STEP 1: Enhanced fuzzy matching strategies (existing logic)
     const searchTerms = [
       text, // Exact match
       text.toLowerCase(),
@@ -462,67 +545,129 @@ async function findAndClickElement(sessionId: string, apiKey: string, text: stri
       text.substring(0, Math.min(text.length, 10)) // First 10 characters
     ];
     
-    // Check if any search term is found in content
+    // Check if any search term is found in content using existing strategy
     const textFound = searchTerms.some(term => 
       content.toLowerCase().includes(term.toLowerCase())
     );
 
-    if (!textFound) return false;
+    // STEP 2: Try existing selector-based approach first (backward compatibility)
+    if (textFound) {
+      // Enhanced selector strategies with fuzzy matching
+      const selectors = [
+        // Exact text matching
+        `*:contains("${text}")`,
+        `button:contains("${text}")`,
+        `a:contains("${text}")`,
+        `div:contains("${text}")`,
+        `span:contains("${text}")`,
+        
+        // Class and ID-based matching
+        `[class*="${className || text.toLowerCase().replace(/\s+/g, '')}"]`,
+        `[id*="${className || text.toLowerCase().replace(/\s+/g, '')}"]`,
+        `[data-testid*="${text.toLowerCase().replace(/\s+/g, '')}"]`,
+        
+        // Fuzzy text matching for individual words
+        ...text.split(/\s+/).map(word => `*:contains("${word}")`),
+        
+        // Element type with partial text
+        `${elementType}:contains("${text}")`,
+        `${elementType}[class*="${text.toLowerCase().replace(/\s+/g, '')}"]`,
+        
+        // Common lesson/class selectors
+        `button[class*="lesson"]`,
+        `button[class*="class"]`,
+        `button[class*="slot"]`,
+        `a[class*="lesson"]`,
+        `a[class*="class"]`,
+        `a[class*="slot"]`,
+        
+        // Time-based selectors
+        `*[class*="time"]`,
+        `*[class*="schedule"]`,
+        `*[class*="booking"]`
+      ];
 
-    // Enhanced selector strategies with fuzzy matching
-    const selectors = [
-      // Exact text matching
-      `*:contains("${text}")`,
-      `button:contains("${text}")`,
-      `a:contains("${text}")`,
-      `div:contains("${text}")`,
-      `span:contains("${text}")`,
-      
-      // Class and ID-based matching
-      `[class*="${className || text.toLowerCase().replace(/\s+/g, '')}"]`,
-      `[id*="${className || text.toLowerCase().replace(/\s+/g, '')}"]`,
-      `[data-testid*="${text.toLowerCase().replace(/\s+/g, '')}"]`,
-      
-      // Fuzzy text matching for individual words
-      ...text.split(/\s+/).map(word => `*:contains("${word}")`),
-      
-      // Element type with partial text
-      `${elementType}:contains("${text}")`,
-      `${elementType}[class*="${text.toLowerCase().replace(/\s+/g, '')}"]`,
-      
-      // Common lesson/class selectors
-      `button[class*="lesson"]`,
-      `button[class*="class"]`,
-      `button[class*="slot"]`,
-      `a[class*="lesson"]`,
-      `a[class*="class"]`,
-      `a[class*="slot"]`,
-      
-      // Time-based selectors
-      `*[class*="time"]`,
-      `*[class*="schedule"]`,
-      `*[class*="booking"]`
-    ];
+      for (const selector of selectors) {
+        try {
+          const clickResponse = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/click`, {
+            method: 'POST',
+            headers: {
+              'X-BB-API-Key': apiKey,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ selector })
+          });
 
-    for (const selector of selectors) {
-      try {
-        const clickResponse = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/click`, {
-          method: 'POST',
-          headers: {
-            'X-BB-API-Key': apiKey,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ selector })
-        });
-
-        if (clickResponse.ok) {
-          await new Promise(resolve => setTimeout(resolve, 1500)); // Increased delay for reliability
-          console.log(`Successfully clicked element using selector: ${selector}`);
-          return true;
+          if (clickResponse.ok) {
+            await new Promise(resolve => setTimeout(resolve, 1500)); // Increased delay for reliability
+            console.log(`Successfully clicked element using selector: ${selector}`);
+            return true;
+          }
+        } catch (e) {
+          // Continue to next selector
         }
-      } catch (e) {
-        // Continue to next selector
       }
+    }
+
+    // STEP 3: Fallback to similarity-based matching if exact matching fails
+    console.log(`Exact matching failed for "${text}", attempting similarity-based fallback...`);
+    
+    // Extract all visible text nodes from the page
+    const candidateTexts = extractVisibleTextNodes(content);
+    const SIMILARITY_THRESHOLD = 0.8; // Configurable threshold for similarity matching
+    
+    let bestMatch: { text: string; similarity: number } | null = null;
+    
+    // Compute similarity scores for all candidates
+    for (const candidate of candidateTexts) {
+      const similarity = jaroWinklerSimilarity(
+        text.toLowerCase().trim(), 
+        candidate.toLowerCase().trim()
+      );
+      
+      if (similarity >= SIMILARITY_THRESHOLD) {
+        if (!bestMatch || similarity > bestMatch.similarity) {
+          bestMatch = { text: candidate, similarity };
+        }
+      }
+    }
+    
+    // If we found a similar candidate, try clicking it
+    if (bestMatch) {
+      console.log(`Found similar text: "${bestMatch.text}" (similarity: ${bestMatch.similarity.toFixed(3)})`);
+      
+      // Use the best match text for selector-based clicking
+      const similaritySelectors = [
+        `*:contains("${bestMatch.text}")`,
+        `button:contains("${bestMatch.text}")`,
+        `a:contains("${bestMatch.text}")`,
+        `div:contains("${bestMatch.text}")`,
+        `span:contains("${bestMatch.text}")`,
+        ...bestMatch.text.split(/\s+/).map(word => `*:contains("${word}")`)
+      ];
+      
+      for (const selector of similaritySelectors) {
+        try {
+          const clickResponse = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/click`, {
+            method: 'POST',
+            headers: {
+              'X-BB-API-Key': apiKey,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ selector })
+          });
+
+          if (clickResponse.ok) {
+            await new Promise(resolve => setTimeout(resolve, 1500));
+            console.log(`Successfully clicked similar element: "${bestMatch.text}" using selector: ${selector}`);
+            return true;
+          }
+        } catch (e) {
+          // Continue to next selector
+        }
+      }
+    } else {
+      console.log(`No similar text found with threshold >= ${SIMILARITY_THRESHOLD}`);
     }
 
     return false;
