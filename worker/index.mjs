@@ -360,60 +360,12 @@ app.post("/run-plan", async (req, res) => {
         }
       } catch { /* non-fatal */ }
 
-      // Navigate to target page
+      // Navigate to target page for Blackhawk flow
       const targetUrl = plan.discovered_url || plan.base_url || `https://${subdomain}.skiclubpro.team/dashboard`;
       await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Opening target page: ${targetUrl}` });
       await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
 
-      // If no discovered URL, run discovery with Playwright
-      if (!plan.discovered_url) {
-        await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Starting discovery..." });
-        
-        try {
-          const discoveredUrls = await discoverSignupUrls(page, plan.child_name);
-          
-          if (discoveredUrls.length === 0) {
-            await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: No signup URLs found for child" });
-            return res.status(404).json({ 
-              ok: false, 
-              code: 'NO_SIGNUP_URLS', 
-              msg: 'No matching signup opportunities found for this child' 
-            });
-          }
-          
-          // Update the plan with discovered URLs
-          const discoveredUrl = discoveredUrls[0];
-          await supabase
-            .from('plans')
-            .update({ discovered_url: discoveredUrl })
-            .eq('id', plan_id);
-            
-          await supabase.from("plan_logs").insert({ 
-            plan_id, 
-            msg: `Worker: Discovered signup URL: ${discoveredUrl}` 
-          });
-          
-          plan.discovered_url = discoveredUrl;
-        } catch (discoveryError) {
-          console.error("Discovery error:", discoveryError);
-          await supabase.from("plan_logs").insert({ 
-            plan_id, 
-            msg: `Worker: Discovery failed: ${discoveryError.message}` 
-          });
-          return res.status(500).json({ 
-            ok: false, 
-            code: 'DISCOVERY_FAILED', 
-            msg: discoveryError.message 
-          });
-        }
-      }
-
-      // Navigate to discovered/target URL
-      const finalUrl = plan.discovered_url || targetUrl;
-      await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Navigating to signup: ${finalUrl}` });
-      await page.goto(finalUrl, { waitUntil: "domcontentloaded" });
-
-      // Execute the signup
+      // Execute the Blackhawk-specific signup flow (no separate discovery needed)
       const signupResult = await executeSignup(page, plan, credentials, supabase);
       
       if (!signupResult.success) {
@@ -568,38 +520,126 @@ async function loginWithPlaywright(page, loginUrl, email, password) {
   }
 }
 
-// Discover signup URLs
-async function discoverSignupUrls(page, childName) {
-  const urls = [];
+// Blackhawk-specific discovery: Find and click Register for Nordic Kids Wednesday
+async function discoverBlackhawkRegistration(page, plan, supabase) {
+  const plan_id = plan.id;
   
   try {
-    // Look for links containing signup, register, events, etc.
-    const linkSelectors = [
-      `a[href*="signup"]:has-text("${childName}")`,
-      `a[href*="register"]:has-text("${childName}")`,
-      `a[href*="event"]:has-text("${childName}")`,
-      'a[href*="signup"]',
-      'a[href*="register"]',
-      'a[href*="event"]'
-    ];
+    // Navigate to registration page
+    const baseUrl = page.url().split('/').slice(0, 3).join('/'); // Get base domain
+    const registrationUrl = `${baseUrl}/registration`;
     
-    for (const selector of linkSelectors) {
-      const links = await page.$$(selector);
-      for (const link of links) {
-        const href = await link.getAttribute('href');
-        if (href) {
-          const fullUrl = new URL(href, page.url()).toString();
-          if (!urls.includes(fullUrl)) {
-            urls.push(fullUrl);
-          }
-        }
+    await supabase.from("plan_logs").insert({ 
+      plan_id, 
+      msg: `Worker: Navigating to registration page: ${registrationUrl}` 
+    });
+    
+    await page.goto(registrationUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(2000); // Wait for page to fully load
+    
+    // Look for Nordic Kids Wednesday program
+    const content = await page.content().toLowerCase();
+    if (!content.includes('nordic kids wednesday')) {
+      // Try alternative registration events page
+      const eventsUrl = `${baseUrl}/registration/events`;
+      await supabase.from("plan_logs").insert({ 
+        plan_id, 
+        msg: `Worker: Nordic Kids Wednesday not found, trying events page: ${eventsUrl}` 
+      });
+      
+      await page.goto(eventsUrl, { waitUntil: "domcontentloaded" });
+      await page.waitForTimeout(2000);
+      
+      const eventsContent = await page.content().toLowerCase();
+      if (!eventsContent.includes('nordic kids wednesday')) {
+        throw new Error('Nordic Kids Wednesday program not found on registration pages');
       }
     }
     
-    return urls;
+    // Find and click the Register button for Nordic Kids Wednesday
+    const registerSelectors = [
+      'button:has-text("Register")',
+      'a:has-text("Register")',
+      'input[type="submit"][value*="Register" i]',
+      '[value*="Register" i]'
+    ];
+    
+    let registerClicked = false;
+    
+    // Try to find Register button near "Nordic Kids Wednesday" text
+    for (const selector of registerSelectors) {
+      const elements = await page.$$(selector);
+      
+      for (const element of elements) {
+        // Check if this Register button is associated with Nordic Kids Wednesday
+        const parentRow = await element.locator('xpath=ancestor::tr | ancestor::div[contains(@class,"row")] | ancestor::div[contains(@class,"program")] | ancestor::section').first();
+        
+        if (parentRow) {
+          const rowText = await parentRow.textContent().catch(() => '');
+          if (rowText.toLowerCase().includes('nordic kids wednesday')) {
+            await element.scrollIntoViewIfNeeded();
+            await element.waitFor({ state: "visible" });
+            await element.click();
+            
+            await supabase.from("plan_logs").insert({ 
+              plan_id, 
+              msg: "Worker: Register clicked for Nordic Kids Wednesday" 
+            });
+            
+            registerClicked = true;
+            break;
+          }
+        }
+      }
+      
+      if (registerClicked) break;
+    }
+    
+    if (!registerClicked) {
+      // Fallback: click first Register button if Nordic Kids Wednesday text is on page
+      const fallbackElements = await page.$$(registerSelectors[0]);
+      if (fallbackElements.length > 0) {
+        await fallbackElements[0].scrollIntoViewIfNeeded();
+        await fallbackElements[0].waitFor({ state: "visible" });
+        await fallbackElements[0].click();
+        
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: "Worker: Register clicked (fallback) for Nordic Kids Wednesday" 
+        });
+        
+        registerClicked = true;
+      }
+    }
+    
+    if (!registerClicked) {
+      throw new Error('No Register button found for Nordic Kids Wednesday');
+    }
+    
+    // Wait for navigation to /registration/*/start
+    try {
+      await page.waitForURL(/\/registration\/.*\/start/, { timeout: 30000 });
+      return { success: true, startUrl: page.url() };
+    } catch (error) {
+      // Check if we're on a start-like page anyway
+      const currentUrl = page.url();
+      if (currentUrl.includes('/registration/') && (currentUrl.includes('/start') || currentUrl.includes('participant'))) {
+        return { success: true, startUrl: currentUrl };
+      }
+      
+      throw new Error(`Failed to navigate to start page after clicking Register: ${error.message}`);
+    }
+    
   } catch (error) {
-    console.error("Discovery error:", error);
-    return [];
+    await supabase.from("plan_logs").insert({ 
+      plan_id, 
+      msg: `Worker: Blackhawk registration discovery failed: ${error.message}` 
+    });
+    
+    return { 
+      success: false, 
+      error: `Blackhawk registration discovery failed: ${error.message}` 
+    };
   }
 }
 
@@ -655,46 +695,129 @@ async function reliableClick(page, selectors, plan_id, supabase, actionName) {
   return false;
 }
 
-// Handle Nordic Kids add-on form automation - now truly non-blocking
-async function handleNordicAddons(page, plan, supabase) {
+// Handle Blackhawk Options page - only runs on /registration/*/options URL
+async function handleBlackhawkOptions(page, plan, supabase) {
   const plan_id = plan.id;
+  const currentUrl = page.url();
+  
+  // Only run on options page
+  if (!currentUrl.match(/\/registration\/.*\/options/)) {
+    await supabase.from("plan_logs").insert({ 
+      plan_id, 
+      msg: "Worker: Not on options page, skipping add-on handling" 
+    });
+    return { success: true };
+  }
+  
+  await supabase.from("plan_logs").insert({ 
+    plan_id, 
+    msg: "Worker: Processing Blackhawk options page..." 
+  });
   
   try {
-    // Wait a moment for any page transitions
-    await page.waitForTimeout(2000);
-    
-    // Check if we're on a Nordic add-on page
-    const content = await page.content().catch(() => '');
-    const currentUrl = page.url();
-    
-    await supabase.from("plan_logs").insert({ 
-      plan_id, 
-      msg: `Worker: Current URL: ${currentUrl}` 
-    });
-    
-    // Look for Nordic-specific indicators
-    const isNordicPage = content.toLowerCase().includes('nordic') || 
-                        content.includes('add-on') || 
-                        content.includes('addon') ||
-                        currentUrl.includes('addon') ||
-                        currentUrl.includes('add-on');
-    
-    if (!isNordicPage) {
-      await supabase.from("plan_logs").insert({ 
-        plan_id, 
-        msg: "Worker: No Nordic add-on form detected, continuing..." 
-      });
-      return { success: true };
-    }
-    
-    await supabase.from("plan_logs").insert({ 
-      plan_id, 
-      msg: "Worker: Nordic add-on form detected, processing..." 
-    });
-    
     const EXTRAS = (plan?.extras ?? {});
     
-    // Handle Rental field - non-blocking with better error handling
+    // Handle Color Group field
+    const colorGroupValue = EXTRAS.nordicColorGroup;
+    const colorGroupSelectors = [
+      'select[name*="color"], select[id*="color"]',
+      'input[type="radio"][name*="color"]',
+      'input[type="checkbox"][name*="color"]'
+    ];
+    
+    try {
+      let colorGroupHandled = false;
+      for (const selector of colorGroupSelectors) {
+        const elements = await page.$$(selector);
+        if (elements.length > 0) {
+          const element = elements[0];
+          const tagName = await element.evaluate(el => el.tagName.toLowerCase());
+          
+          if (tagName === 'select') {
+            const options = await element.$$('option');
+            let selectedOption = null;
+            
+            // Try to find matching color group
+            if (colorGroupValue) {
+              for (const option of options) {
+                const optionText = await option.textContent();
+                if (optionText && optionText.toLowerCase().includes(colorGroupValue.toLowerCase())) {
+                  selectedOption = optionText;
+                  await element.selectOption({ label: optionText });
+                  break;
+                }
+              }
+            }
+            
+            // Default to first option if not found or not specified
+            if (!selectedOption && options.length > 1) {
+              const firstOption = await options[1].textContent(); // Skip first empty option
+              await element.selectOption({ index: 1 });
+              selectedOption = firstOption;
+            }
+            
+            if (selectedOption) {
+              const logMsg = colorGroupValue && selectedOption.toLowerCase().includes(colorGroupValue.toLowerCase()) 
+                ? `Worker: Color group selected: ${selectedOption}`
+                : `Worker: Defaulted to first color group option: ${selectedOption}`;
+              await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
+              colorGroupHandled = true;
+            }
+          } else {
+            // Handle radio buttons - select first or matching
+            let selectedLabel = null;
+            
+            if (colorGroupValue) {
+              for (const radioElement of elements) {
+                const label = await page.evaluate(el => {
+                  const labelEl = document.querySelector(`label[for="${el.id}"]`);
+                  return labelEl ? labelEl.textContent : el.closest('label')?.textContent || '';
+                }, radioElement);
+                
+                if (label && label.toLowerCase().includes(colorGroupValue.toLowerCase())) {
+                  await radioElement.click();
+                  selectedLabel = label;
+                  break;
+                }
+              }
+            }
+            
+            // Default to first option
+            if (!selectedLabel && elements.length > 0) {
+              await elements[0].click();
+              selectedLabel = await page.evaluate(el => {
+                const labelEl = document.querySelector(`label[for="${el.id}"]`);
+                return labelEl ? labelEl.textContent : el.closest('label')?.textContent || 'First option';
+              }, elements[0]);
+            }
+            
+            if (selectedLabel) {
+              const logMsg = colorGroupValue && selectedLabel.toLowerCase().includes(colorGroupValue.toLowerCase()) 
+                ? `Worker: Color group selected: ${selectedLabel}`
+                : `Worker: Defaulted to first color group option: ${selectedLabel}`;
+              await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
+              colorGroupHandled = true;
+            }
+          }
+          
+          if (colorGroupHandled) break;
+        }
+      }
+      
+      if (!colorGroupHandled) {
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: "Worker: Color group skipped (no fields found)" 
+        });
+      }
+    } catch (error) {
+      await supabase.from("plan_logs").insert({ 
+        plan_id, 
+        msg: `Worker: Color group error (non-blocking): ${error.message}` 
+      });
+    }
+    
+    // Handle Rental field
     const rentalValue = EXTRAS.nordicRental;
     const rentalSelectors = [
       'select[name*="rental"], select[id*="rental"]',
@@ -786,117 +909,17 @@ async function handleNordicAddons(page, plan, supabase) {
       if (!rentalHandled) {
         await supabase.from("plan_logs").insert({ 
           plan_id, 
-          msg: "Worker: No rental field detected, skipping" 
+          msg: "Worker: Rental skipped (no fields found)" 
         });
       }
     } catch (error) {
       await supabase.from("plan_logs").insert({ 
         plan_id, 
-        msg: `Worker: Rental field error (non-blocking): ${error.message}` 
+        msg: `Worker: Rental error (non-blocking): ${error.message}` 
       });
     }
     
-    // Handle Color Group field - non-blocking with better error handling
-    const colorGroupValue = EXTRAS.nordicColorGroup;
-    const colorGroupSelectors = [
-      'select[name*="color"], select[id*="color"]',
-      'input[type="radio"][name*="color"]',
-      'input[type="checkbox"][name*="color"]'
-    ];
-    
-    try {
-      let colorGroupHandled = false;
-      for (const selector of colorGroupSelectors) {
-        const elements = await page.$$(selector);
-        if (elements.length > 0) {
-          const element = elements[0];
-          const tagName = await element.evaluate(el => el.tagName.toLowerCase());
-          
-          if (tagName === 'select') {
-            const options = await element.$$('option');
-            let selectedOption = null;
-            
-            // Try to find matching color group
-            if (colorGroupValue) {
-              for (const option of options) {
-                const optionText = await option.textContent();
-                if (optionText && optionText.toLowerCase().includes(colorGroupValue.toLowerCase())) {
-                  selectedOption = optionText;
-                  await element.selectOption({ label: optionText });
-                  break;
-                }
-              }
-            }
-            
-            // Default to first option if not found or not specified
-            if (!selectedOption && options.length > 1) {
-              const firstOption = await options[1].textContent(); // Skip first empty option
-              await element.selectOption({ index: 1 });
-              selectedOption = firstOption;
-            }
-            
-            if (selectedOption) {
-              const logMsg = colorGroupValue && selectedOption.toLowerCase().includes(colorGroupValue.toLowerCase()) 
-                ? `Worker: Color group selected: ${selectedOption}`
-                : `Worker: Defaulted to first color group option: ${selectedOption}`;
-              await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
-              colorGroupHandled = true;
-            }
-          } else {
-            // Handle radio buttons - select first or matching
-            let selectedLabel = null;
-            
-            if (colorGroupValue) {
-              for (const radioElement of elements) {
-                const label = await page.evaluate(el => {
-                  const labelEl = document.querySelector(`label[for="${el.id}"]`);
-                  return labelEl ? labelEl.textContent : el.closest('label')?.textContent || '';
-                }, radioElement);
-                
-                if (label && label.toLowerCase().includes(colorGroupValue.toLowerCase())) {
-                  await radioElement.click();
-                  selectedLabel = label;
-                  break;
-                }
-              }
-            }
-            
-            // Default to first option
-            if (!selectedLabel && elements.length > 0) {
-              await elements[0].click();
-              selectedLabel = await page.evaluate(el => {
-                const labelEl = document.querySelector(`label[for="${el.id}"]`);
-                return labelEl ? labelEl.textContent : el.closest('label')?.textContent || 'First option';
-              }, elements[0]);
-            }
-            
-            if (selectedLabel) {
-              const logMsg = colorGroupValue && selectedLabel.toLowerCase().includes(colorGroupValue.toLowerCase()) 
-                ? `Worker: Color group selected: ${selectedLabel}`
-                : `Worker: Defaulted to first color group option: ${selectedLabel}`;
-              await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
-              colorGroupHandled = true;
-            }
-          }
-          
-          if (colorGroupHandled) break;
-        }
-      }
-      
-      if (!colorGroupHandled) {
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: "Worker: Color group skipped" 
-        });
-      }
-    } catch (error) {
-      await supabase.from("plan_logs").insert({ 
-        plan_id, 
-        msg: `Worker: Color group error (non-blocking): ${error.message}` 
-      });
-    }
-    
-    // Handle Volunteer field - non-blocking with better error handling
+    // Handle Volunteer field
     const volunteerValue = EXTRAS.volunteer;
     const volunteerSelectors = [
       'input[type="checkbox"][name*="volunteer"]',
@@ -985,7 +1008,7 @@ async function handleNordicAddons(page, plan, supabase) {
       if (!volunteerHandled) {
         await supabase.from("plan_logs").insert({ 
           plan_id, 
-          msg: "Worker: Volunteer skipped" 
+          msg: "Worker: Volunteer skipped (no fields found)" 
         });
       }
     } catch (error) {
@@ -995,36 +1018,7 @@ async function handleNordicAddons(page, plan, supabase) {
       });
     }
     
-    // Handle donation - always skip by filling "0"
-    try {
-      const donationSelectors = [
-        'input[name*="donation"], input[id*="donation"]',
-        'input[name*="donate"], input[id*="donate"]',
-        'input[placeholder*="donation"], input[placeholder*="donate"]'
-      ];
-      
-      for (const selector of donationSelectors) {
-        const elements = await page.$$(selector);
-        for (const element of elements) {
-          const inputType = await element.getAttribute('type');
-          if (inputType === 'text' || inputType === 'number' || !inputType) {
-            await element.fill('0');
-            await supabase.from("plan_logs").insert({ 
-              plan_id, 
-              msg: "Worker: Donation skipped (0)" 
-            });
-            break;
-          }
-        }
-      }
-    } catch (error) {
-      await supabase.from("plan_logs").insert({ 
-        plan_id, 
-        msg: `Worker: Donation field error (non-blocking): ${error.message}` 
-      });
-    }
-    
-    // Look for Next/Continue button using reliable click
+    // Click Next to proceed to cart
     const nextButtonSelectors = [
       'button:has-text("Next")',
       'button:has-text("Continue")',
@@ -1034,15 +1028,27 @@ async function handleNordicAddons(page, plan, supabase) {
       'input[type="submit"]'
     ];
     
-    const clicked = await reliableClick(page, nextButtonSelectors, plan_id, supabase, "Next/Continue");
+    const clicked = await reliableClick(page, nextButtonSelectors, plan_id, supabase, "Next");
     if (clicked) {
-      await page.waitForTimeout(3000); // Wait for navigation
+      // Wait for navigation to cart
+      try {
+        await page.waitForURL(/\/cart/, { timeout: 30000 });
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: "Worker: Navigated to cart after options" 
+        });
+      } catch (error) {
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: `Worker: Navigation to cart may have failed: ${error.message}` 
+        });
+      }
     }
     
   } catch (error) {
     await supabase.from("plan_logs").insert({ 
       plan_id, 
-      msg: `Worker: Nordic add-on error (non-blocking): ${error.message}` 
+      msg: `Worker: Blackhawk options error (non-blocking): ${error.message}` 
     });
   }
   
@@ -1056,90 +1062,143 @@ async function executeSignup(page, plan, credentials, supabase) {
     
     await supabase.from("plan_logs").insert({ 
       plan_id, 
-      msg: "Worker: Starting signup process..." 
+      msg: "Worker: Starting Blackhawk multi-step signup process..." 
     });
     
-    // Look for signup forms
-    const forms = await page.$$('form');
-    
-    if (forms.length === 0) {
+    // Step 1: Blackhawk Registration Discovery - Find and click Register for Nordic Kids Wednesday
+    const discoveryResult = await discoverBlackhawkRegistration(page, plan, supabase);
+    if (!discoveryResult.success) {
       return { 
         success: false, 
-        error: 'No signup form found on page',
-        code: 'NO_SIGNUP_FORM'
+        error: discoveryResult.error,
+        code: 'BLACKHAWK_DISCOVERY_FAILED'
       };
     }
     
-    // Try to fill out the signup form
-    await supabase.from("plan_logs").insert({ 
-      plan_id, 
-      msg: "Worker: Filling signup form..." 
-    });
-    
-    // Fill common form fields
-    const nameFields = await page.$$('input[name*="name"], input[id*="name"]');
-    if (nameFields.length > 0) {
-      await nameFields[0].fill(plan.child_name);
-    }
-    
-    const emailFields = await page.$$('input[type="email"], input[name*="email"]');
-    if (emailFields.length > 0) {
-      await emailFields[0].fill(credentials.email);
-    }
-    
-    // Handle payment if CVV is available
-    if (credentials.cvv) {
-      const cvvFields = await page.$$('input[name*="cvv"], input[name*="security"], input[placeholder*="CVV"]');
-      if (cvvFields.length > 0) {
-        await cvvFields[0].fill(credentials.cvv);
+    // Step 2: Start Page - Select participant
+    const currentUrl = page.url();
+    if (currentUrl.match(/\/registration\/.*\/start/)) {
+      await supabase.from("plan_logs").insert({ 
+        plan_id, 
+        msg: "Worker: On start page, selecting participant..." 
+      });
+      
+      // Look for participant dropdown and select matching child
+      const participantSelectors = [
+        'select[name*="participant"]',
+        'select[id*="participant"]',
+        'select[name*="child"]',
+        'select[id*="child"]',
+        'select' // fallback to any select element
+      ];
+      
+      let participantSelected = false;
+      for (const selector of participantSelectors) {
+        const selects = await page.$$(selector);
+        if (selects.length > 0) {
+          const selectElement = selects[0];
+          const options = await selectElement.$$('option');
+          
+          // Try to find matching participant by name
+          for (const option of options) {
+            const optionText = await option.textContent();
+            if (optionText && optionText.toLowerCase().includes(plan.child_name.toLowerCase())) {
+              await selectElement.selectOption({ label: optionText });
+              await supabase.from("plan_logs").insert({ 
+                plan_id, 
+                msg: `Worker: Participant selected: ${optionText}` 
+              });
+              participantSelected = true;
+              break;
+            }
+          }
+          
+          // Fallback to first non-empty option if exact match not found
+          if (!participantSelected && options.length > 1) {
+            const firstOption = await options[1].textContent();
+            await selectElement.selectOption({ index: 1 });
+            await supabase.from("plan_logs").insert({ 
+              plan_id, 
+              msg: `Worker: Participant selected (fallback): ${firstOption}` 
+            });
+            participantSelected = true;
+          }
+          
+          if (participantSelected) break;
+        }
+      }
+      
+      if (!participantSelected) {
         await supabase.from("plan_logs").insert({ 
           plan_id, 
-          msg: "Worker: CVV entered for payment" 
+          msg: "Worker: No participant dropdown found, continuing..." 
+        });
+      }
+      
+      // Click Next to go to options page
+      const nextSelectors = [
+        'button:has-text("Next")',
+        'button:has-text("Continue")',
+        'input[type="submit"][value*="Next" i]',
+        'input[type="submit"][value*="Continue" i]',
+        'button[type="submit"]'
+      ];
+      
+      const nextClicked = await reliableClick(page, nextSelectors, plan_id, supabase, "Next");
+      if (nextClicked) {
+        try {
+          await page.waitForURL(/\/registration\/.*\/options/, { timeout: 30000 });
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: "Worker: Navigated to options page" 
+          });
+        } catch (error) {
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: `Worker: Navigation to options may have failed: ${error.message}` 
+          });
+        }
+      } else {
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: "Worker: No Next button found on start page" 
         });
       }
     }
     
-    // Submit the form using reliable click
-    const submitSelectors = [
-      'button[type="submit"]',
-      'input[type="submit"]',
-      'button:has-text("Submit")',
-      'button:has-text("Register")',
-      'button:has-text("Sign Up")'
-    ];
-    
-    const submitClicked = await reliableClick(page, submitSelectors, plan_id, supabase, "Submit");
-    if (submitClicked) {
-      await page.waitForTimeout(3000);
+    // Step 3: Options Page - Handle add-ons
+    const optionsUrl = page.url();
+    if (optionsUrl.match(/\/registration\/.*\/options/)) {
       await supabase.from("plan_logs").insert({ 
         plan_id, 
-        msg: "Worker: Signup form submitted" 
+        msg: "Worker: On options page, processing add-ons..." 
       });
+      
+      // Handle add-ons using the dedicated function
+      await handleBlackhawkOptions(page, plan, supabase);
+      
+      // Function handles Next click and navigation to cart
     }
     
-    // Check for Nordic Kids add-on form after initial signup (non-blocking)
-    const nordicResult = await handleNordicAddons(page, plan, supabase);
-    // Nordic add-ons always returns success, so we continue regardless
+    // Step 4: Cart and Checkout State Machine
+    let maxStateLoops = 10; // Prevent infinite loops
+    let currentLoop = 0;
     
-    // URL-based checkout state machine
     await supabase.from("plan_logs").insert({ 
       plan_id, 
       msg: "Worker: Starting checkout state machine..." 
     });
     
-    let maxStateLoops = 10; // Prevent infinite loops
-    let currentLoop = 0;
-    
     while (currentLoop < maxStateLoops) {
       currentLoop++;
-      const currentUrl = page.url();
+      const stateUrl = page.url();
       
       await supabase.from("plan_logs").insert({ 
         plan_id, 
-        msg: `Worker: Current URL: ${currentUrl}` 
+        msg: `Worker: Current URL: ${stateUrl}` 
       });
       
-      if (currentUrl.includes('/cart')) {
+      if (stateUrl.includes('/cart')) {
         // Cart state: click Checkout button
         const checkoutSelectors = [
           'button:has-text("Checkout")',
@@ -1169,7 +1228,7 @@ async function executeSignup(page, plan, credentials, supabase) {
           break;
         }
         
-      } else if (currentUrl.match(/\/checkout\/\d+\/installments/)) {
+      } else if (stateUrl.match(/\/checkout\/\d+\/installments/)) {
         // Installments state: ensure saved card selected and click Continue to Review
         
         // Ensure saved card radio button is selected
@@ -1214,7 +1273,7 @@ async function executeSignup(page, plan, credentials, supabase) {
           break;
         }
         
-      } else if (currentUrl.match(/\/checkout\/\d+\/review/)) {
+      } else if (stateUrl.match(/\/checkout\/\d+\/review/)) {
         // Review state: click Pay and complete purchase
         
         // Fill CVV if available and field exists
@@ -1303,7 +1362,7 @@ async function executeSignup(page, plan, credentials, supabase) {
           break;
         }
         
-      } else if (currentUrl.match(/\/checkout\/\d+\/complete/)) {
+      } else if (stateUrl.match(/\/checkout\/\d+\/complete/)) {
         // Complete state: success
         await supabase.from("plan_logs").insert({ 
           plan_id, 
@@ -1320,9 +1379,9 @@ async function executeSignup(page, plan, credentials, supabase) {
         // Unknown state: check for success indicators before breaking
         const content = await page.content().catch(() => '');
         const hasSuccessText = /(Thank you|Registration complete|successfully registered)/i.test(content);
-        const hasSuccessUrl = currentUrl.includes('/complete') || 
-                             currentUrl.includes('/success') || 
-                             currentUrl.includes('/confirmation');
+        const hasSuccessUrl = stateUrl.includes('/complete') || 
+                             stateUrl.includes('/success') || 
+                             stateUrl.includes('/confirmation');
         
         if (hasSuccessText || hasSuccessUrl) {
           await supabase.from("plan_logs").insert({ 
@@ -1339,7 +1398,7 @@ async function executeSignup(page, plan, credentials, supabase) {
         
         await supabase.from("plan_logs").insert({ 
           plan_id, 
-          msg: `Worker: Unknown checkout state, breaking state machine. URL: ${currentUrl}` 
+          msg: `Worker: Unknown checkout state, breaking state machine. URL: ${stateUrl}` 
         });
         break;
       }
