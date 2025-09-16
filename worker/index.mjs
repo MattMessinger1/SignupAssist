@@ -558,29 +558,26 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
       await page.goto(registrationUrl, { waitUntil: "domcontentloaded" });
       await page.waitForTimeout(2000);
       
-      const content = (await page.content()).toLowerCase();
-      if (content.includes(targetText.toLowerCase())) {
-        try {
-          const registerButton = page.locator(`text=${targetText}`).first().locator('button:has-text("Register")');
+      try {
+        // Use scrollUntilVisible to find the Register button for the target program
+        const registerButton = await scrollUntilVisible(page, `text=${targetText}`, 15)
+          .then(element => element.locator('button:has-text("Register")').first());
+        
+        if (await registerButton.count() > 0) {
+          await registerButton.click();
           
-          if (await registerButton.count() > 0) {
-            await registerButton.scrollIntoViewIfNeeded();
-            await registerButton.waitFor({ state: "visible" });
-            await registerButton.click();
-            
-            await supabase.from("plan_logs").insert({ 
-              plan_id, 
-              msg: "Worker: Program found by name" 
-            });
-            
-            // Wait for navigation to start page
-            await page.waitForURL(/\/registration\/.*\/start/, { timeout: 30000 });
-            return { success: true, startUrl: page.url() };
-          }
-        } catch (error) {
-          // Continue to next strategy
-          console.log(`Program name strategy failed: ${error.message}`);
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: "Worker: Program found by name" 
+          });
+          
+          // Wait for navigation to start page
+          await page.waitForURL(/\/registration\/.*\/start/, { timeout: 30000 });
+          return { success: true, startUrl: page.url() };
         }
+      } catch (error) {
+        // Continue to next strategy
+        console.log(`Program name strategy failed: ${error.message}`);
       }
     }
     
@@ -597,40 +594,39 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
         await page.goto(registrationUrl, { waitUntil: "domcontentloaded" });
         await page.waitForTimeout(2000);
         
-        const content = (await page.content()).toLowerCase();
-        if (content.includes(sessionTime.toLowerCase())) {
-          try {
-            // Try multiple register button selectors
-            const registerSelectors = [
-              'button:has-text("Register")',
-              'input[type="submit"][value*="Register"]'
-            ];
-            
-            for (const selector of registerSelectors) {
-              const buttons = await page.$$(selector);
-              for (const button of buttons) {
-                // Check if this button is near the session time text
-                const buttonText = await button.textContent() || '';
-                if (buttonText.toLowerCase().includes('register')) {
-                  await button.scrollIntoViewIfNeeded();
-                  await button.waitForElementState('visible');
-                  await button.click();
-                  
-                  await supabase.from("plan_logs").insert({ 
-                    plan_id, 
-                    msg: "Worker: Program found by time" 
-                  });
-                  
-                  // Wait for navigation to start page
-                  await page.waitForURL(/\/registration\/.*\/start/, { timeout: 30000 });
-                  return { success: true, startUrl: page.url() };
-                }
+        try {
+          // Try multiple register button selectors with scrolling
+          const registerSelectors = [
+            'button:has-text("Register")',
+            'input[type="submit"][value*="Register"]'
+          ];
+          
+          for (const selector of registerSelectors) {
+            try {
+              const registerButton = await scrollUntilVisible(page, selector, 15);
+              
+              // Check if this button is near the session time text
+              const buttonText = await registerButton.textContent() || '';
+              if (buttonText.toLowerCase().includes('register')) {
+                await registerButton.click();
+                
+                await supabase.from("plan_logs").insert({ 
+                  plan_id, 
+                  msg: "Worker: Program found by time" 
+                });
+                
+                // Wait for navigation to start page
+                await page.waitForURL(/\/registration\/.*\/start/, { timeout: 30000 });
+                return { success: true, startUrl: page.url() };
               }
+            } catch (error) {
+              // Continue to next selector
+              console.log(`Register button selector ${selector} failed: ${error.message}`);
             }
-          } catch (error) {
-            // Continue to failure
-            console.log(`Session time strategy failed: ${error.message}`);
           }
+        } catch (error) {
+          // Continue to failure
+          console.log(`Session time strategy failed: ${error.message}`);
         }
       }
     }
@@ -659,7 +655,31 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
   }
 }
 
-// Reliable button click helper with scrolling, visibility, and retries
+// Universal scrolling helper - scrolls until element is visible
+async function scrollUntilVisible(page, selector, maxScrolls = 15) {
+  for (let scrollAttempt = 1; scrollAttempt <= maxScrolls; scrollAttempt++) {
+    const locator = page.locator(selector).first();
+    
+    try {
+      // Check if element is visible
+      if (await locator.isVisible()) {
+        return locator;
+      }
+    } catch (error) {
+      // Element might not exist yet, continue scrolling
+    }
+    
+    console.log(`Scroll attempt ${scrollAttempt}: element not visible yet`);
+    
+    // Scroll down and wait
+    await page.mouse.wheel(0, 2000);
+    await page.waitForTimeout(500);
+  }
+  
+  throw new Error(`Element ${selector} not found after ${maxScrolls} scroll attempts`);
+}
+
+// Reliable button click helper with universal scrolling, visibility, and retries
 async function reliableClick(page, selectors, plan_id, supabase, actionName) {
   const maxRetries = 3;
   const retryDelay = 500;
@@ -667,24 +687,20 @@ async function reliableClick(page, selectors, plan_id, supabase, actionName) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     for (const selector of selectors) {
       try {
-        const buttons = await page.$$(selector);
-        if (buttons.length > 0) {
-          const button = buttons[0];
-          
-          // Scroll into view and wait for visibility
-          await button.scrollIntoViewIfNeeded();
-          await button.waitFor({ state: "visible" });
-          
-          // Click the button
-          await button.click();
-          await supabase.from("plan_logs").insert({ 
-            plan_id, 
-            msg: `Worker: Successfully clicked ${actionName} button (${selector})` 
-          });
-          return true;
-        }
+        // Use scrollUntilVisible to find the element
+        const locator = await scrollUntilVisible(page, selector, 15);
+        
+        // Click the element
+        await locator.click();
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: `Worker: Successfully clicked ${actionName} button (${selector})` 
+        });
+        return true;
+        
       } catch (error) {
         // Continue to next selector or retry
+        console.log(`Failed to find/click ${selector}: ${error.message}`);
       }
     }
     
@@ -1220,17 +1236,22 @@ async function executeSignup(page, plan, credentials, supabase) {
     });
     
     if (currentUrl.match(/\/checkout\/.*\/installments/)) {
-      // Ensure saved card is selected (default to first radio if none)
-      const savedCardRadios = await page.$$('input[type="radio"]');
-      if (savedCardRadios.length > 0) {
-        const isChecked = await savedCardRadios[0].isChecked();
+      // Ensure saved card is selected (default to first radio if none) 
+      try {
+        const savedCardRadio = await scrollUntilVisible(page, 'input[type="radio"]', 15);
+        const isChecked = await savedCardRadio.isChecked();
         if (!isChecked) {
-          await savedCardRadios[0].scrollIntoViewIfNeeded();
-          await savedCardRadios[0].click();
+          await savedCardRadio.click();
         }
         await supabase.from("plan_logs").insert({ 
           plan_id, 
           msg: "Worker: Payment method selected" 
+        });
+      } catch (error) {
+        // No radio buttons found - continue with default selection
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: "Worker: No payment method radio buttons found, continuing with defaults" 
         });
       }
       
@@ -1268,16 +1289,28 @@ async function executeSignup(page, plan, credentials, supabase) {
           'input[id*="security"]', 'input[placeholder*="CVV"]', 'input[name*="cvc"]'
         ];
         
+        let cvvFilled = false;
         for (const selector of cvvSelectors) {
-          const cvvFields = await page.$$(selector);
-          if (cvvFields.length > 0) {
-            await cvvFields[0].fill(String(credentials.cvv));
+          try {
+            const cvvField = await scrollUntilVisible(page, selector, 15);
+            await cvvField.fill(String(credentials.cvv));
             await supabase.from("plan_logs").insert({ 
               plan_id, 
               msg: "Worker: CVV entered for payment" 
             });
+            cvvFilled = true;
             break;
+          } catch (error) {
+            // Continue to next selector
+            console.log(`CVV selector ${selector} failed: ${error.message}`);
           }
+        }
+        
+        if (!cvvFilled) {
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: "Worker: CVV field not found, continuing without CVV" 
+          });
         }
       }
       
