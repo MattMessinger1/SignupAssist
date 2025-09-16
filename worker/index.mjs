@@ -1062,50 +1062,53 @@ async function executeSignup(page, plan, credentials, supabase) {
     }
     
     // Handle payment with saved card + CVV
-    const paymentResult = await handleSavedCardPayment(page, plan, credentials, supabase);
+    const paymentResult = await handleBlackhawkPayment(page, plan, credentials, supabase);
     if (!paymentResult.success) {
       return paymentResult;
     }
     
-    // Check for success or action required
+    // Check for final success criteria
     const content = await page.content().catch(() => '');
     const currentUrl = page.url();
     
-    // Check for confirmation or success messages
-    if (content.includes('confirm') || content.includes('verification') || 
-        content.includes('check your email') || currentUrl.includes('confirm')) {
-      return { 
-        success: true, 
-        requiresAction: true,
-        details: { message: 'Email confirmation required' }
-      };
-    }
+    // Only log success if confirmation page/URL is detected
+    const confirmationIndicators = [
+      'thank you', 'registration complete', 'success', 'confirmed', 'receipt'
+    ];
     
-    // Check for payment confirmation
-    if (content.includes('payment') && content.includes('confirm')) {
-      return { 
-        success: true, 
-        requiresAction: true,
-        details: { message: 'Payment confirmation required' }
-      };
-    }
+    const hasConfirmation = confirmationIndicators.some(indicator => 
+      content.toLowerCase().includes(indicator)
+    ) || currentUrl.includes('success') || currentUrl.includes('complete') || currentUrl.includes('confirmation');
     
-    // Check for success
-    if (content.includes('success') || content.includes('registered') || 
-        content.includes('signed up') || currentUrl.includes('success')) {
+    if (hasConfirmation) {
+      await supabase.from("plan_logs").insert({ 
+        plan_id, 
+        msg: "Worker: Signup completed successfully" 
+      });
+      
       return { 
         success: true, 
         requiresAction: false,
         details: { message: 'Signup completed successfully' }
       };
+    } else {
+      await supabase.from("plan_logs").insert({ 
+        plan_id, 
+        msg: "Worker: Signup may not have completed, manual check required" 
+      });
+      
+      // Update plan status to action_required
+      await supabase
+        .from('plans')
+        .update({ status: 'action_required' })
+        .eq('id', plan_id);
+      
+      return { 
+        success: true, 
+        requiresAction: true,
+        details: { message: 'Signup may not have completed, manual check required' }
+      };
     }
-    
-    // Default to requiring action if we can't determine the outcome
-    return { 
-      success: true, 
-      requiresAction: true,
-      details: { message: 'Signup submitted - please check for confirmation' }
-    };
     
   } catch (error) {
     return { 
@@ -1116,8 +1119,8 @@ async function executeSignup(page, plan, credentials, supabase) {
   }
 }
 
-// Handle saved card payment with CVV
-async function handleSavedCardPayment(page, plan, credentials, supabase) {
+// Handle Blackhawk payment flow with CVV
+async function handleBlackhawkPayment(page, plan, credentials, supabase) {
   try {
     const plan_id = plan.id;
     const EXTRAS = (plan?.extras ?? {});
@@ -1150,7 +1153,7 @@ async function handleSavedCardPayment(page, plan, credentials, supabase) {
       msg: "Worker: Payment page detected, processing..." 
     });
     
-    // Look for CVV field
+    // Look for CVV field and fill if exists
     const cvvSelectors = [
       'input[name*="cvv"]',
       'input[id*="cvv"]',
@@ -1172,48 +1175,15 @@ async function handleSavedCardPayment(page, plan, credentials, supabase) {
       }
     }
     
-    if (cvvField) {
-      // CVV field found - need to fill it
-      if (!credentials.cvv || String(credentials.cvv).trim().length === 0) {
-        if (!allowNoCvv) {
-          await supabase.from("plan_logs").insert({ 
-            plan_id, 
-            msg: "Worker: CVV required but not available" 
-          });
-          
-          // Update plan status to failed
-          await supabase
-            .from('plans')
-            .update({ status: 'failed' })
-            .eq('id', plan_id);
-          
-          return { 
-            success: false, 
-            error: 'CVV required but not available in credentials',
-            code: 'CVV_REQUIRED'
-          };
-        } else {
-          await supabase.from("plan_logs").insert({ 
-            plan_id, 
-            msg: "Worker: CVV field present but allow_no_cvv is true, continuing..." 
-          });
-        }
-      } else {
-        // Fill CVV field
-        await cvvField.fill(String(credentials.cvv));
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: "Worker: CVV entered for payment" 
-        });
-      }
-    } else {
+    if (cvvField && credentials.cvv) {
+      await cvvField.fill(String(credentials.cvv));
       await supabase.from("plan_logs").insert({ 
         plan_id, 
-        msg: "Worker: No CVV field found on payment page" 
+        msg: "Worker: CVV entered for payment" 
       });
     }
     
-    // Look for payment submit button
+    // Click Pay/Complete/Submit button
     const paymentButtonSelectors = [
       'button:has-text("Pay")',
       'button:has-text("Complete")',
@@ -1234,7 +1204,7 @@ async function handleSavedCardPayment(page, plan, credentials, supabase) {
         await buttons[0].click();
         await supabase.from("plan_logs").insert({ 
           plan_id, 
-          msg: "Worker: Payment submitted" 
+          msg: "Worker: Payment button clicked" 
         });
         paymentButtonClicked = true;
         break;
@@ -1242,77 +1212,34 @@ async function handleSavedCardPayment(page, plan, credentials, supabase) {
     }
     
     if (paymentButtonClicked) {
-      // Wait for payment processing
-      await page.waitForTimeout(5000);
+      // Wait for confirmation page or success indicators
+      await page.waitForTimeout(10000);
       
-      // Check for payment success/failure
       const updatedContent = await page.content().catch(() => '');
       const updatedUrl = page.url();
       
-      // Check for payment failure indicators
-      const failureIndicators = [
-        'declined', 'failed', 'error', 'invalid', 'rejected'
+      // Check for confirmation page
+      const confirmationIndicators = [
+        'thank you', 'registration complete', 'success', 'confirmed', 'receipt'
       ];
       
-      const hasFailure = failureIndicators.some(indicator => 
+      const hasConfirmation = confirmationIndicators.some(indicator => 
         updatedContent.toLowerCase().includes(indicator)
-      );
+      ) || updatedUrl.includes('success') || updatedUrl.includes('complete') || updatedUrl.includes('confirmation');
       
-      if (hasFailure) {
+      if (hasConfirmation) {
         await supabase.from("plan_logs").insert({ 
           plan_id, 
-          msg: "Worker: Payment failed - detected failure indicators" 
+          msg: "Worker: Payment and registration completed successfully" 
         });
-        
-        // Update plan status to failed
-        await supabase
-          .from('plans')
-          .update({ status: 'failed' })
-          .eq('id', plan_id);
-        
-        return { 
-          success: false, 
-          error: 'Payment failed - card declined or invalid',
-          code: 'PAYMENT_FAILED'
-        };
-      }
-      
-      // Check for success indicators
-      const successIndicators = [
-        'success', 'complete', 'confirmed', 'thank you', 'receipt'
-      ];
-      
-      const hasSuccess = successIndicators.some(indicator => 
-        updatedContent.toLowerCase().includes(indicator)
-      ) || updatedUrl.includes('success') || updatedUrl.includes('complete');
-      
-      if (hasSuccess) {
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: "Worker: Payment completed successfully" 
-        });
-        
-        // Update plan status to completed
-        await supabase
-          .from('plans')
-          .update({ 
-            status: 'completed',
-            completed_at: new Date().toISOString()
-          })
-          .eq('id', plan_id);
         
         return { 
           success: true,
           requiresAction: false,
-          details: { message: 'Payment completed successfully' }
+          details: { message: 'Payment and registration completed successfully' }
         };
       }
     }
-    
-    await supabase.from("plan_logs").insert({ 
-      plan_id, 
-      msg: "Worker: Payment processing completed, status unclear" 
-    });
     
     return { success: true };
     
