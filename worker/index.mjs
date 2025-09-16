@@ -556,44 +556,64 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
       }
     }
     
-    // Find and click the Register button for Nordic Kids Wednesday
-    const registerSelectors = [
-      'button:has-text("Register")',
-      'a:has-text("Register")',
-      'input[type="submit"][value*="Register" i]',
-      '[value*="Register" i]'
-    ];
+    // Find rows containing "Nordic Kids Wednesday" text
+    const nordicRows = page.locator('text=Nordic Kids Wednesday');
+    const rowCount = await nordicRows.count();
+    
+    await supabase.from("plan_logs").insert({ 
+      plan_id, 
+      msg: `Worker: Found ${rowCount} rows containing "Nordic Kids Wednesday"` 
+    });
     
     let registerClicked = false;
     
-    // Try to find Register button near "Nordic Kids Wednesday" text
-    for (const selector of registerSelectors) {
-      const elements = await page.$$(selector);
+    // Try to find Register button in Nordic Kids Wednesday rows
+    for (let i = 0; i < rowCount; i++) {
+      const row = nordicRows.nth(i);
       
-      for (const element of elements) {
-        // Check if this Register button is associated with Nordic Kids Wednesday
-        const parentRow = await element.locator('xpath=ancestor::tr | ancestor::div[contains(@class,"row")] | ancestor::div[contains(@class,"program")] | ancestor::section').first();
-        
-        if (parentRow) {
-          try {
-            const rowText = (await parentRow.textContent()).toLowerCase();
-            if (rowText.includes('nordic kids wednesday')) {
-              await element.scrollIntoViewIfNeeded();
-              await element.waitFor({ state: "visible" });
-              await element.click();
+      // Look for ancestor container that might contain the Register button
+      const containerSelectors = [
+        'xpath=ancestor::tr',
+        'xpath=ancestor::div[contains(@class,"row")]',
+        'xpath=ancestor::div[contains(@class,"program")]', 
+        'xpath=ancestor::section',
+        'xpath=ancestor::div[contains(@class,"event")]'
+      ];
+      
+      for (const containerSelector of containerSelectors) {
+        try {
+          const container = row.locator(containerSelector).first();
+          
+          // Try different Register button selectors within the container
+          const registerSelectors = [
+            'button:has-text("Register")',
+            'a:has-text("Register")', 
+            'input[type="submit"][value*="Register" i]',
+            '[value*="Register" i]'
+          ];
+          
+          for (const registerSelector of registerSelectors) {
+            const registerButton = container.locator(registerSelector).first();
+            
+            if (await registerButton.count() > 0) {
+              await registerButton.scrollIntoViewIfNeeded();
+              await registerButton.waitFor({ state: "visible" });
+              await registerButton.click();
               
               await supabase.from("plan_logs").insert({ 
                 plan_id, 
-                msg: "Worker: Register clicked for Nordic Kids Wednesday" 
+                msg: "Worker: ✅ Register button clicked for Nordic Kids Wednesday" 
               });
               
               registerClicked = true;
               break;
             }
-          } catch (error) {
-            // Continue to next element if textContent fails
-            continue;
           }
+          
+          if (registerClicked) break;
+        } catch (error) {
+          // Continue to next container selector
+          continue;
         }
       }
       
