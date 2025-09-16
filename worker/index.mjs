@@ -910,10 +910,6 @@ async function handleNordicAddons(page, plan, supabase) {
   }
 }
 
-// Start server
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`✅ Worker listening on 0.0.0.0:${PORT}`);
-});
 async function executeSignup(page, plan, credentials, supabase) {
   try {
     const plan_id = plan.id;
