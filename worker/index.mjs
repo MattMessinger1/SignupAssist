@@ -538,7 +538,7 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
     await page.waitForTimeout(2000); // Wait for page to fully load
     
     // Look for Nordic Kids Wednesday program
-    const content = await page.content().toLowerCase();
+    const content = (await page.content()).toLowerCase();
     if (!content.includes('nordic kids wednesday')) {
       // Try alternative registration events page
       const eventsUrl = `${baseUrl}/registration/events`;
@@ -550,7 +550,7 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
       await page.goto(eventsUrl, { waitUntil: "domcontentloaded" });
       await page.waitForTimeout(2000);
       
-      const eventsContent = await page.content().toLowerCase();
+      const eventsContent = (await page.content()).toLowerCase();
       if (!eventsContent.includes('nordic kids wednesday')) {
         throw new Error('Nordic Kids Wednesday program not found on registration pages');
       }
@@ -575,19 +575,24 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
         const parentRow = await element.locator('xpath=ancestor::tr | ancestor::div[contains(@class,"row")] | ancestor::div[contains(@class,"program")] | ancestor::section').first();
         
         if (parentRow) {
-          const rowText = await parentRow.textContent().catch(() => '');
-          if (rowText.toLowerCase().includes('nordic kids wednesday')) {
-            await element.scrollIntoViewIfNeeded();
-            await element.waitFor({ state: "visible" });
-            await element.click();
-            
-            await supabase.from("plan_logs").insert({ 
-              plan_id, 
-              msg: "Worker: Register clicked for Nordic Kids Wednesday" 
-            });
-            
-            registerClicked = true;
-            break;
+          try {
+            const rowText = (await parentRow.textContent()).toLowerCase();
+            if (rowText.includes('nordic kids wednesday')) {
+              await element.scrollIntoViewIfNeeded();
+              await element.waitFor({ state: "visible" });
+              await element.click();
+              
+              await supabase.from("plan_logs").insert({ 
+                plan_id, 
+                msg: "Worker: Register clicked for Nordic Kids Wednesday" 
+              });
+              
+              registerClicked = true;
+              break;
+            }
+          } catch (error) {
+            // Continue to next element if textContent fails
+            continue;
           }
         }
       }
