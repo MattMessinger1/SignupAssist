@@ -94,6 +94,30 @@ To deploy Supabase Edge Functions to your project (pyoszlfqqvljwocrrafl), follow
 
 The deployment script skips the `_shared` folder and only deploys directories that contain an `index.*` file.
 
+## 🔐 CRITICAL: Credential Encryption Key Management
+
+**⚠️ IMPORTANT NOTICE:** This application uses credential encryption across multiple environments (Supabase Edge Functions, Railway worker, and local development). All environments must use the **same** `CRED_ENC_KEY` value.
+
+**Current synchronized key:** `q4mBOy4dM5LfgUv3lf6GRgxCfv8HZoM8I8ACDcvaF1I=`
+
+### When CRED_ENC_KEY Changes
+
+**ALL USERS MUST RE-SAVE THEIR CREDENTIALS** whenever the encryption key changes because:
+- Credentials are encrypted using AES-GCM with the `CRED_ENC_KEY`
+- Changing the key makes previously encrypted credentials unreadable
+- There is no automatic migration for old encrypted data
+
+### User Action Required After Key Changes:
+1. Navigate to the Credentials page in the app
+2. Delete existing credentials (they will show decryption errors)
+3. Re-add all credentials with the same information
+4. Test credential functionality by creating a new plan
+
+### Environment Locations:
+- **Supabase Edge Functions:** Set via Dashboard > Functions > Secrets
+- **Railway Worker:** Set via Dashboard > Variables
+- **Local Development:** Set in `.env.local` file
+
 ## How can I deploy this project?
 
 Simply open [Lovable](https://lovable.dev/projects/659643f5-6853-4cee-9629-8b9d4d6c7eb3) and click on Share -> Publish.

@@ -205,7 +205,7 @@ Deno.serve(async (req) => {
       }
 
       // Decrypt credentials using the encryption key
-      const CRED_ENC_KEY = process.env.CRED_ENC_KEY;
+      const CRED_ENC_KEY = Deno.env.get('CRED_ENC_KEY');
       if (!CRED_ENC_KEY) {
         const errorMsg = 'Encryption key not configured';
         await supabase.from('plan_logs').insert({
