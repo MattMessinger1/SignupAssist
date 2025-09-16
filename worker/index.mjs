@@ -492,17 +492,31 @@ app.post("/run-plan", async (req, res) => {
 async function loginWithPlaywright(page, loginUrl, email, password) {
   try {
     console.log("Worker: Navigating to login");
-    await page.goto(loginUrl, { waitUntil: 'domcontentloaded' });
+    await page.goto(loginUrl, { waitUntil: "networkidle", timeout: 30000 });
+    
+    // Save debug screenshot
+    await page.screenshot({ path: "login-debug.png" });
+    console.log("Worker: Screenshot saved");
     
     // Wait for email field and fill it
     console.log("Worker: Filling email");
-    await page.waitForSelector('#edit-name, input[name="name"], input[type="text"]', { timeout: 20000 });
-    await page.fill('#edit-name, input[name="name"], input[type="text"]', email);
+    try {
+      await page.waitForSelector('#edit-name, input[name="name"], input[type="text"]', { timeout: 20000 });
+      await page.fill('#edit-name, input[name="name"], input[type="text"]', email);
+    } catch (error) {
+      console.log(`Worker: Email selector not found. Page content length: ${(await page.content()).length}`);
+      throw error;
+    }
     
     // Wait for password field and fill it
     console.log("Worker: Filling password");
-    await page.waitForSelector('#edit-pass, input[name="pass"], input[type="password"]', { timeout: 20000 });
-    await page.fill('#edit-pass, input[name="pass"], input[type="password"]', password);
+    try {
+      await page.waitForSelector('#edit-pass, input[name="pass"], input[type="password"]', { timeout: 20000 });
+      await page.fill('#edit-pass, input[name="pass"], input[type="password"]', password);
+    } catch (error) {
+      console.log(`Worker: Password selector not found. Page content length: ${(await page.content()).length}`);
+      throw error;
+    }
     
     // Click login button
     console.log("Worker: Clicking login button");
