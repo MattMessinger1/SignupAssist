@@ -94,29 +94,66 @@ To deploy Supabase Edge Functions to your project (pyoszlfqqvljwocrrafl), follow
 
 The deployment script skips the `_shared` folder and only deploys directories that contain an `index.*` file.
 
-## 🔐 CRITICAL: Credential Encryption Key Management
+## Credential Encryption Key (CRED_ENC_KEY)
 
-**⚠️ IMPORTANT NOTICE:** This application uses credential encryption across multiple environments (Supabase Edge Functions, Railway worker, and local development). All environments must use the **same** `CRED_ENC_KEY` value.
+### What is CRED_ENC_KEY?
+
+`CRED_ENC_KEY` is a 32-byte secret key used to encrypt and decrypt sensitive user credentials (email addresses, passwords, and CVV codes) stored in the database. This key ensures that even if the database is compromised, user credentials remain protected through AES-GCM encryption.
+
+**Critical Requirement:** The `CRED_ENC_KEY` must be **identical** across all environments:
+- Supabase Edge Functions
+- Railway worker service  
+- Local development environment
+
+### Generating a New Key
+
+To generate a new 32-byte base64-encoded encryption key:
+
+```bash
+openssl rand -base64 32
+```
+
+Example output: `q4mBOy4dM5LfgUv3lf6GRgxCfv8HZoM8I8ACDcvaF1I=`
+
+### Updating the Key Across Environments
+
+When updating `CRED_ENC_KEY`, you must update it in **all three locations**:
+
+#### 1. Railway Worker Service
+1. Go to [Railway Dashboard](https://railway.app) → Your Project → Variables
+2. Add/update: `CRED_ENC_KEY=your_new_key_here`
+3. Redeploy the service
+
+#### 2. Supabase Edge Functions
+1. Go to [Supabase Dashboard](https://supabase.com/dashboard/project/pyoszlfqqvljwocrrafl/settings/functions) → Project Settings → Functions → Secrets
+2. Add/update: `CRED_ENC_KEY=your_new_key_here`
+3. Edge functions will use the new key on next execution
+
+#### 3. Local Development Environment
+1. Create/update `.env.local` file in project root:
+   ```bash
+   CRED_ENC_KEY=your_new_key_here
+   ```
+2. Restart your local development server (`npm run dev`)
+
+### ⚠️ Critical Warning
+
+**Whenever `CRED_ENC_KEY` changes, previously saved credentials cannot be decrypted.**
+
+All users must:
+1. Navigate to the Credentials page in the SignupAssist UI
+2. Delete existing credentials (they will show decryption errors)
+3. Re-save their credentials with the same information
+4. Test functionality by creating a new plan
+
+### Troubleshooting
+
+If you see **"Failed to decrypt credentials"** errors in `plan_logs`:
+- Check that `CRED_ENC_KEY` is set identically in all three environments
+- Verify the key is exactly 32 bytes when base64-decoded
+- Confirm users have re-saved their credentials after any key changes
 
 **Current synchronized key:** `q4mBOy4dM5LfgUv3lf6GRgxCfv8HZoM8I8ACDcvaF1I=`
-
-### When CRED_ENC_KEY Changes
-
-**ALL USERS MUST RE-SAVE THEIR CREDENTIALS** whenever the encryption key changes because:
-- Credentials are encrypted using AES-GCM with the `CRED_ENC_KEY`
-- Changing the key makes previously encrypted credentials unreadable
-- There is no automatic migration for old encrypted data
-
-### User Action Required After Key Changes:
-1. Navigate to the Credentials page in the app
-2. Delete existing credentials (they will show decryption errors)
-3. Re-add all credentials with the same information
-4. Test credential functionality by creating a new plan
-
-### Environment Locations:
-- **Supabase Edge Functions:** Set via Dashboard > Functions > Secrets
-- **Railway Worker:** Set via Dashboard > Variables
-- **Local Development:** Set in `.env.local` file
 
 ## How can I deploy this project?
 
