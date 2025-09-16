@@ -507,11 +507,16 @@ app.post("/run-plan", async (req, res) => {
 async function loginWithPlaywright(page, loginUrl, email, password) {
   try {
     console.log("Worker: Navigating to login");
-    await page.goto(loginUrl, { waitUntil: "networkidle", timeout: 30000 });
+    await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
     
     // Save debug screenshot
     await page.screenshot({ path: "login-debug.png" });
     console.log("Worker: Screenshot saved");
+    
+    // Explicitly wait for email and password fields after navigation
+    console.log("Worker: Waiting for email/password fields");
+    await page.waitForSelector('#edit-name', { timeout: 20000 });
+    await page.waitForSelector('#edit-pass', { timeout: 20000 });
     
     // Wait for email field and fill it
     console.log("Worker: Filling email");
@@ -537,8 +542,17 @@ async function loginWithPlaywright(page, loginUrl, email, password) {
     console.log("Worker: Clicking login button");
     await page.click('#edit-submit, button[type="submit"]');
     
-    // Wait for navigation
-    await page.waitForNavigation({ waitUntil: "networkidle" });
+    // Wait for post-login element instead of networkidle
+    try {
+      await page.waitForFunction(() => {
+        return window.location.href.includes('/dashboard') || 
+               document.body.innerText.includes('logout') || 
+               document.body.innerText.includes('sign out');
+      }, { timeout: 30000 });
+      console.log("Worker: Login successful");
+    } catch (error) {
+      console.log("Worker: Post-login element not found, checking current state");
+    }
     
     // Check if we're logged in (look for dashboard or profile indicators)
     const currentUrl = page.url();
