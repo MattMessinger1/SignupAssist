@@ -361,7 +361,7 @@ async function executeBookingFlow(sessionId: string, apiKey: string, plan: any, 
     let cartSuccess = false;
 
     for (const buttonText of cartButtons) {
-      if (await findAndClickElement(sessionId, apiKey, buttonText, 'cart button')) {
+      if (await findAndClickElement(sessionId, apiKey, buttonText, 'cart button', undefined, supabase, plan.id)) {
         cartSuccess = true;
         break;
       }
@@ -521,7 +521,7 @@ function extractVisibleTextNodes(htmlContent: string): string[] {
 }
 
 // Helper function to find and click an element with enhanced fuzzy matching and similarity scoring
-async function findAndClickElement(sessionId: string, apiKey: string, text: string, elementType: string, className?: string): Promise<boolean> {
+async function findAndClickElement(sessionId: string, apiKey: string, text: string, elementType: string, className?: string, supabase?: any, planId?: string): Promise<boolean> {
   try {
     // Get page content
     const contentResponse = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/content`, {
@@ -616,19 +616,26 @@ async function findAndClickElement(sessionId: string, apiKey: string, text: stri
     const candidateTexts = extractVisibleTextNodes(content);
     const SIMILARITY_THRESHOLD = 0.8; // Configurable threshold for similarity matching
     
-    let bestMatch: { text: string; similarity: number } | null = null;
+    // Compute similarity scores for ALL candidates (for debugging purposes)
+    const allMatches: { text: string; similarity: number }[] = [];
     
-    // Compute similarity scores for all candidates
     for (const candidate of candidateTexts) {
       const similarity = jaroWinklerSimilarity(
         text.toLowerCase().trim(), 
         candidate.toLowerCase().trim()
       );
-      
-      if (similarity >= SIMILARITY_THRESHOLD) {
-        if (!bestMatch || similarity > bestMatch.similarity) {
-          bestMatch = { text: candidate, similarity };
-        }
+      allMatches.push({ text: candidate, similarity });
+    }
+    
+    // Sort by similarity score (highest first)
+    allMatches.sort((a, b) => b.similarity - a.similarity);
+    
+    // Find best match above threshold
+    let bestMatch: { text: string; similarity: number } | null = null;
+    for (const match of allMatches) {
+      if (match.similarity >= SIMILARITY_THRESHOLD) {
+        bestMatch = match;
+        break;
       }
     }
     
@@ -666,6 +673,19 @@ async function findAndClickElement(sessionId: string, apiKey: string, text: stri
           // Continue to next selector
         }
       }
+    }
+
+    // STEP 4: Log top 3 closest matches for debugging before failing
+    if (supabase && planId && allMatches.length > 0) {
+      const top3Matches = allMatches.slice(0, 3);
+      const matchesLog = top3Matches
+        .map(match => `"${match.text}" (${match.similarity.toFixed(2)})`)
+        .join(', ');
+      
+      await supabase.from('plan_logs').insert({
+        plan_id: planId,
+        msg: `Discovery failed for "${text}". Closest matches: [${matchesLog}]`
+      });
     } else {
       console.log(`No similar text found with threshold >= ${SIMILARITY_THRESHOLD}`);
     }
@@ -745,7 +765,7 @@ async function handleCheckoutWithCVV(sessionId: string, apiKey: string, plan: an
     let checkoutClicked = false;
 
     for (const buttonText of checkoutButtons) {
-      if (await findAndClickElement(sessionId, apiKey, buttonText, 'checkout button')) {
+      if (await findAndClickElement(sessionId, apiKey, buttonText, 'checkout button', undefined, supabase, plan.id)) {
         checkoutClicked = true;
         await supabase.from('plan_logs').insert({
           plan_id: plan.id,
@@ -857,9 +877,9 @@ async function handleCheckoutWithCVV(sessionId: string, apiKey: string, plan: an
 
           // Submit payment
           await new Promise(resolve => setTimeout(resolve, 1000));
-          const submitSuccess = await findAndClickElement(sessionId, apiKey, 'Submit', 'submit button') ||
-                               await findAndClickElement(sessionId, apiKey, 'Pay', 'pay button') ||
-                               await findAndClickElement(sessionId, apiKey, 'Complete', 'complete button');
+          const submitSuccess = await findAndClickElement(sessionId, apiKey, 'Submit', 'submit button', undefined, supabase, plan.id) ||
+                               await findAndClickElement(sessionId, apiKey, 'Pay', 'pay button', undefined, supabase, plan.id) ||
+                               await findAndClickElement(sessionId, apiKey, 'Complete', 'complete button', undefined, supabase, plan.id);
 
           if (submitSuccess) {
             // Wait for completion
@@ -1134,7 +1154,7 @@ async function findSlotWithRetry(sessionId: string, apiKey: string, plan: any, s
       msg: `Preferred slot attempt ${preferredAttempts} - searching for "${preferredSearchText}"${plan.preferred_class_name ? ` (class: ${plan.preferred_class_name})` : ''}`
     });
     
-    const preferredFound = await findAndClickElement(sessionId, apiKey, preferredSearchText, 'preferred slot', plan.preferred_class_name);
+    const preferredFound = await findAndClickElement(sessionId, apiKey, preferredSearchText, 'preferred slot', plan.preferred_class_name, supabase, plan.id);
     
     if (preferredFound) {
       await supabase.from('plan_logs').insert({
@@ -1217,7 +1237,7 @@ async function findSlotWithRetry(sessionId: string, apiKey: string, plan: any, s
       msg: `Alternate slot attempt ${alternateAttempts} - searching for "${alternateSearchText}"${plan.alternate_class_name ? ` (class: ${plan.alternate_class_name})` : ''}`
     });
     
-    const alternateFound = await findAndClickElement(sessionId, apiKey, alternateSearchText, 'alternate slot', plan.alternate_class_name);
+    const alternateFound = await findAndClickElement(sessionId, apiKey, alternateSearchText, 'alternate slot', plan.alternate_class_name, supabase, plan.id);
     
     if (alternateFound) {
       await supabase.from('plan_logs').insert({
