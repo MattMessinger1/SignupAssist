@@ -508,8 +508,8 @@ async function loginWithPlaywright(page, loginUrl, email, password) {
     console.log("Worker: Clicking login button");
     await page.click('#edit-submit, button[type="submit"]');
     
-    // Wait for navigation or success indicator
-    await page.waitForTimeout(3000);
+    // Wait for navigation
+    await page.waitForNavigation({ waitUntil: "networkidle" });
     
     // Check if we're logged in (look for dashboard or profile indicators)
     const currentUrl = page.url();
