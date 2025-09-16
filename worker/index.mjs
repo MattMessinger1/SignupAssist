@@ -603,17 +603,74 @@ async function discoverSignupUrls(page, childName) {
   }
 }
 
-// Handle Nordic Kids add-on form automation
-async function handleNordicAddons(page, plan, supabase) {
-  try {
-    const plan_id = plan.id;
+// Reliable button click helper with scrolling, visibility, and retries
+async function reliableClick(page, selectors, plan_id, supabase, actionName) {
+  const maxRetries = 3;
+  const retryDelay = 500;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    for (const selector of selectors) {
+      try {
+        const buttons = await page.$$(selector);
+        if (buttons.length > 0) {
+          const button = buttons[0];
+          
+          // Scroll into view and wait for visibility
+          await button.scrollIntoViewIfNeeded();
+          await button.waitFor({ state: "visible" });
+          
+          // Click the button
+          await button.click();
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: `Worker: Successfully clicked ${actionName} button (${selector})` 
+          });
+          return true;
+        }
+      } catch (error) {
+        // Continue to next selector or retry
+      }
+    }
     
+    if (attempt < maxRetries) {
+      await page.waitForTimeout(retryDelay);
+    }
+  }
+  
+  // Log available buttons for debugging
+  try {
+    const pageContent = await page.content();
+    const snippet = pageContent.substring(0, 200);
+    await supabase.from("plan_logs").insert({ 
+      plan_id, 
+      msg: `Worker: No ${actionName} button found after ${maxRetries} retries. Page snippet: ${snippet}` 
+    });
+  } catch {
+    await supabase.from("plan_logs").insert({ 
+      plan_id, 
+      msg: `Worker: No ${actionName} button found after ${maxRetries} retries` 
+    });
+  }
+  
+  return false;
+}
+
+// Handle Nordic Kids add-on form automation - now truly non-blocking
+async function handleNordicAddons(page, plan, supabase) {
+  const plan_id = plan.id;
+  
+  try {
     // Wait a moment for any page transitions
     await page.waitForTimeout(2000);
     
     // Check if we're on a Nordic add-on page
     const content = await page.content().catch(() => '');
     const currentUrl = page.url();
+    
+    await supabase.from("plan_logs").insert({ 
+      plan_id, 
+      msg: `Worker: Current URL: ${currentUrl}` 
+    });
     
     // Look for Nordic-specific indicators
     const isNordicPage = content.toLowerCase().includes('nordic') || 
@@ -637,7 +694,7 @@ async function handleNordicAddons(page, plan, supabase) {
     
     const EXTRAS = (plan?.extras ?? {});
     
-    // Handle Rental field - non-blocking
+    // Handle Rental field - non-blocking with better error handling
     const rentalValue = EXTRAS.nordicRental;
     const rentalSelectors = [
       'select[name*="rental"], select[id*="rental"]',
@@ -645,101 +702,101 @@ async function handleNordicAddons(page, plan, supabase) {
       'input[type="checkbox"][name*="rental"]'
     ];
     
-    let rentalHandled = false;
-    for (const selector of rentalSelectors) {
-      const elements = await page.$$(selector);
-      if (elements.length > 0) {
-        const element = elements[0];
-        const tagName = await element.evaluate(el => el.tagName.toLowerCase());
-        
-        if (tagName === 'select') {
-          // Handle dropdown
-          const options = await element.$$('option');
-          let selectedOption = null;
+    try {
+      let rentalHandled = false;
+      for (const selector of rentalSelectors) {
+        const elements = await page.$$(selector);
+        if (elements.length > 0) {
+          const element = elements[0];
+          const tagName = await element.evaluate(el => el.tagName.toLowerCase());
           
-          // Try to match provided rental value
-          if (rentalValue) {
-            for (const option of options) {
-              const optionText = await option.textContent();
-              if (optionText && optionText.toLowerCase().includes(rentalValue.toLowerCase())) {
-                await element.selectOption({ label: optionText });
-                selectedOption = optionText;
-                break;
+          if (tagName === 'select') {
+            // Handle dropdown
+            const options = await element.$$('option');
+            let selectedOption = null;
+            
+            // Try to match provided rental value
+            if (rentalValue) {
+              for (const option of options) {
+                const optionText = await option.textContent();
+                if (optionText && optionText.toLowerCase().includes(rentalValue.toLowerCase())) {
+                  await element.selectOption({ label: optionText });
+                  selectedOption = optionText;
+                  break;
+                }
               }
             }
-          }
-          
-          // Default to first visible option if not provided or not found
-          if (!selectedOption && options.length > 1) {
-            const firstOption = await options[1].textContent(); // Skip first empty option
-            await element.selectOption({ index: 1 });
-            selectedOption = firstOption;
-          }
-          
-          if (selectedOption) {
-            const logMsg = rentalValue && selectedOption.toLowerCase().includes(rentalValue.toLowerCase()) 
-              ? `Worker: Rental selected: ${selectedOption}`
-              : `Worker: Defaulted to first rental option: ${selectedOption}`;
-            await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
-            rentalHandled = true;
-          }
-        } else {
-          // Handle radio buttons/checkboxes
-          let selectedLabel = null;
-          
-          // Try to match provided rental value
-          if (rentalValue) {
-            for (const radioElement of elements) {
-              const label = await page.evaluate(el => {
+            
+            // Default to first visible option if not provided or not found
+            if (!selectedOption && options.length > 1) {
+              const firstOption = await options[1].textContent(); // Skip first empty option
+              await element.selectOption({ index: 1 });
+              selectedOption = firstOption;
+            }
+            
+            if (selectedOption) {
+              const logMsg = rentalValue && selectedOption.toLowerCase().includes(rentalValue.toLowerCase()) 
+                ? `Worker: Rental selected: ${selectedOption}`
+                : `Worker: Defaulted to first rental option: ${selectedOption}`;
+              await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
+              rentalHandled = true;
+            }
+          } else {
+            // Handle radio buttons/checkboxes
+            let selectedLabel = null;
+            
+            // Try to match provided rental value
+            if (rentalValue) {
+              for (const radioElement of elements) {
+                const label = await page.evaluate(el => {
+                  const labelEl = document.querySelector(`label[for="${el.id}"]`);
+                  return labelEl ? labelEl.textContent : el.closest('label')?.textContent || '';
+                }, radioElement);
+                
+                if (label && label.toLowerCase().includes(rentalValue.toLowerCase())) {
+                  await radioElement.click();
+                  selectedLabel = label;
+                  break;
+                }
+              }
+            }
+            
+            // Default to first option if not found or not provided
+            if (!selectedLabel && elements.length > 0) {
+              await elements[0].click();
+              selectedLabel = await page.evaluate(el => {
                 const labelEl = document.querySelector(`label[for="${el.id}"]`);
-                return labelEl ? labelEl.textContent : el.closest('label')?.textContent || '';
-              }, radioElement);
-              
-              if (label && label.toLowerCase().includes(rentalValue.toLowerCase())) {
-                await radioElement.click();
-                selectedLabel = label;
-                break;
-              }
+                return labelEl ? labelEl.textContent : el.closest('label')?.textContent || 'First option';
+              }, elements[0]);
+            }
+            
+            if (selectedLabel) {
+              const logMsg = rentalValue && selectedLabel.toLowerCase().includes(rentalValue.toLowerCase()) 
+                ? `Worker: Rental selected: ${selectedLabel}`
+                : `Worker: Defaulted to first rental option: ${selectedLabel}`;
+              await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
+              rentalHandled = true;
             }
           }
           
-          // Default to first option if not found or not provided
-          if (!selectedLabel && elements.length > 0) {
-            await elements[0].click();
-            selectedLabel = await page.evaluate(el => {
-              const labelEl = document.querySelector(`label[for="${el.id}"]`);
-              return labelEl ? labelEl.textContent : el.closest('label')?.textContent || 'First option';
-            }, elements[0]);
-          }
-          
-          if (selectedLabel) {
-            const logMsg = rentalValue && selectedLabel.toLowerCase().includes(rentalValue.toLowerCase()) 
-              ? `Worker: Rental selected: ${selectedLabel}`
-              : `Worker: Defaulted to first rental option: ${selectedLabel}`;
-            await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
-            rentalHandled = true;
-          }
+          if (rentalHandled) break;
         }
-        
-        if (rentalHandled) break;
       }
-    }
-    
-    if (!rentalHandled) {
-      if (rentalValue) {
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: `Worker: Rental field not found, skipping rental selection` 
-        });
-      } else {
+      
+      if (!rentalHandled) {
         await supabase.from("plan_logs").insert({ 
           plan_id, 
           msg: "Worker: No rental field detected, skipping" 
         });
       }
+    } catch (error) {
+      await supabase.from("plan_logs").insert({ 
+        plan_id, 
+        msg: `Worker: Rental field error (non-blocking): ${error.message}` 
+      });
     }
     
-    // Handle Color Group field - non-blocking
+    // Handle Color Group field - non-blocking with better error handling
     const colorGroupValue = EXTRAS.nordicColorGroup;
     const colorGroupSelectors = [
       'select[name*="color"], select[id*="color"]',
@@ -747,92 +804,99 @@ async function handleNordicAddons(page, plan, supabase) {
       'input[type="checkbox"][name*="color"]'
     ];
     
-    let colorGroupHandled = false;
-    for (const selector of colorGroupSelectors) {
-      const elements = await page.$$(selector);
-      if (elements.length > 0) {
-        const element = elements[0];
-        const tagName = await element.evaluate(el => el.tagName.toLowerCase());
-        
-        if (tagName === 'select') {
-          const options = await element.$$('option');
-          let selectedOption = null;
+    try {
+      let colorGroupHandled = false;
+      for (const selector of colorGroupSelectors) {
+        const elements = await page.$$(selector);
+        if (elements.length > 0) {
+          const element = elements[0];
+          const tagName = await element.evaluate(el => el.tagName.toLowerCase());
           
-          // Try to find matching color group
-          if (colorGroupValue) {
-            for (const option of options) {
-              const optionText = await option.textContent();
-              if (optionText && optionText.toLowerCase().includes(colorGroupValue.toLowerCase())) {
-                selectedOption = optionText;
-                await element.selectOption({ label: optionText });
-                break;
+          if (tagName === 'select') {
+            const options = await element.$$('option');
+            let selectedOption = null;
+            
+            // Try to find matching color group
+            if (colorGroupValue) {
+              for (const option of options) {
+                const optionText = await option.textContent();
+                if (optionText && optionText.toLowerCase().includes(colorGroupValue.toLowerCase())) {
+                  selectedOption = optionText;
+                  await element.selectOption({ label: optionText });
+                  break;
+                }
               }
             }
-          }
-          
-          // Default to first option if not found or not specified
-          if (!selectedOption && options.length > 1) {
-            const firstOption = await options[1].textContent(); // Skip first empty option
-            await element.selectOption({ index: 1 });
-            selectedOption = firstOption;
-          }
-          
-          if (selectedOption) {
-            const logMsg = colorGroupValue && selectedOption.toLowerCase().includes(colorGroupValue.toLowerCase()) 
-              ? `Worker: Color group selected: ${selectedOption}`
-              : `Worker: Defaulted to first color group option: ${selectedOption}`;
-            await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
-            colorGroupHandled = true;
-          }
-        } else {
-          // Handle radio buttons - select first or matching
-          let selectedLabel = null;
-          
-          if (colorGroupValue) {
-            for (const radioElement of elements) {
-              const label = await page.evaluate(el => {
+            
+            // Default to first option if not found or not specified
+            if (!selectedOption && options.length > 1) {
+              const firstOption = await options[1].textContent(); // Skip first empty option
+              await element.selectOption({ index: 1 });
+              selectedOption = firstOption;
+            }
+            
+            if (selectedOption) {
+              const logMsg = colorGroupValue && selectedOption.toLowerCase().includes(colorGroupValue.toLowerCase()) 
+                ? `Worker: Color group selected: ${selectedOption}`
+                : `Worker: Defaulted to first color group option: ${selectedOption}`;
+              await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
+              colorGroupHandled = true;
+            }
+          } else {
+            // Handle radio buttons - select first or matching
+            let selectedLabel = null;
+            
+            if (colorGroupValue) {
+              for (const radioElement of elements) {
+                const label = await page.evaluate(el => {
+                  const labelEl = document.querySelector(`label[for="${el.id}"]`);
+                  return labelEl ? labelEl.textContent : el.closest('label')?.textContent || '';
+                }, radioElement);
+                
+                if (label && label.toLowerCase().includes(colorGroupValue.toLowerCase())) {
+                  await radioElement.click();
+                  selectedLabel = label;
+                  break;
+                }
+              }
+            }
+            
+            // Default to first option
+            if (!selectedLabel && elements.length > 0) {
+              await elements[0].click();
+              selectedLabel = await page.evaluate(el => {
                 const labelEl = document.querySelector(`label[for="${el.id}"]`);
-                return labelEl ? labelEl.textContent : el.closest('label')?.textContent || '';
-              }, radioElement);
-              
-              if (label && label.toLowerCase().includes(colorGroupValue.toLowerCase())) {
-                await radioElement.click();
-                selectedLabel = label;
-                break;
-              }
+                return labelEl ? labelEl.textContent : el.closest('label')?.textContent || 'First option';
+              }, elements[0]);
+            }
+            
+            if (selectedLabel) {
+              const logMsg = colorGroupValue && selectedLabel.toLowerCase().includes(colorGroupValue.toLowerCase()) 
+                ? `Worker: Color group selected: ${selectedLabel}`
+                : `Worker: Defaulted to first color group option: ${selectedLabel}`;
+              await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
+              colorGroupHandled = true;
             }
           }
           
-          // Default to first option
-          if (!selectedLabel && elements.length > 0) {
-            await elements[0].click();
-            selectedLabel = await page.evaluate(el => {
-              const labelEl = document.querySelector(`label[for="${el.id}"]`);
-              return labelEl ? labelEl.textContent : el.closest('label')?.textContent || 'First option';
-            }, elements[0]);
-          }
-          
-          if (selectedLabel) {
-            const logMsg = colorGroupValue && selectedLabel.toLowerCase().includes(colorGroupValue.toLowerCase()) 
-              ? `Worker: Color group selected: ${selectedLabel}`
-              : `Worker: Defaulted to first color group option: ${selectedLabel}`;
-            await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
-            colorGroupHandled = true;
-          }
+          if (colorGroupHandled) break;
         }
-        
-        if (colorGroupHandled) break;
       }
-    }
-    
-    if (!colorGroupHandled) {
+      
+      if (!colorGroupHandled) {
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: "Worker: Color group skipped" 
+        });
+      }
+    } catch (error) {
       await supabase.from("plan_logs").insert({ 
         plan_id, 
-        msg: "Worker: Color group skipped" 
+        msg: `Worker: Color group error (non-blocking): ${error.message}` 
       });
     }
     
-    // Handle Volunteer field - non-blocking
+    // Handle Volunteer field - non-blocking with better error handling
     const volunteerValue = EXTRAS.volunteer;
     const volunteerSelectors = [
       'input[type="checkbox"][name*="volunteer"]',
@@ -840,288 +904,150 @@ async function handleNordicAddons(page, plan, supabase) {
       'select[name*="volunteer"], select[id*="volunteer"]'
     ];
     
-    let volunteerHandled = false;
-    for (const selector of volunteerSelectors) {
-      const elements = await page.$$(selector);
-      if (elements.length > 0) {
-        const element = elements[0];
-        const tagName = await element.evaluate(el => el.tagName.toLowerCase());
-        
-        if (tagName === 'select') {
-          let selectedOption = null;
-          const options = await element.$$('option');
+    try {
+      let volunteerHandled = false;
+      for (const selector of volunteerSelectors) {
+        const elements = await page.$$(selector);
+        if (elements.length > 0) {
+          const element = elements[0];
+          const tagName = await element.evaluate(el => el.tagName.toLowerCase());
           
-          if (volunteerValue) {
-            for (const option of options) {
-              const optionText = await option.textContent();
-              if (optionText && optionText.toLowerCase().includes(volunteerValue.toLowerCase())) {
-                await element.selectOption({ label: optionText });
-                selectedOption = optionText;
-                break;
+          if (tagName === 'select') {
+            let selectedOption = null;
+            const options = await element.$$('option');
+            
+            if (volunteerValue) {
+              for (const option of options) {
+                const optionText = await option.textContent();
+                if (optionText && optionText.toLowerCase().includes(volunteerValue.toLowerCase())) {
+                  await element.selectOption({ label: optionText });
+                  selectedOption = optionText;
+                  break;
+                }
               }
             }
-          }
-          
-          // Default to first non-empty option
-          if (!selectedOption && options.length > 1) {
-            const firstOption = await options[1].textContent();
-            await element.selectOption({ index: 1 });
-            selectedOption = firstOption;
-          }
-          
-          if (selectedOption) {
-            const logMsg = volunteerValue && selectedOption.toLowerCase().includes(volunteerValue.toLowerCase()) 
-              ? `Worker: Volunteer selected: ${selectedOption}`
-              : `Worker: Defaulted to first volunteer option: ${selectedOption}`;
-            await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
-            volunteerHandled = true;
-          }
-        } else {
-          // Handle checkboxes/radio buttons
-          let selectedLabel = null;
-          
-          if (volunteerValue) {
-            for (const checkboxElement of elements) {
-              const label = await page.evaluate(el => {
+            
+            // Default to first non-empty option
+            if (!selectedOption && options.length > 1) {
+              const firstOption = await options[1].textContent();
+              await element.selectOption({ index: 1 });
+              selectedOption = firstOption;
+            }
+            
+            if (selectedOption) {
+              const logMsg = volunteerValue && selectedOption.toLowerCase().includes(volunteerValue.toLowerCase()) 
+                ? `Worker: Volunteer selected: ${selectedOption}`
+                : `Worker: Defaulted to first volunteer option: ${selectedOption}`;
+              await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
+              volunteerHandled = true;
+            }
+          } else {
+            // Handle checkboxes/radio buttons
+            let selectedLabel = null;
+            
+            if (volunteerValue) {
+              for (const checkboxElement of elements) {
+                const label = await page.evaluate(el => {
+                  const labelEl = document.querySelector(`label[for="${el.id}"]`);
+                  return labelEl ? labelEl.textContent : el.closest('label')?.textContent || '';
+                }, checkboxElement);
+                
+                if (label && label.toLowerCase().includes(volunteerValue.toLowerCase())) {
+                  await checkboxElement.click();
+                  selectedLabel = label;
+                  break;
+                }
+              }
+            }
+            
+            // Default to first checkbox
+            if (!selectedLabel && elements.length > 0) {
+              await elements[0].click();
+              selectedLabel = await page.evaluate(el => {
                 const labelEl = document.querySelector(`label[for="${el.id}"]`);
-                return labelEl ? labelEl.textContent : el.closest('label')?.textContent || '';
-              }, checkboxElement);
-              
-              if (label && label.toLowerCase().includes(volunteerValue.toLowerCase())) {
-                await checkboxElement.click();
-                selectedLabel = label;
-                break;
-              }
+                return labelEl ? labelEl.textContent : el.closest('label')?.textContent || 'First option';
+              }, elements[0]);
+            }
+            
+            if (selectedLabel) {
+              const logMsg = volunteerValue && selectedLabel.toLowerCase().includes(volunteerValue.toLowerCase()) 
+                ? `Worker: Volunteer selected: ${selectedLabel}`
+                : `Worker: Defaulted to first volunteer option: ${selectedLabel}`;
+              await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
+              volunteerHandled = true;
             }
           }
           
-          // Default to first checkbox
-          if (!selectedLabel && elements.length > 0) {
-            await elements[0].click();
-            selectedLabel = await page.evaluate(el => {
-              const labelEl = document.querySelector(`label[for="${el.id}"]`);
-              return labelEl ? labelEl.textContent : el.closest('label')?.textContent || 'First option';
-            }, elements[0]);
-          }
-          
-          if (selectedLabel) {
-            const logMsg = volunteerValue && selectedLabel.toLowerCase().includes(volunteerValue.toLowerCase()) 
-              ? `Worker: Volunteer selected: ${selectedLabel}`
-              : `Worker: Defaulted to first volunteer option: ${selectedLabel}`;
-            await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
-            volunteerHandled = true;
-          }
+          if (volunteerHandled) break;
         }
-        
-        if (volunteerHandled) break;
       }
-    }
-    
-    if (!volunteerHandled) {
+      
+      if (!volunteerHandled) {
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: "Worker: Volunteer skipped" 
+        });
+      }
+    } catch (error) {
       await supabase.from("plan_logs").insert({ 
         plan_id, 
-        msg: "Worker: Volunteer skipped" 
+        msg: `Worker: Volunteer error (non-blocking): ${error.message}` 
       });
     }
     
     // Handle donation - always skip by filling "0"
-    const donationSelectors = [
-      'input[name*="donation"], input[id*="donation"]',
-      'input[name*="donate"], input[id*="donate"]',
-      'input[placeholder*="donation"], input[placeholder*="donate"]'
-    ];
-    
-    for (const selector of donationSelectors) {
-      const elements = await page.$$(selector);
-      for (const element of elements) {
-        const inputType = await element.getAttribute('type');
-        if (inputType === 'text' || inputType === 'number' || !inputType) {
-          await element.fill('0');
-          await supabase.from("plan_logs").insert({ 
-            plan_id, 
-            msg: "Worker: Donation skipped (0)" 
-          });
-          break;
+    try {
+      const donationSelectors = [
+        'input[name*="donation"], input[id*="donation"]',
+        'input[name*="donate"], input[id*="donate"]',
+        'input[placeholder*="donation"], input[placeholder*="donate"]'
+      ];
+      
+      for (const selector of donationSelectors) {
+        const elements = await page.$$(selector);
+        for (const element of elements) {
+          const inputType = await element.getAttribute('type');
+          if (inputType === 'text' || inputType === 'number' || !inputType) {
+            await element.fill('0');
+            await supabase.from("plan_logs").insert({ 
+              plan_id, 
+              msg: "Worker: Donation skipped (0)" 
+            });
+            break;
+          }
         }
       }
+    } catch (error) {
+      await supabase.from("plan_logs").insert({ 
+        plan_id, 
+        msg: `Worker: Donation field error (non-blocking): ${error.message}` 
+      });
     }
     
-    // Look for Next/Continue button - non-blocking
+    // Look for Next/Continue button using reliable click
     const nextButtonSelectors = [
       'button:has-text("Next")',
       'button:has-text("Continue")',
-      'input[type="submit"][value*="Next"]',
-      'input[type="submit"][value*="Continue"]',
+      'input[type="submit"][value*="Next" i]',
+      'input[type="submit"][value*="Continue" i]',
       'button[type="submit"]',
       'input[type="submit"]'
     ];
     
-    let nextButtonClicked = false;
-    for (const selector of nextButtonSelectors) {
-      const buttons = await page.$$(selector);
-      if (buttons.length > 0) {
-        await buttons[0].click();
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: "Worker: Nordic add-ons completed, clicked Next/Continue" 
-        });
-        nextButtonClicked = true;
-        break;
-      }
-    }
-    
-    if (!nextButtonClicked) {
-      await supabase.from("plan_logs").insert({ 
-        plan_id, 
-        msg: "Worker: No Next button found, continuing" 
-      });
-    }
-    
-    if (nextButtonClicked) {
+    const clicked = await reliableClick(page, nextButtonSelectors, plan_id, supabase, "Next/Continue");
+    if (clicked) {
       await page.waitForTimeout(3000); // Wait for navigation
     }
     
-    // After add-ons, check for cart page and handle checkout flow
-    currentUrl = page.url();
-    if (currentUrl.includes('/cart')) {
-      await supabase.from("plan_logs").insert({ 
-        plan_id, 
-        msg: "Worker: Cart page detected" 
-      });
-      
-      // Click Checkout button
-      const checkoutSelectors = [
-        'button:has-text("Checkout")',
-        '#edit-checkout'
-      ];
-      
-      let checkoutClicked = false;
-      for (const selector of checkoutSelectors) {
-        const buttons = await page.$$(selector);
-        if (buttons.length > 0) {
-          await buttons[0].click();
-          await supabase.from("plan_logs").insert({ 
-            plan_id, 
-            msg: "Worker: Clicked Checkout button" 
-          });
-          checkoutClicked = true;
-          break;
-        }
-      }
-      
-      if (checkoutClicked) {
-        // Wait for navigation to /checkout/*/installments
-        try {
-          await page.waitForURL(/\/checkout\/.*\/installments/, { timeout: 30000 });
-          await supabase.from("plan_logs").insert({ 
-            plan_id, 
-            msg: "Worker: Navigated to installments page" 
-          });
-          
-          // On installments page: ensure saved card radio button is selected
-          const savedCardRadios = await page.$$('input[type="radio"]');
-          if (savedCardRadios.length > 0) {
-            // Select first radio button (saved card)
-            const isChecked = await savedCardRadios[0].isChecked();
-            if (!isChecked) {
-              await savedCardRadios[0].click();
-              await supabase.from("plan_logs").insert({ 
-                plan_id, 
-                msg: "Worker: Selected saved card payment method" 
-              });
-            }
-          }
-          
-          // Click Continue to Review
-          const continueButtons = await page.$$('button:has-text("Continue to Review")');
-          if (continueButtons.length > 0) {
-            await continueButtons[0].click();
-            await supabase.from("plan_logs").insert({ 
-              plan_id, 
-              msg: "Worker: Clicked Continue to Review" 
-            });
-            
-            // Wait for navigation to /checkout/*/review
-            try {
-              await page.waitForURL(/\/checkout\/.*\/review/, { timeout: 30000 });
-              await supabase.from("plan_logs").insert({ 
-                plan_id, 
-                msg: "Worker: Navigated to review page" 
-              });
-              
-              // On review page: click Pay and complete purchase
-              const payButtons = await page.$$('button:has-text("Pay and complete purchase")');
-              if (payButtons.length > 0) {
-                await payButtons[0].click();
-                await supabase.from("plan_logs").insert({ 
-                  plan_id, 
-                  msg: "Worker: Clicked Pay and complete purchase" 
-                });
-                
-                // Wait for confirmation URL or text
-                try {
-                  // Wait for confirmation page or success text
-                  await Promise.race([
-                    page.waitForURL(/\/(complete|thank-you)/, { timeout: 30000 }),
-                    page.waitForSelector('text="Thank you"', { timeout: 30000 }),
-                    page.waitForSelector('text="Registration complete"', { timeout: 30000 }),
-                    page.waitForSelector('text="success"', { timeout: 30000 })
-                  ]);
-                  
-                  await supabase.from("plan_logs").insert({ 
-                    plan_id, 
-                    msg: "Worker: Payment confirmed" 
-                  });
-                  
-                  // Update plan status to completed
-                  await supabase
-                    .from('plans')
-                    .update({ 
-                      status: 'completed',
-                      completed_at: new Date().toISOString()
-                    })
-                    .eq('id', plan_id);
-                  
-                } catch (confirmError) {
-                  await supabase.from("plan_logs").insert({ 
-                    plan_id, 
-                    msg: "Worker: Signup may not have completed, manual check required" 
-                  });
-                  
-                  // Set status to action_required
-                  await supabase
-                    .from('plans')
-                    .update({ status: 'action_required' })
-                    .eq('id', plan_id);
-                }
-              }
-            } catch (reviewError) {
-              await supabase.from("plan_logs").insert({ 
-                plan_id, 
-                msg: "Worker: Failed to navigate to review page" 
-              });
-            }
-          }
-        } catch (installmentsError) {
-          await supabase.from("plan_logs").insert({ 
-            plan_id, 
-            msg: "Worker: Failed to navigate to installments page" 
-          });
-        }
-      }
-    }
-    
-    // Always return success to ensure non-blocking execution
-    return { success: true };
-    
   } catch (error) {
     await supabase.from("plan_logs").insert({ 
-      plan_id: plan.id, 
+      plan_id, 
       msg: `Worker: Nordic add-on error (non-blocking): ${error.message}` 
     });
-    // Even on error, return success to continue execution
-    return { success: true };
   }
+  
+  // Always return success to ensure non-blocking execution
+  return { success: true };
 }
 
 async function executeSignup(page, plan, credentials, supabase) {
@@ -1173,222 +1099,274 @@ async function executeSignup(page, plan, credentials, supabase) {
       }
     }
     
-    // Submit the form
-    const submitButtons = await page.$$('button[type="submit"], input[type="submit"], button:has-text("Submit"), button:has-text("Register")');
-    if (submitButtons.length > 0) {
-      await submitButtons[0].click();
+    // Submit the form using reliable click
+    const submitSelectors = [
+      'button[type="submit"]',
+      'input[type="submit"]',
+      'button:has-text("Submit")',
+      'button:has-text("Register")',
+      'button:has-text("Sign Up")'
+    ];
+    
+    const submitClicked = await reliableClick(page, submitSelectors, plan_id, supabase, "Submit");
+    if (submitClicked) {
       await page.waitForTimeout(3000);
-      
       await supabase.from("plan_logs").insert({ 
         plan_id, 
         msg: "Worker: Signup form submitted" 
       });
     }
     
-    // Check for Nordic Kids add-on form after initial signup
+    // Check for Nordic Kids add-on form after initial signup (non-blocking)
     const nordicResult = await handleNordicAddons(page, plan, supabase);
-    if (!nordicResult.success) {
-      return nordicResult;
-    }
+    // Nordic add-ons always returns success, so we continue regardless
     
-    // Handle payment with saved card + CVV
-    const paymentResult = await handleBlackhawkPayment(page, plan, credentials, supabase);
-    if (!paymentResult.success) {
-      return paymentResult;
-    }
+    // URL-based checkout state machine
+    await supabase.from("plan_logs").insert({ 
+      plan_id, 
+      msg: "Worker: Starting checkout state machine..." 
+    });
     
-    // Check for final success criteria
-    const content = await page.content().catch(() => '');
-    const currentUrl = page.url();
+    let maxStateLoops = 10; // Prevent infinite loops
+    let currentLoop = 0;
     
-    // Only log success if confirmation page/URL is detected
-    const confirmationIndicators = [
-      'thank you', 'registration complete', 'success', 'confirmed', 'receipt'
-    ];
-    
-    const hasConfirmation = confirmationIndicators.some(indicator => 
-      content.toLowerCase().includes(indicator)
-    ) || currentUrl.includes('success') || currentUrl.includes('complete') || currentUrl.includes('confirmation');
-    
-    if (hasConfirmation) {
+    while (currentLoop < maxStateLoops) {
+      currentLoop++;
+      const currentUrl = page.url();
+      
       await supabase.from("plan_logs").insert({ 
         plan_id, 
-        msg: "Worker: Signup completed successfully" 
+        msg: `Worker: Current URL: ${currentUrl}` 
       });
       
-      return { 
-        success: true, 
-        requiresAction: false,
-        details: { message: 'Signup completed successfully' }
-      };
-    } else {
-      await supabase.from("plan_logs").insert({ 
-        plan_id, 
-        msg: "Worker: Signup may not have completed, manual check required" 
-      });
-      
-      // Update plan status to action_required
-      await supabase
-        .from('plans')
-        .update({ status: 'action_required' })
-        .eq('id', plan_id);
-      
-      return { 
-        success: true, 
-        requiresAction: true,
-        details: { message: 'Signup may not have completed, manual check required' }
-      };
+      if (currentUrl.includes('/cart')) {
+        // Cart state: click Checkout button
+        const checkoutSelectors = [
+          'button:has-text("Checkout")',
+          '#edit-checkout',
+          'input[type="submit"][value*="Checkout" i]',
+          '[value*="Checkout" i]'
+        ];
+        
+        const checkoutClicked = await reliableClick(page, checkoutSelectors, plan_id, supabase, "Checkout");
+        if (checkoutClicked) {
+          // Wait for navigation to installments page
+          try {
+            await page.waitForURL(/\/checkout\/\d+\/installments/, { timeout: 30000 });
+            continue; // Go to next iteration to handle installments state
+          } catch (error) {
+            await supabase.from("plan_logs").insert({ 
+              plan_id, 
+              msg: `Worker: Failed to navigate to installments page: ${error.message}` 
+            });
+            break;
+          }
+        } else {
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: "Worker: No checkout button found, breaking state machine" 
+          });
+          break;
+        }
+        
+      } else if (currentUrl.match(/\/checkout\/\d+\/installments/)) {
+        // Installments state: ensure saved card selected and click Continue to Review
+        
+        // Ensure saved card radio button is selected
+        const savedCardRadios = await page.$$('input[type="radio"]');
+        if (savedCardRadios.length > 0) {
+          const isChecked = await savedCardRadios[0].isChecked();
+          if (!isChecked) {
+            await savedCardRadios[0].scrollIntoViewIfNeeded();
+            await savedCardRadios[0].click();
+            await supabase.from("plan_logs").insert({ 
+              plan_id, 
+              msg: "Worker: Selected saved card payment method" 
+            });
+          }
+        }
+        
+        // Click Continue to Review
+        const continueSelectors = [
+          'button:has-text("Continue to Review")',
+          'input[type="submit"][value*="Continue" i]',
+          '[value*="Continue" i]'
+        ];
+        
+        const continueClicked = await reliableClick(page, continueSelectors, plan_id, supabase, "Continue to Review");
+        if (continueClicked) {
+          // Wait for navigation to review page
+          try {
+            await page.waitForURL(/\/checkout\/\d+\/review/, { timeout: 30000 });
+            continue; // Go to next iteration to handle review state
+          } catch (error) {
+            await supabase.from("plan_logs").insert({ 
+              plan_id, 
+              msg: `Worker: Failed to navigate to review page: ${error.message}` 
+            });
+            break;
+          }
+        } else {
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: "Worker: No continue button found, breaking state machine" 
+          });
+          break;
+        }
+        
+      } else if (currentUrl.match(/\/checkout\/\d+\/review/)) {
+        // Review state: click Pay and complete purchase
+        
+        // Fill CVV if available and field exists
+        if (credentials.cvv) {
+          const cvvSelectors = [
+            'input[name*="cvv"]', 'input[id*="cvv"]', 'input[name*="security"]',
+            'input[id*="security"]', 'input[placeholder*="CVV"]', 'input[name*="cvc"]'
+          ];
+          
+          for (const selector of cvvSelectors) {
+            const cvvFields = await page.$$(selector);
+            if (cvvFields.length > 0) {
+              await cvvFields[0].fill(String(credentials.cvv));
+              await supabase.from("plan_logs").insert({ 
+                plan_id, 
+                msg: "Worker: CVV entered for payment" 
+              });
+              break;
+            }
+          }
+        }
+        
+        const paySelectors = [
+          'button:has-text("Pay and complete purchase")',
+          'button:has-text("Complete Purchase")',
+          'button:has-text("Pay Now")',
+          'input[type="submit"][value*="Complete" i]',
+          'input[type="submit"][value*="Pay" i]',
+          '[value*="Complete" i]'
+        ];
+        
+        const payClicked = await reliableClick(page, paySelectors, plan_id, supabase, "Pay and complete purchase");
+        if (payClicked) {
+          // Wait for completion page or success indicators
+          try {
+            await Promise.race([
+              page.waitForURL(/\/checkout\/\d+\/complete/, { timeout: 30000 }),
+              page.waitForURL(/\/(complete|thank-you|success|confirmation)/, { timeout: 30000 }),
+              page.waitForSelector('text=/Thank you|Registration complete|successfully registered/i', { timeout: 30000 })
+            ]);
+            
+            // Check current state after payment
+            const finalUrl = page.url();
+            const finalContent = await page.content().catch(() => '');
+            
+            await supabase.from("plan_logs").insert({ 
+              plan_id, 
+              msg: `Worker: After payment - URL: ${finalUrl}` 
+            });
+            
+            // Success criteria check
+            const hasSuccessUrl = finalUrl.match(/\/checkout\/\d+\/complete/) || 
+                                 finalUrl.includes('/complete') || 
+                                 finalUrl.includes('/thank-you') || 
+                                 finalUrl.includes('/success') || 
+                                 finalUrl.includes('/confirmation');
+            
+            const hasSuccessText = /(Thank you|Registration complete|successfully registered)/i.test(finalContent);
+            
+            if (hasSuccessUrl || hasSuccessText) {
+              await supabase.from("plan_logs").insert({ 
+                plan_id, 
+                msg: "Worker: Signup completed successfully" 
+              });
+              
+              return { 
+                success: true, 
+                requiresAction: false,
+                details: { message: 'Signup completed successfully' }
+              };
+            } else {
+              break; // Exit state machine to handle as action required
+            }
+          } catch (error) {
+            await supabase.from("plan_logs").insert({ 
+              plan_id, 
+              msg: `Worker: Payment confirmation timeout: ${error.message}` 
+            });
+            break; // Exit state machine to handle as action required
+          }
+        } else {
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: "Worker: No payment button found, breaking state machine" 
+          });
+          break;
+        }
+        
+      } else if (currentUrl.match(/\/checkout\/\d+\/complete/)) {
+        // Complete state: success
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: "Worker: Signup completed successfully" 
+        });
+        
+        return { 
+          success: true, 
+          requiresAction: false,
+          details: { message: 'Signup completed successfully' }
+        };
+        
+      } else {
+        // Unknown state: check for success indicators before breaking
+        const content = await page.content().catch(() => '');
+        const hasSuccessText = /(Thank you|Registration complete|successfully registered)/i.test(content);
+        const hasSuccessUrl = currentUrl.includes('/complete') || 
+                             currentUrl.includes('/success') || 
+                             currentUrl.includes('/confirmation');
+        
+        if (hasSuccessText || hasSuccessUrl) {
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: "Worker: Signup completed successfully" 
+          });
+          
+          return { 
+            success: true, 
+            requiresAction: false,
+            details: { message: 'Signup completed successfully' }
+          };
+        }
+        
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: `Worker: Unknown checkout state, breaking state machine. URL: ${currentUrl}` 
+        });
+        break;
+      }
     }
+    
+    // If we exit the state machine without success, mark as action required
+    await supabase.from("plan_logs").insert({ 
+      plan_id, 
+      msg: "Worker: Signup may not have completed, manual check required" 
+    });
+    
+    return { 
+      success: true, 
+      requiresAction: true,
+      details: { message: 'Signup may not have completed, manual check required' }
+    };
     
   } catch (error) {
+    await supabase.from("plan_logs").insert({ 
+      plan_id, 
+      msg: `Worker: Signup execution error: ${error.message}` 
+    });
+    
     return { 
       success: false, 
       error: `Signup execution failed: ${error.message}`,
       code: 'SIGNUP_EXECUTION_ERROR'
-    };
-  }
-}
-
-// Handle Blackhawk payment flow with CVV
-async function handleBlackhawkPayment(page, plan, credentials, supabase) {
-  try {
-    const plan_id = plan.id;
-    const EXTRAS = (plan?.extras ?? {});
-    const allowNoCvv = (EXTRAS.allow_no_cvv === true || EXTRAS.allow_no_cvv === 'true' || plan.allow_no_cvv === true);
-    
-    // Wait a moment for any page transitions
-    await page.waitForTimeout(2000);
-    
-    // Check if we're on a payment/checkout page
-    const content = await page.content().catch(() => '');
-    const currentUrl = page.url();
-    
-    const isPaymentPage = content.toLowerCase().includes('payment') || 
-                         content.toLowerCase().includes('checkout') ||
-                         content.toLowerCase().includes('billing') ||
-                         currentUrl.includes('payment') ||
-                         currentUrl.includes('checkout') ||
-                         currentUrl.includes('billing');
-    
-    if (!isPaymentPage) {
-      await supabase.from("plan_logs").insert({ 
-        plan_id, 
-        msg: "Worker: No payment page detected, continuing..." 
-      });
-      return { success: true };
-    }
-    
-    await supabase.from("plan_logs").insert({ 
-      plan_id, 
-      msg: "Worker: Payment page detected, processing..." 
-    });
-    
-    // Look for CVV field and fill if exists
-    const cvvSelectors = [
-      'input[name*="cvv"]',
-      'input[id*="cvv"]',
-      'input[name*="security"]',
-      'input[id*="security"]',
-      'input[placeholder*="CVV"]',
-      'input[placeholder*="Security"]',
-      'input[placeholder*="CVC"]',
-      'input[name*="cvc"]',
-      'input[id*="cvc"]'
-    ];
-    
-    let cvvField = null;
-    for (const selector of cvvSelectors) {
-      const fields = await page.$$(selector);
-      if (fields.length > 0) {
-        cvvField = fields[0];
-        break;
-      }
-    }
-    
-    if (cvvField && credentials.cvv) {
-      await cvvField.fill(String(credentials.cvv));
-      await supabase.from("plan_logs").insert({ 
-        plan_id, 
-        msg: "Worker: CVV entered for payment" 
-      });
-    }
-    
-    // Click Pay/Complete/Submit button
-    const paymentButtonSelectors = [
-      'button:has-text("Pay")',
-      'button:has-text("Complete")',
-      'button:has-text("Submit")',
-      'button:has-text("Place Order")',
-      'button:has-text("Confirm")',
-      'input[type="submit"][value*="Pay"]',
-      'input[type="submit"][value*="Complete"]',
-      'input[type="submit"][value*="Submit"]',
-      'button[type="submit"]',
-      'input[type="submit"]'
-    ];
-    
-    let paymentButtonClicked = false;
-    for (const selector of paymentButtonSelectors) {
-      const buttons = await page.$$(selector);
-      if (buttons.length > 0) {
-        await buttons[0].click();
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: "Worker: Payment button clicked" 
-        });
-        paymentButtonClicked = true;
-        break;
-      }
-    }
-    
-    if (paymentButtonClicked) {
-      // Wait for confirmation page or success indicators
-      await page.waitForTimeout(10000);
-      
-      const updatedContent = await page.content().catch(() => '');
-      const updatedUrl = page.url();
-      
-      // Check for confirmation page
-      const confirmationIndicators = [
-        'thank you', 'registration complete', 'success', 'confirmed', 'receipt'
-      ];
-      
-      const hasConfirmation = confirmationIndicators.some(indicator => 
-        updatedContent.toLowerCase().includes(indicator)
-      ) || updatedUrl.includes('success') || updatedUrl.includes('complete') || updatedUrl.includes('confirmation');
-      
-      if (hasConfirmation) {
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: "Worker: Payment and registration completed successfully" 
-        });
-        
-        return { 
-          success: true,
-          requiresAction: false,
-          details: { message: 'Payment and registration completed successfully' }
-        };
-      }
-    }
-    
-    return { success: true };
-    
-  } catch (error) {
-    await supabase.from("plan_logs").insert({ 
-      plan_id: plan.id, 
-      msg: `Worker: Payment processing error: ${error.message}` 
-    });
-    
-    // Update plan status to failed on error
-    await supabase
-      .from('plans')
-      .update({ status: 'failed' })
-      .eq('id', plan.id);
-    
-    return { 
-      success: false, 
-      error: `Payment processing failed: ${error.message}`,
-      code: 'PAYMENT_PROCESSING_ERROR'
     };
   }
 }
