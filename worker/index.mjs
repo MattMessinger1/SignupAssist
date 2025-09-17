@@ -712,43 +712,63 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
         // Fallback 2: Fuzzy matching across all rows if still not found
         if (!clicked) {
           try {
-            const rowElements = await page.locator('.views-row, tr').all();
-            const rowTexts = [];
-            for (const rowEl of rowElements) {
-              const text = await rowEl.textContent();
-              if (text && text.trim()) {
-                rowTexts.push({ text: text.trim(), element: rowEl });
-              }
-            }
-
-            const scores = rowTexts.map(r => ({
-              text: r.text,
-              element: r.element,
-              score: jaroWinkler(r.text.toLowerCase(), targetText.toLowerCase())
-            }));
-            scores.sort((a, b) => b.score - a.score);
-
-            if (scores.length > 0) {
-              const best = scores[0];
+            // Extract all row texts using the simpler allTextContents method
+            const rows = await page.locator('.views-row, tr').allTextContents();
+            const validRows = rows.filter(text => text && text.trim());
+            
+            if (validRows.length === 0) {
               await supabase.from("plan_logs").insert({
                 plan_id,
-                msg: `Worker: Fuzzy match candidate "${best.text.substring(0, 100)}" (similarity ${best.score.toFixed(2)})`
+                msg: `Worker: No rows found for fuzzy matching`
+              });
+            } else {
+              // Compute Jaro-Winkler similarity with targetText
+              const scores = validRows.map((text, index) => ({
+                text: text.trim(),
+                index,
+                score: jaroWinkler(text.trim().toLowerCase(), targetText.toLowerCase())
+              }));
+              
+              // Sort by score descending and pick best ≥ 0.8
+              scores.sort((a, b) => b.score - a.score);
+              const best = scores[0];
+              
+              await supabase.from("plan_logs").insert({
+                plan_id,
+                msg: `Worker: Fuzzy match candidate: "${best.text.substring(0, 100)}" (score ${best.score.toFixed(2)})`
               });
               
               if (best.score >= 0.8) {
+                // Get the actual row element by index and attempt register click
+                const rowElement = page.locator('.views-row, tr').nth(best.index);
+                let registerFound = false;
+                
                 for (const sel of REGISTER_SELECTORS) {
-                  const btn = best.element.locator(sel).first();
+                  const btn = rowElement.locator(sel).first();
                   if (await btn.count()) {
                     await btn.scrollIntoViewIfNeeded();
                     await btn.click();
                     clicked = true;
+                    registerFound = true;
                     await supabase.from("plan_logs").insert({
                       plan_id,
-                      msg: `Worker: Register clicked for fuzzy match "${best.text.substring(0, 50)}"`
+                      msg: `Worker: Register clicked for fuzzy match "${best.text.substring(0, 50)}" via ${sel}`
                     });
                     break;
                   }
                 }
+                
+                if (!registerFound) {
+                  await supabase.from("plan_logs").insert({
+                    plan_id,
+                    msg: `Worker: Fuzzy match found but no register button in row`
+                  });
+                }
+              } else {
+                await supabase.from("plan_logs").insert({
+                  plan_id,
+                  msg: `Worker: Best fuzzy match score ${best.score.toFixed(2)} below threshold 0.8`
+                });
               }
             }
           } catch (e) {
