@@ -351,6 +351,9 @@ app.post("/run-plan", async (req, res) => {
         await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Playwright connected" });
         dlog("Connected Playwright to session:", session.id);
         await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Playwright connected to Browserbase" });
+
+        // Session seeding to bypass antibot detection
+        await seedBrowserSession(page, plan, plan_id, supabase);
       } catch (e) {
         console.error("Playwright connect error:", e);
         await supabase.from("plan_logs").insert({
@@ -519,6 +522,194 @@ app.post("/run-plan", async (req, res) => {
     res.status(500).json({ ok: false, error: String(error) });
   }
 });
+
+// Session seeding to bypass antibot detection
+async function seedBrowserSession(page, plan, plan_id, supabase) {
+  try {
+    await supabase.from("plan_logs").insert({
+      plan_id,
+      msg: "Worker: Starting session seeding to bypass antibot detection"
+    });
+
+    // Normalize base URL
+    let baseUrl;
+    if (plan.base_url) {
+      try {
+        const url = new URL(plan.base_url);
+        baseUrl = `${url.protocol}//${url.host}`;
+      } catch {
+        const subdomain = (plan.org || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        baseUrl = `https://${subdomain}.skiclubpro.team`;
+      }
+    } else {
+      const subdomain = (plan.org || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      baseUrl = `https://${subdomain}.skiclubpro.team`;
+    }
+
+    // Phase 1: Homepage exploration
+    await supabase.from("plan_logs").insert({
+      plan_id,
+      msg: "Worker: Seeding Phase 1 - Homepage exploration"
+    });
+    
+    await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+    await humanizedDelay(2000, 4000);
+    
+    // Human-like homepage interactions
+    await simulateMouseMovement(page);
+    await humanizedScroll(page, plan_id, supabase);
+    await humanizedDelay(15000, 25000); // Dwell time 15-25 seconds
+
+    // Phase 2: Program discovery
+    await supabase.from("plan_logs").insert({
+      plan_id,
+      msg: "Worker: Seeding Phase 2 - Program discovery"
+    });
+
+    // Try to find and visit programs page
+    const programsSelectors = [
+      'a[href*="programs"]',
+      'a[href*="registration"]', 
+      'a[href*="classes"]',
+      'a:has-text("Programs")',
+      'a:has-text("Classes")',
+      'a:has-text("Registration")'
+    ];
+
+    let programsFound = false;
+    for (const selector of programsSelectors) {
+      try {
+        const element = await page.locator(selector).first();
+        if (await element.isVisible()) {
+          await simulateMouseMovement(page, element);
+          await humanizedDelay(1000, 2000);
+          await element.click();
+          programsFound = true;
+          await humanizedDelay(3000, 5000);
+          break;
+        }
+      } catch (e) {
+        // Continue to next selector
+      }
+    }
+
+    if (programsFound) {
+      await supabase.from("plan_logs").insert({
+        plan_id,
+        msg: "Worker: Found programs page, exploring content"
+      });
+      
+      // Explore programs page
+      await humanizedScroll(page, plan_id, supabase);
+      await simulateReadingBehavior(page);
+      await humanizedDelay(20000, 30000); // Longer dwell time on programs page
+    }
+
+    // Phase 3: Target program interest
+    await supabase.from("plan_logs").insert({
+      plan_id,
+      msg: "Worker: Seeding Phase 3 - Target program interest simulation"
+    });
+
+    // Look for target program elements (without clicking register)
+    const targetKeywords = [
+      plan.preferred_class_name,
+      plan.child_name,
+      plan.preferred?.split(' ')[0], // Day of week
+      'Nordic', 'Kids'
+    ].filter(Boolean);
+
+    for (const keyword of targetKeywords) {
+      try {
+        const elements = await page.locator(`text="${keyword}"`).all();
+        if (elements.length > 0) {
+          // Simulate interest by hovering over target program elements
+          for (let i = 0; i < Math.min(elements.length, 3); i++) {
+            await simulateMouseMovement(page, elements[i]);
+            await humanizedDelay(2000, 4000);
+          }
+          break;
+        }
+      } catch (e) {
+        // Continue with next keyword
+      }
+    }
+
+    // Phase 4: Decision pause and preparation
+    await supabase.from("plan_logs").insert({
+      plan_id,
+      msg: "Worker: Seeding Phase 4 - Decision pause before action"
+    });
+
+    // Final scroll and mouse movements to simulate decision-making
+    await humanizedScroll(page, plan_id, supabase);
+    await simulateMouseMovement(page);
+    await humanizedDelay(10000, 15000); // Decision pause
+
+    await supabase.from("plan_logs").insert({
+      plan_id,
+      msg: "Worker: Session seeding completed successfully"
+    });
+
+  } catch (error) {
+    await supabase.from("plan_logs").insert({
+      plan_id,
+      msg: `Worker: Session seeding error (continuing): ${error.message}`
+    });
+    // Don't fail the entire process if seeding fails
+  }
+}
+
+// Simulate natural mouse movement patterns
+async function simulateMouseMovement(page, targetElement = null) {
+  try {
+    if (targetElement) {
+      // Move to specific element with natural curve
+      await targetElement.hover();
+    } else {
+      // Random mouse movements across the page
+      const viewport = page.viewportSize();
+      const movements = Math.floor(Math.random() * 3) + 2; // 2-4 movements
+      
+      for (let i = 0; i < movements; i++) {
+        const x = Math.floor(Math.random() * viewport.width * 0.8) + viewport.width * 0.1;
+        const y = Math.floor(Math.random() * viewport.height * 0.8) + viewport.height * 0.1;
+        
+        await page.mouse.move(x, y);
+        await humanizedDelay(500, 1500);
+      }
+    }
+  } catch (e) {
+    // Ignore mouse movement errors
+  }
+}
+
+// Simulate reading behavior with pauses
+async function simulateReadingBehavior(page) {
+  try {
+    // Look for text-heavy elements and simulate reading
+    const textElements = await page.locator('p, div, li').all();
+    const readableElements = textElements.slice(0, 5); // Read first 5 elements
+    
+    for (const element of readableElements) {
+      try {
+        if (await element.isVisible()) {
+          await element.scrollIntoViewIfNeeded();
+          await simulateMouseMovement(page, element);
+          
+          // Simulate reading time based on text length
+          const text = await element.textContent();
+          const readingTime = Math.min(text?.length || 0 * 50, 8000); // Max 8 seconds
+          await humanizedDelay(readingTime, readingTime + 2000);
+        }
+      } catch (e) {
+        // Continue with next element
+      }
+    }
+  } catch (e) {
+    // Ignore reading simulation errors
+  }
+}
 
 // Login with Playwright
 async function loginWithPlaywright(page, loginUrl, email, password) {
