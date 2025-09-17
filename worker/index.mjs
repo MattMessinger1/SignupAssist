@@ -622,20 +622,26 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
       await page.goto(registrationUrl, { waitUntil: "domcontentloaded" });
       
       try {
-        // Build target text correctly
-        const targetText = [plan.preferred_class_name, plan.preferred]
-          .filter(Boolean)
-          .join(' ')
-          .replace(/\sat\s\d+:\d+.*/, '') // strip "at 16:30" if present
-          .trim() || "Nordic Kids Wednesday";
+        // Fix targetText building (avoid duplicates)
+        const rawName = plan.preferred_class_name || "";
+        const dayPart = plan.preferred || "";
+        let targetText = [rawName, dayPart].filter(Boolean).join(" ").trim();
+
+        // Remove accidental duplicates like "Wednesday Wednesday"
+        targetText = targetText.replace(/\b(\w+)\s+\1\b/g, "$1");
+        
+        // Fallback if empty
+        if (!targetText) {
+          targetText = "Nordic Kids Wednesday";
+        }
         
         await supabase.from("plan_logs").insert({
           plan_id,
-          msg: `Worker: Waiting for program text "${targetText}" to appear`
+          msg: `Worker: Using targetText "${targetText}" for program discovery`
         });
         
-        // Wait for the actual program text instead of a container
-        await page.waitForSelector(`text=${targetText}`, { timeout: 15000 });
+        // Wait for the actual program text or any visible Register link
+        await page.waitForSelector(`text=${targetText}, a.btn:has-text("Register")`, { timeout: 15000 });
         
         await supabase.from("plan_logs").insert({
           plan_id,
@@ -648,6 +654,11 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
         try {
           const row = page.locator(`text=${targetText}`).first();
           await row.scrollIntoViewIfNeeded();
+          
+          await supabase.from("plan_logs").insert({
+            plan_id,
+            msg: `Worker: Found container for "${targetText}"`
+          });
 
           // Try to click Register/Enroll buttons within this row
           for (const sel of REGISTER_SELECTORS) {
@@ -730,6 +741,27 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
               plan_id, 
               msg: `Worker: Fuzzy matching failed: ${e.message}` 
             });
+          }
+        }
+
+        // Partial/fallback matching if exact text fails
+        if (!clicked) {
+          const fallbackTitle = page.locator('text=Nordic Kids').first();
+          if (await fallbackTitle.count()) {
+            await supabase.from("plan_logs").insert({
+              plan_id,
+              msg: `Worker: Fallback search matched "Nordic Kids"`
+            });
+            const fallbackRow = fallbackTitle.locator('xpath=ancestor::tr[1]').first();
+            const fallbackBtn = fallbackRow.locator(REGISTER_SELECTORS.join(',')).first();
+            if (await fallbackBtn.count()) {
+              await fallbackBtn.click();
+              clicked = true;
+              await supabase.from("plan_logs").insert({
+                plan_id,
+                msg: `Worker: Register clicked via fallback container`
+              });
+            }
           }
         }
 
