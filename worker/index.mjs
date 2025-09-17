@@ -22,6 +22,60 @@ const REGISTER_SELECTORS = [
   'a:has-text("Enroll")'
 ];
 
+// ===== FUZZY MATCHING UTILITY =====
+function jaroWinkler(s1, s2) {
+  if (s1 === s2) return 1.0;
+  
+  const len1 = s1.length;
+  const len2 = s2.length;
+  
+  if (len1 === 0 || len2 === 0) return 0.0;
+  
+  const matchWindow = Math.floor(Math.max(len1, len2) / 2) - 1;
+  if (matchWindow < 0) return 0.0;
+  
+  const s1Matches = new Array(len1).fill(false);
+  const s2Matches = new Array(len2).fill(false);
+  
+  let matches = 0;
+  let transpositions = 0;
+  
+  // Identify matches
+  for (let i = 0; i < len1; i++) {
+    const start = Math.max(0, i - matchWindow);
+    const end = Math.min(i + matchWindow + 1, len2);
+    
+    for (let j = start; j < end; j++) {
+      if (s2Matches[j] || s1[i] !== s2[j]) continue;
+      s1Matches[i] = s2Matches[j] = true;
+      matches++;
+      break;
+    }
+  }
+  
+  if (matches === 0) return 0.0;
+  
+  // Count transpositions
+  let k = 0;
+  for (let i = 0; i < len1; i++) {
+    if (!s1Matches[i]) continue;
+    while (!s2Matches[k]) k++;
+    if (s1[i] !== s2[k]) transpositions++;
+    k++;
+  }
+  
+  const jaro = (matches / len1 + matches / len2 + (matches - transpositions / 2) / matches) / 3.0;
+  
+  // Calculate common prefix length (up to 4 characters)
+  let prefix = 0;
+  for (let i = 0; i < Math.min(len1, len2, 4); i++) {
+    if (s1[i] === s2[i]) prefix++;
+    else break;
+  }
+  
+  return jaro + (0.1 * prefix * (1.0 - jaro));
+}
+
 // Debug logging helper - set DEBUG_VERBOSE=1 in environment to enable verbose logs
 const DEBUG_VERBOSE = process.env.DEBUG_VERBOSE === "1";
 function dlog(...args) { 
@@ -556,8 +610,7 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
       }
     }
     
-    // Strategy 1: Program Name
-    const targetText = plan.preferred || "Nordic Kids Wednesday";
+    // Strategy 1: Program Name Discovery
     const registrationUrls = [`${baseUrl}/registration`, `${baseUrl}/registration/events`];
     
     for (const registrationUrl of registrationUrls) {
@@ -572,79 +625,110 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
       await page.waitForSelector('table, .views-row, .acc_card', { timeout: 15000 });
       
       try {
-        // Compose target text from plan fields (tolerant combination)
-        const rawName = [plan.preferred_class_name, plan.preferred].filter(Boolean).join(' ').trim();
-        const targetText = rawName || (plan.preferred ?? 'Nordic Kids Wednesday'); // keep default
+        // Build target text correctly
+        const targetText = [plan.preferred_class_name, plan.preferred]
+          .filter(Boolean)
+          .join(' ')
+          .replace(/\sat\s\d+:\d+.*/, '') // strip "at 16:30" if present
+          .trim() || "Nordic Kids Wednesday";
         
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: `Worker: Searching for program container with text: "${targetText}"` 
+        await supabase.from("plan_logs").insert({
+          plan_id,
+          msg: `Worker: Searching for program row with text "${targetText}"`
         });
         
         let clicked = false;
-        let containerType = null;
         
+        // Find program row and Register button with proper locator chaining
         try {
-          // Find the title element and scroll it into view
-          const title = page.locator(`text=${targetText}`).first();
-          await title.scrollIntoViewIfNeeded();
-          
-          // Try common container shapes (table row or card)
-          const container = title.locator('xpath=ancestor::tr[1]').first()
-            .or(title.locator('xpath=ancestor::div[contains(@class,"acc_card")][1]').first())
-            .or(title.locator('xpath=ancestor::div[contains(@class,"views-row")][1]').first());
-          
-          // Determine container type for logging
-          const containerCount = await container.count();
-          if (containerCount > 0) {
-            const containerClass = await container.getAttribute('class') || '';
-            if (containerClass.includes('acc_card')) containerType = 'acc_card';
-            else if (containerClass.includes('views-row')) containerType = 'views-row';
-            else containerType = 'table-row';
-            
-            await supabase.from("plan_logs").insert({ 
-              plan_id, 
-              msg: `Worker: Found program container (${containerType}) with ${containerCount} matches` 
-            });
-          }
-          
-          // Inside the container, attempt to click a Register/Enroll control
+          const row = page.locator(`text=${targetText}`).first();
+          await row.scrollIntoViewIfNeeded();
+
+          // Try to click Register/Enroll buttons within this row
           for (const sel of REGISTER_SELECTORS) {
-            const btn = container.locator(sel).first();
+            const btn = row.locator(sel).first();
             if (await btn.count()) {
               await btn.scrollIntoViewIfNeeded();
               await btn.click();
               clicked = true;
-              await supabase.from('plan_logs').insert({ 
-                plan_id, 
-                msg: `Worker: Register clicked for "${targetText}" via ${sel} in ${containerType}` 
+              await supabase.from("plan_logs").insert({
+                plan_id,
+                msg: `Worker: Register clicked for ${targetText} via ${sel}`
               });
               break;
             }
           }
-          
-          // Fallback 1: If not found, try an href pattern inside the same container
+
+          // Fallback 1: Direct link inside the same row
           if (!clicked) {
-            const link = container.locator('a[href*="/registration/"][href*="/start"]').first();
+            const link = row.locator('a[href*="/registration/"][href*="/start"]').first();
             if (await link.count()) {
-              await link.scrollIntoViewIfNeeded();
               await link.click();
               clicked = true;
-              await supabase.from('plan_logs').insert({ 
-                plan_id, 
-                msg: `Worker: Register clicked for "${targetText}" via href pattern in ${containerType}` 
+              await supabase.from("plan_logs").insert({
+                plan_id,
+                msg: `Worker: Register clicked via direct href for ${targetText}`
               });
             }
           }
-          
         } catch (e) {
           await supabase.from("plan_logs").insert({ 
             plan_id, 
-            msg: `Worker: Container search failed: ${e.message}` 
+            msg: `Worker: Direct row search failed: ${e.message}` 
           });
         }
-        
-        // Fallback 2: Global search using reliableClick
+
+        // Fallback 2: Fuzzy matching across all rows if still not found
+        if (!clicked) {
+          try {
+            const rowElements = await page.locator('.views-row, tr').all();
+            const rowTexts = [];
+            for (const rowEl of rowElements) {
+              const text = await rowEl.textContent();
+              if (text && text.trim()) {
+                rowTexts.push({ text: text.trim(), element: rowEl });
+              }
+            }
+
+            const scores = rowTexts.map(r => ({
+              text: r.text,
+              element: r.element,
+              score: jaroWinkler(r.text.toLowerCase(), targetText.toLowerCase())
+            }));
+            scores.sort((a, b) => b.score - a.score);
+
+            if (scores.length > 0) {
+              const best = scores[0];
+              await supabase.from("plan_logs").insert({
+                plan_id,
+                msg: `Worker: Fuzzy match candidate "${best.text.substring(0, 100)}" (similarity ${best.score.toFixed(2)})`
+              });
+              
+              if (best.score >= 0.8) {
+                for (const sel of REGISTER_SELECTORS) {
+                  const btn = best.element.locator(sel).first();
+                  if (await btn.count()) {
+                    await btn.scrollIntoViewIfNeeded();
+                    await btn.click();
+                    clicked = true;
+                    await supabase.from("plan_logs").insert({
+                      plan_id,
+                      msg: `Worker: Register clicked for fuzzy match "${best.text.substring(0, 50)}"`
+                    });
+                    break;
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            await supabase.from("plan_logs").insert({ 
+              plan_id, 
+              msg: `Worker: Fuzzy matching failed: ${e.message}` 
+            });
+          }
+        }
+
+        // Fallback 3: Global click attempt as last resort
         if (!clicked) {
           clicked = await reliableClick(page, REGISTER_SELECTORS, plan_id, supabase, "Register (global fallback)");
           if (clicked) {
@@ -654,32 +738,15 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
             });
           }
         }
-        
-        // Log near-misses if all attempts failed
+
+        // Logging when discovery fails entirely
         if (!clicked) {
-          try {
-            const partialMatches = await page.locator(`text*="${targetText.split(' ')[0]}"`)
-              .or(page.locator(`text*="${plan.preferred_class_name || 'Nordic'}"`))
-              .all();
-            
-            const nearMisses = [];
-            for (let i = 0; i < Math.min(3, partialMatches.length); i++) {
-              const text = await partialMatches[i].textContent();
-              if (text) nearMisses.push(text.trim().substring(0, 50));
-            }
-            
-            if (nearMisses.length > 0) {
-              await supabase.from('plan_logs').insert({
-                plan_id,
-                msg: `Worker: Near-miss containers found: ${nearMisses.join(', ')}`
-              });
-            }
-          } catch (e) {
-            // Non-critical logging error
-          }
-        }
-        
-        if (clicked) {
+          const html = await page.content();
+          await supabase.from("plan_logs").insert({
+            plan_id,
+            msg: `Worker: Program discovery failed. Tried target "${targetText}". DOM snippet: ${html.slice(0,500)}`
+          });
+        } else {
           // Wait for navigation to start page
           await page.waitForURL(/\/registration\/.*\/start/, { timeout: 30000 });
           return { success: true, startUrl: page.url() };
