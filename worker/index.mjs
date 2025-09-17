@@ -567,46 +567,115 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
       });
       
       await page.goto(registrationUrl, { waitUntil: "domcontentloaded" });
-      await page.waitForTimeout(2000);
+      
+      // Wait for content structure to load
+      await page.waitForSelector('table, .views-row, .acc_card', { timeout: 15000 });
       
       try {
-        // First try container-scoped search: find the program text, then Register button within its container
+        // Compose target text from plan fields (tolerant combination)
+        const rawName = [plan.preferred_class_name, plan.preferred].filter(Boolean).join(' ').trim();
+        const targetText = rawName || (plan.preferred ?? 'Nordic Kids Wednesday'); // keep default
+        
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: `Worker: Searching for program container with text: "${targetText}"` 
+        });
+        
         let clicked = false;
+        let containerType = null;
         
         try {
-          const programElement = await scrollUntilVisible(page, `text=${targetText}`, 15);
-          const container = programElement.locator('..'); // Get parent container
+          // Find the title element and scroll it into view
+          const title = page.locator(`text=${targetText}`).first();
+          await title.scrollIntoViewIfNeeded();
           
-          // Try each register selector within the container
-          for (const selector of REGISTER_SELECTORS) {
-            try {
-              const registerButton = container.locator(selector).first();
-              if (await registerButton.count() > 0) {
-                await registerButton.click();
-                clicked = true;
-                
-                await supabase.from("plan_logs").insert({ 
-                  plan_id, 
-                  msg: `Worker: Program found by name (container-scoped: ${selector})` 
-                });
-                break;
-              }
-            } catch (e) {
-              // Continue to next selector
+          // Try common container shapes (table row or card)
+          const container = title.locator('xpath=ancestor::tr[1]').first()
+            .or(title.locator('xpath=ancestor::div[contains(@class,"acc_card")][1]').first())
+            .or(title.locator('xpath=ancestor::div[contains(@class,"views-row")][1]').first());
+          
+          // Determine container type for logging
+          const containerCount = await container.count();
+          if (containerCount > 0) {
+            const containerClass = await container.getAttribute('class') || '';
+            if (containerClass.includes('acc_card')) containerType = 'acc_card';
+            else if (containerClass.includes('views-row')) containerType = 'views-row';
+            else containerType = 'table-row';
+            
+            await supabase.from("plan_logs").insert({ 
+              plan_id, 
+              msg: `Worker: Found program container (${containerType}) with ${containerCount} matches` 
+            });
+          }
+          
+          // Inside the container, attempt to click a Register/Enroll control
+          for (const sel of REGISTER_SELECTORS) {
+            const btn = container.locator(sel).first();
+            if (await btn.count()) {
+              await btn.scrollIntoViewIfNeeded();
+              await btn.click();
+              clicked = true;
+              await supabase.from('plan_logs').insert({ 
+                plan_id, 
+                msg: `Worker: Register clicked for "${targetText}" via ${sel} in ${containerType}` 
+              });
+              break;
             }
           }
+          
+          // Fallback 1: If not found, try an href pattern inside the same container
+          if (!clicked) {
+            const link = container.locator('a[href*="/registration/"][href*="/start"]').first();
+            if (await link.count()) {
+              await link.scrollIntoViewIfNeeded();
+              await link.click();
+              clicked = true;
+              await supabase.from('plan_logs').insert({ 
+                plan_id, 
+                msg: `Worker: Register clicked for "${targetText}" via href pattern in ${containerType}` 
+              });
+            }
+          }
+          
         } catch (e) {
-          // Program text not found, continue to global fallback
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: `Worker: Container search failed: ${e.message}` 
+          });
         }
         
-        // Fallback: global search using reliableClick
+        // Fallback 2: Global search using reliableClick
         if (!clicked) {
           clicked = await reliableClick(page, REGISTER_SELECTORS, plan_id, supabase, "Register (global fallback)");
           if (clicked) {
             await supabase.from("plan_logs").insert({ 
               plan_id, 
-              msg: "Worker: Program found by name (global fallback)" 
+              msg: `Worker: Register clicked via global fallback for "${targetText}"` 
             });
+          }
+        }
+        
+        // Log near-misses if all attempts failed
+        if (!clicked) {
+          try {
+            const partialMatches = await page.locator(`text*="${targetText.split(' ')[0]}"`)
+              .or(page.locator(`text*="${plan.preferred_class_name || 'Nordic'}"`))
+              .all();
+            
+            const nearMisses = [];
+            for (let i = 0; i < Math.min(3, partialMatches.length); i++) {
+              const text = await partialMatches[i].textContent();
+              if (text) nearMisses.push(text.trim().substring(0, 50));
+            }
+            
+            if (nearMisses.length > 0) {
+              await supabase.from('plan_logs').insert({
+                plan_id,
+                msg: `Worker: Near-miss containers found: ${nearMisses.join(', ')}`
+              });
+            }
+          } catch (e) {
+            // Non-critical logging error
           }
         }
         
