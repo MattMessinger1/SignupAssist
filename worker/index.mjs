@@ -622,13 +622,16 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
       await page.goto(registrationUrl, { waitUntil: "domcontentloaded" });
       
       try {
-        // Fix targetText building (avoid duplicates)
+        // Build targetText from preferred_class_name and preferred
         const rawName = plan.preferred_class_name || "";
         const dayPart = plan.preferred || "";
         let targetText = [rawName, dayPart].filter(Boolean).join(" ").trim();
 
         // Remove accidental duplicates like "Wednesday Wednesday"
         targetText = targetText.replace(/\b(\w+)\s+\1\b/g, "$1");
+        
+        // Strip trailing time parts like "at 16:30" if both day+time already present
+        targetText = targetText.replace(/\s+at\s+\d{1,2}:\d{2}(\s*(AM|PM))?$/i, "");
         
         // Fallback if empty
         if (!targetText) {
