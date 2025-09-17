@@ -918,7 +918,69 @@ async function scrollUntilVisible(page, selector, maxScrolls = 15) {
   throw new Error(`Element ${selector} not found after ${maxScrolls} scroll attempts`);
 }
 
-// Reliable button click helper with universal scrolling, visibility, and retries
+// Human-like behavior helpers
+function getRandomDelay(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+async function humanizedDelay(minMs, maxMs) {
+  const baseDelay = getRandomDelay(minMs, maxMs);
+  const jitter = getRandomDelay(-100, 200); // Add ±200ms jitter
+  await new Promise(resolve => setTimeout(resolve, Math.max(100, baseDelay + jitter)));
+}
+
+async function humanizedMouseMove(page, locator) {
+  try {
+    const box = await locator.boundingBox();
+    if (box) {
+      // Move to target in 20 steps for natural movement
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 20 });
+      // Hover for 300-800ms
+      await humanizedDelay(300, 800);
+    }
+  } catch (error) {
+    // If mouse movement fails, continue without it
+    console.log('Mouse movement failed:', error.message);
+  }
+}
+
+async function humanizedScroll(page, plan_id, supabase) {
+  try {
+    const scrollAmount = getRandomDelay(200, 600);
+    await page.evaluate((amount) => {
+      window.scrollBy(0, amount);
+    }, scrollAmount);
+    
+    // Pause between scrolls
+    await humanizedDelay(200, 600);
+    
+    await supabase.from("plan_logs").insert({ 
+      plan_id, 
+      msg: `Worker: Human-like scroll (${scrollAmount}px)` 
+    });
+  } catch (error) {
+    console.log('Scroll failed:', error.message);
+  }
+}
+
+async function humanizedType(locator, text) {
+  try {
+    await locator.click();
+    await locator.clear();
+    
+    // Type character by character with natural delays
+    for (const char of text) {
+      await locator.type(char);
+      const delay = getRandomDelay(80, 150) + getRandomDelay(-20, 30); // 80-150ms ± jitter
+      await new Promise(resolve => setTimeout(resolve, Math.max(50, delay)));
+    }
+  } catch (error) {
+    // Fallback to regular fill if typing fails
+    await locator.fill(text);
+  }
+}
+
+// Reliable button click helper with human-like behavior
 async function reliableClick(page, selectors, plan_id, supabase, actionName) {
   const maxRetries = 3;
   const retryDelay = 500;
@@ -929,11 +991,17 @@ async function reliableClick(page, selectors, plan_id, supabase, actionName) {
         // Use scrollUntilVisible to find the element
         const locator = await scrollUntilVisible(page, selector, 15);
         
+        // Human-like mouse movement and hover
+        await humanizedMouseMove(page, locator);
+        
+        // Random delay before click (100-300ms)
+        await humanizedDelay(100, 300);
+        
         // Click the element
         await locator.click();
         await supabase.from("plan_logs").insert({ 
           plan_id, 
-          msg: `Worker: Successfully clicked ${actionName} button (${selector})` 
+          msg: `Worker: Successfully clicked ${actionName} button (${selector}) with human-like behavior` 
         });
         return true;
         
@@ -1331,7 +1399,7 @@ async function executeSignup(page, plan, credentials, supabase) {
     
     await supabase.from("plan_logs").insert({ 
       plan_id, 
-      msg: "Worker: Starting Blackhawk multi-step signup process..." 
+      msg: "Worker: Starting Blackhawk multi-step signup process with human-like behavior..." 
     });
     
     // Step 1: Discovery & Register - Navigate to /registration and click Register button
@@ -1343,6 +1411,13 @@ async function executeSignup(page, plan, credentials, supabase) {
         code: 'BLACKHAWK_DISCOVERY_FAILED'
       };
     }
+    
+    // Human-like delay after discovery navigation
+    await humanizedDelay(2000, 4000);
+    await supabase.from("plan_logs").insert({ 
+      plan_id, 
+      msg: "Worker: Post-discovery human delay completed" 
+    });
     
     // Step 2: Start Page (/registration/*/start) - Select participant from dropdown
     let currentUrl = page.url();
@@ -1356,6 +1431,9 @@ async function executeSignup(page, plan, credentials, supabase) {
         plan_id, 
         msg: "Worker: On start page, selecting participant..." 
       });
+      
+      // Human-like scroll on long pages
+      await humanizedScroll(page, plan_id, supabase);
       
       // Look for participant dropdown and select matching child
       const participantSelectors = [
@@ -1414,6 +1492,8 @@ async function executeSignup(page, plan, credentials, supabase) {
       if (nextClicked) {
         try {
           await page.waitForURL(/\/registration\/.*\/options/, { timeout: 30000 });
+          // Human-like delay after navigation
+          await humanizedDelay(2000, 4000);
         } catch (error) {
           await supabase.from("plan_logs").insert({ 
             plan_id, 
@@ -1431,6 +1511,10 @@ async function executeSignup(page, plan, credentials, supabase) {
     });
     
     if (currentUrl.match(/\/registration\/.*\/options/)) {
+      // Human-like scroll and delay before handling options
+      await humanizedScroll(page, plan_id, supabase);
+      await humanizedDelay(1000, 2000);
+      
       // Handle add-ons using the dedicated function (never sets final status)
       await handleBlackhawkOptions(page, plan, supabase);
     }
@@ -1448,6 +1532,10 @@ async function executeSignup(page, plan, credentials, supabase) {
         msg: "Worker: On cart page" 
       });
       
+      // Human-like behavior before checkout
+      await humanizedScroll(page, plan_id, supabase);
+      await humanizedDelay(1500, 3000);
+      
       const checkoutSelectors = [
         '#edit-checkout',
         'button#edit-checkout',
@@ -1458,6 +1546,8 @@ async function executeSignup(page, plan, credentials, supabase) {
       if (checkoutClicked) {
         try {
           await page.waitForURL(/\/checkout\/.*\/installments/, { timeout: 30000 });
+          // Human-like delay after checkout navigation
+          await humanizedDelay(2000, 4000);
         } catch (error) {
           await supabase.from("plan_logs").insert({ 
             plan_id, 
@@ -1475,16 +1565,23 @@ async function executeSignup(page, plan, credentials, supabase) {
     });
     
     if (currentUrl.match(/\/checkout\/.*\/installments/)) {
+      // Human-like scroll and delay on installments page
+      await humanizedScroll(page, plan_id, supabase);
+      await humanizedDelay(1000, 2000);
+      
       // Ensure saved card is selected (default to first radio if none) 
       try {
         const savedCardRadio = await scrollUntilVisible(page, 'input[type="radio"]', 15);
         const isChecked = await savedCardRadio.isChecked();
         if (!isChecked) {
+          // Human-like mouse movement before clicking radio
+          await humanizedMouseMove(page, savedCardRadio);
+          await humanizedDelay(100, 300);
           await savedCardRadio.click();
         }
         await supabase.from("plan_logs").insert({ 
           plan_id, 
-          msg: "Worker: Payment method selected" 
+          msg: "Worker: Payment method selected with human-like behavior" 
         });
       } catch (error) {
         // No radio buttons found - continue with default selection
@@ -1504,6 +1601,8 @@ async function executeSignup(page, plan, credentials, supabase) {
       if (continueClicked) {
         try {
           await page.waitForURL(/\/checkout\/.*\/review/, { timeout: 30000 });
+          // Human-like delay after navigation to review
+          await humanizedDelay(2000, 4000);
         } catch (error) {
           await supabase.from("plan_logs").insert({ 
             plan_id, 
@@ -1521,6 +1620,10 @@ async function executeSignup(page, plan, credentials, supabase) {
     });
     
     if (currentUrl.match(/\/checkout\/.*\/review/)) {
+      // Human-like scroll and delay on review page
+      await humanizedScroll(page, plan_id, supabase);
+      await humanizedDelay(1500, 3000);
+      
       // Fill CVV if available and field exists
       if (credentials.cvv) {
         const cvvSelectors = [
@@ -1532,10 +1635,13 @@ async function executeSignup(page, plan, credentials, supabase) {
         for (const selector of cvvSelectors) {
           try {
             const cvvField = await scrollUntilVisible(page, selector, 15);
-            await cvvField.fill(String(credentials.cvv));
+            
+            // Human-like CVV typing with per-character delays
+            await humanizedType(cvvField, String(credentials.cvv));
+            
             await supabase.from("plan_logs").insert({ 
               plan_id, 
-              msg: "Worker: CVV entered for payment" 
+              msg: "Worker: CVV entered with human-like typing" 
             });
             cvvFilled = true;
             break;
@@ -1552,6 +1658,9 @@ async function executeSignup(page, plan, credentials, supabase) {
           });
         }
       }
+      
+      // Human-like delay before final payment
+      await humanizedDelay(1000, 2000);
       
       const paySelectors = [
         'button:has-text("Pay and complete purchase")'
