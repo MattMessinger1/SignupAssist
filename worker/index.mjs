@@ -352,8 +352,8 @@ app.post("/run-plan", async (req, res) => {
         dlog("Connected Playwright to session:", session.id);
         await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Playwright connected to Browserbase" });
 
-        // Session seeding to bypass antibot detection
-        await seedBrowserSession(page, plan, plan_id, supabase);
+        // Session seeding to bypass antibot detection with timing calibration
+        await seedBrowserSessionWithTiming(page, plan, plan_id, supabase);
       } catch (e) {
         console.error("Playwright connect error:", e);
         await supabase.from("plan_logs").insert({
@@ -522,6 +522,77 @@ app.post("/run-plan", async (req, res) => {
     res.status(500).json({ ok: false, error: String(error) });
   }
 });
+
+// Session seeding with timing calibration to bypass antibot detection  
+async function seedBrowserSessionWithTiming(page, plan, plan_id, supabase) {
+  try {
+    // Parse open_time and calculate optimal timing
+    const openTime = new Date(plan.open_time);
+    const currentTime = new Date();
+    
+    // Session seeding takes approximately 1-3 minutes
+    // Start seeding 4 minutes before open_time to ensure completion before action
+    const SEEDING_DURATION_MS = 3 * 60 * 1000; // 3 minutes buffer
+    const seedingStartTime = new Date(openTime.getTime() - SEEDING_DURATION_MS);
+    
+    await supabase.from("plan_logs").insert({
+      plan_id, 
+      msg: `Worker: Timing calibration - Open: ${openTime.toISOString()}, Seeding start: ${seedingStartTime.toISOString()}, Current: ${currentTime.toISOString()}`
+    });
+
+    // If we're before seeding time, wait
+    if (currentTime < seedingStartTime) {
+      const waitTime = seedingStartTime.getTime() - currentTime.getTime();
+      await supabase.from("plan_logs").insert({
+        plan_id,
+        msg: `Worker: Waiting ${Math.round(waitTime/1000)}s until seeding start time (${seedingStartTime.toISOString()})`
+      });
+      
+      // Wait until seeding start time
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+      
+      await supabase.from("plan_logs").insert({
+        plan_id,
+        msg: "Worker: Starting session seeding at optimal time"
+      });
+    } else {
+      await supabase.from("plan_logs").insert({
+        plan_id,
+        msg: "Worker: Starting session seeding immediately (past optimal start time)"
+      });
+    }
+
+    // Perform the actual session seeding
+    await seedBrowserSession(page, plan, plan_id, supabase);
+    
+    // After seeding, wait until 30 seconds before open_time to start signup
+    const signupStartTime = new Date(openTime.getTime() - 30 * 1000); // 30s before open
+    const nowAfterSeeding = new Date();
+    
+    if (nowAfterSeeding < signupStartTime) {
+      const finalWaitTime = signupStartTime.getTime() - nowAfterSeeding.getTime();
+      await supabase.from("plan_logs").insert({
+        plan_id,
+        msg: `Worker: Seeding complete. Waiting ${Math.round(finalWaitTime/1000)}s until signup time (${signupStartTime.toISOString()})`
+      });
+      
+      await new Promise(resolve => setTimeout(resolve, finalWaitTime));
+    }
+    
+    await supabase.from("plan_logs").insert({
+      plan_id,
+      msg: "Worker: Session seeding and timing calibration complete - ready for signup"
+    });
+
+  } catch (error) {
+    await supabase.from("plan_logs").insert({
+      plan_id,
+      msg: `Worker: Timing calibration error (continuing): ${error.message}`
+    });
+    // Continue with immediate seeding as fallback
+    await seedBrowserSession(page, plan, plan_id, supabase);
+  }
+}
 
 // Session seeding to bypass antibot detection
 async function seedBrowserSession(page, plan, plan_id, supabase) {
