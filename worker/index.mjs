@@ -11,6 +11,17 @@ const CAPTCHA_AUTOSOLVE_ENABLED = false; // NEVER call a CAPTCHA solver - SMS + 
 const PER_USER_WEEKLY_LIMIT = 3; // Maximum plans per user per 7 days  
 const SMS_IMMEDIATE_ON_ACTION_REQUIRED = true; // Send SMS immediately when action required
 
+// ===== SHARED REGISTER SELECTORS =====
+const REGISTER_SELECTORS = [
+  'button:has-text("Register")',
+  'a:has-text("Register")',
+  'input[type="submit"][value*="Register" i]',
+  '[value*="Register" i]',
+  // friendly synonyms some clubs use:
+  'button:has-text("Enroll")',
+  'a:has-text("Enroll")'
+];
+
 // Debug logging helper - set DEBUG_VERBOSE=1 in environment to enable verbose logs
 const DEBUG_VERBOSE = process.env.DEBUG_VERBOSE === "1";
 function dlog(...args) { 
@@ -559,18 +570,47 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
       await page.waitForTimeout(2000);
       
       try {
-        // Use scrollUntilVisible to find the Register button for the target program
-        const registerButton = await scrollUntilVisible(page, `text=${targetText}`, 15)
-          .then(element => element.locator('button:has-text("Register")').first());
+        // First try container-scoped search: find the program text, then Register button within its container
+        let clicked = false;
         
-        if (await registerButton.count() > 0) {
-          await registerButton.click();
+        try {
+          const programElement = await scrollUntilVisible(page, `text=${targetText}`, 15);
+          const container = programElement.locator('..'); // Get parent container
           
-          await supabase.from("plan_logs").insert({ 
-            plan_id, 
-            msg: "Worker: Program found by name" 
-          });
-          
+          // Try each register selector within the container
+          for (const selector of REGISTER_SELECTORS) {
+            try {
+              const registerButton = container.locator(selector).first();
+              if (await registerButton.count() > 0) {
+                await registerButton.click();
+                clicked = true;
+                
+                await supabase.from("plan_logs").insert({ 
+                  plan_id, 
+                  msg: `Worker: Program found by name (container-scoped: ${selector})` 
+                });
+                break;
+              }
+            } catch (e) {
+              // Continue to next selector
+            }
+          }
+        } catch (e) {
+          // Program text not found, continue to global fallback
+        }
+        
+        // Fallback: global search using reliableClick
+        if (!clicked) {
+          clicked = await reliableClick(page, REGISTER_SELECTORS, plan_id, supabase, "Register (global fallback)");
+          if (clicked) {
+            await supabase.from("plan_logs").insert({ 
+              plan_id, 
+              msg: "Worker: Program found by name (global fallback)" 
+            });
+          }
+        }
+        
+        if (clicked) {
           // Wait for navigation to start page
           await page.waitForURL(/\/registration\/.*\/start/, { timeout: 30000 });
           return { success: true, startUrl: page.url() };
@@ -595,34 +635,18 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
         await page.waitForTimeout(2000);
         
         try {
-          // Try multiple register button selectors with scrolling
-          const registerSelectors = [
-            'button:has-text("Register")',
-            'input[type="submit"][value*="Register"]'
-          ];
+          // Use shared REGISTER_SELECTORS for time-based discovery
+          const clicked = await reliableClick(page, REGISTER_SELECTORS, plan_id, supabase, "Register (time-based)");
           
-          for (const selector of registerSelectors) {
-            try {
-              const registerButton = await scrollUntilVisible(page, selector, 15);
-              
-              // Check if this button is near the session time text
-              const buttonText = await registerButton.textContent() || '';
-              if (buttonText.toLowerCase().includes('register')) {
-                await registerButton.click();
-                
-                await supabase.from("plan_logs").insert({ 
-                  plan_id, 
-                  msg: "Worker: Program found by time" 
-                });
-                
-                // Wait for navigation to start page
-                await page.waitForURL(/\/registration\/.*\/start/, { timeout: 30000 });
-                return { success: true, startUrl: page.url() };
-              }
-            } catch (error) {
-              // Continue to next selector
-              console.log(`Register button selector ${selector} failed: ${error.message}`);
-            }
+          if (clicked) {
+            await supabase.from("plan_logs").insert({ 
+              plan_id, 
+              msg: "Worker: Program found by time" 
+            });
+            
+            // Wait for navigation to start page
+            await page.waitForURL(/\/registration\/.*\/start/, { timeout: 30000 });
+            return { success: true, startUrl: page.url() };
           }
         } catch (error) {
           // Continue to failure
@@ -631,11 +655,20 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
       }
     }
     
-    // All strategies failed
-    await supabase.from("plan_logs").insert({ 
-      plan_id, 
-      msg: "Worker: Program discovery failed" 
-    });
+    // All strategies failed - log attempted selectors and DOM snippet
+    try {
+      const html = await page.content();
+      const snippet = html.slice(0, 500);
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: No Register/Enroll control found. Tried: ${REGISTER_SELECTORS.join(', ')}. Snippet: ${snippet}`
+      });
+    } catch (e) {
+      await supabase.from("plan_logs").insert({ 
+        plan_id, 
+        msg: `Worker: Program discovery failed. Tried selectors: ${REGISTER_SELECTORS.join(', ')}`
+      });
+    }
     
     return { 
       success: false, 
