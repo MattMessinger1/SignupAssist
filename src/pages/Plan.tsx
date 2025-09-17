@@ -217,11 +217,18 @@ export default function Plan() {
     } catch (error: any) {
       console.error('Failed to create plan:', error);
       
-      // Handle rate limit error specifically
-      if (error.message?.includes("You've reached the 3 signups/week limit")) {
+      // Handle rate limit error specifically - check both error message and response data
+      const isRateLimited = error.message?.includes("signups/week limit") || 
+                           error.context?.body?.rate_limit_exceeded ||
+                           error.context?.status === 429;
+      
+      if (isRateLimited) {
+        const rateLimitMessage = error.context?.body?.error || 
+                               error.message || 
+                               "Rate limit exceeded. Please try again later.";
         toast({
           title: "Rate Limit Exceeded",
-          description: "You've reached the 3 signups/week limit. Please try again next week.",
+          description: rateLimitMessage,
           variant: "destructive",
         });
       } else {
