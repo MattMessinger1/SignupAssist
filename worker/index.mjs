@@ -621,9 +621,6 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
       
       await page.goto(registrationUrl, { waitUntil: "domcontentloaded" });
       
-      // Wait for content structure to load
-      await page.waitForSelector('table, .views-row, .acc_card', { timeout: 15000 });
-      
       try {
         // Build target text correctly
         const targetText = [plan.preferred_class_name, plan.preferred]
@@ -631,6 +628,14 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
           .join(' ')
           .replace(/\sat\s\d+:\d+.*/, '') // strip "at 16:30" if present
           .trim() || "Nordic Kids Wednesday";
+        
+        await supabase.from("plan_logs").insert({
+          plan_id,
+          msg: `Worker: Waiting for program text "${targetText}" to appear`
+        });
+        
+        // Wait for the actual program text instead of a container
+        await page.waitForSelector(`text=${targetText}`, { timeout: 15000 });
         
         await supabase.from("plan_logs").insert({
           plan_id,
@@ -741,6 +746,19 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
 
         // Logging when discovery fails entirely
         if (!clicked) {
+          try {
+            const rows = await page.locator('.views-row, tr').allTextContents();
+            await supabase.from("plan_logs").insert({
+              plan_id,
+              msg: `Worker: Found program rows: ${JSON.stringify(rows.slice(0, 5))}`
+            });
+          } catch (e) {
+            await supabase.from("plan_logs").insert({
+              plan_id,
+              msg: `Worker: Could not extract program rows: ${e.message}`
+            });
+          }
+          
           const html = await page.content();
           await supabase.from("plan_logs").insert({
             plan_id,
