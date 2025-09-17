@@ -820,9 +820,10 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
         if (!clicked) {
           try {
             const rows = await page.locator('.views-row, tr').allTextContents();
+            const visibleRows = rows.filter(row => row && row.trim()).slice(0, 10);
             await supabase.from("plan_logs").insert({
               plan_id,
-              msg: `Worker: Found program rows: ${JSON.stringify(rows.slice(0, 5))}`
+              msg: `Worker: Visible rows: ${JSON.stringify(visibleRows)}`
             });
           } catch (e) {
             await supabase.from("plan_logs").insert({
