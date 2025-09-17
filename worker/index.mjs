@@ -640,8 +640,26 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
           msg: `Worker: Using targetText "${targetText}" for program discovery`
         });
         
-        // Wait for the actual program text or any visible Register link
-        await page.waitForSelector(`text=${targetText}, a.btn:has-text("Register")`, { timeout: 15000 });
+        // Wait for any program row to appear
+        await page.waitForSelector('.views-row, tr', { timeout: 15000 });
+        await supabase.from("plan_logs").insert({
+          plan_id,
+          msg: "Worker: Program rows detected on registration page"
+        });
+
+        // Immediately log visible program rows
+        try {
+          const rows = await page.locator('.views-row, tr').allTextContents();
+          await supabase.from("plan_logs").insert({
+            plan_id,
+            msg: `Worker: Visible rows: ${JSON.stringify(rows.slice(0, 10))}`
+          });
+        } catch (e) {
+          await supabase.from("plan_logs").insert({
+            plan_id,
+            msg: `Worker: Could not extract rows: ${e.message}`
+          });
+        }
         
         await supabase.from("plan_logs").insert({
           plan_id,
@@ -650,17 +668,11 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
         
         let clicked = false;
         
-        // Find program row and Register button with proper locator chaining
+        // Scope Register button search to the container row
         try {
-          const row = page.locator(`text=${targetText}`).first();
-          await row.scrollIntoViewIfNeeded();
-          
-          await supabase.from("plan_logs").insert({
-            plan_id,
-            msg: `Worker: Found container for "${targetText}"`
-          });
+          const row = page.locator(`text=${targetText}`).first()
+            .locator('xpath=ancestor::tr[1]').first();
 
-          // Try to click Register/Enroll buttons within this row
           for (const sel of REGISTER_SELECTORS) {
             const btn = row.locator(sel).first();
             if (await btn.count()) {
@@ -669,7 +681,7 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
               clicked = true;
               await supabase.from("plan_logs").insert({
                 plan_id,
-                msg: `Worker: Register clicked for ${targetText} via ${sel}`
+                msg: `Worker: Register clicked for "${targetText}" via ${sel}`
               });
               break;
             }
@@ -767,6 +779,11 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
 
         // Fallback 3: Global click attempt as last resort
         if (!clicked) {
+          await supabase.from("plan_logs").insert({
+            plan_id,
+            msg: `Worker: No Register found for "${targetText}" — falling back to global search`
+          });
+          
           clicked = await reliableClick(page, REGISTER_SELECTORS, plan_id, supabase, "Register (global fallback)");
           if (clicked) {
             await supabase.from("plan_logs").insert({ 
