@@ -279,119 +279,52 @@ app.post("/run-plan", async (req, res) => {
     }
 
     // ===== SESSION STATE SAVE/RESTORE =====
-    async function saveSessionState(page, plan_id, user_id, supabase) {
+    async function saveSessionState(page, plan, supabase) {
       try {
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: "Worker: Saving session state (cookies + storage)" 
-        });
-
-        // Get cookies and storage
         const cookies = await page.context().cookies();
-        const localStorage = await page.evaluate(() => JSON.stringify(localStorage));
-        const sessionStorage = await page.evaluate(() => JSON.stringify(sessionStorage));
-
-        // Prepare data for encryption
-        const sessionData = {
-          cookies,
-          storage: {
-            local: localStorage,
-            session: sessionStorage
-          }
-        };
-
-        // Encrypt the session data
-        const encryptedCookies = await aesEncrypt(sessionData.cookies);
-        const encryptedStorage = await aesEncrypt(sessionData.storage);
-
-        // Save to session_states table
-        const { error } = await supabase
-          .from('session_states')
-          .insert({
-            plan_id,
-            user_id,
-            cookies: encryptedCookies,
-            storage: encryptedStorage,
-            expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // 24 hours
-          });
-
-        if (error) throw error;
-
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: "Worker: Session state saved successfully" 
+        const storage = await page.evaluate(() => ({ local: JSON.stringify(localStorage), session: JSON.stringify(sessionStorage) }));
+        const payload = await aesEncrypt({ cookies, storage, user_id: plan.user_id, plan_id: plan.id });
+        await supabase.from('session_states').insert({
+          plan_id: plan.id, user_id: plan.user_id,
+          cookies: payload, storage: { stub: true },  // payload contains both; storage column kept for schema symmetry
+          expires_at: new Date(Date.now() + 24*60*60*1000).toISOString()
         });
-
-        return { success: true };
-      } catch (error) {
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: `Worker: Failed to save session state: ${error.message}` 
-        });
-        return { success: false, error: error.message };
+        await supabase.from('plan_logs').insert({ plan_id: plan.id, msg: 'Worker: Session state saved' });
+      } catch (e) {
+        await supabase.from('plan_logs').insert({ plan_id: plan.id, msg: `Worker: Session save error: ${e.message}` });
       }
     }
 
-    async function restoreSessionState(page, plan_id, user_id, supabase) {
+    async function restoreSessionState(page, plan, supabase) {
       try {
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: "Worker: Attempting to restore previous session state" 
-        });
-
-        // Get the most recent session state for this user
-        const { data: sessionState, error } = await supabase
+        const { data, error } = await supabase
           .from('session_states')
-          .select('*')
-          .eq('user_id', user_id)
-          .gt('expires_at', new Date().toISOString())
+          .select('cookies, created_at, expires_at')
+          .eq('plan_id', plan.id)
           .order('created_at', { ascending: false })
           .limit(1)
           .maybeSingle();
+        if (error || !data) return false;
+        if (data.expires_at && Date.now() > Date.parse(data.expires_at)) return false;
 
-        if (error || !sessionState) {
-          await supabase.from("plan_logs").insert({ 
-            plan_id, 
-            msg: "Worker: No valid session state found - starting fresh" 
-          });
-          return { success: true, restored: false };
+        const restored = await aesDecrypt(data.cookies);
+        if (restored.cookies?.length) await page.context().addCookies(restored.cookies);
+        if (restored.storage) {
+          await page.goto(plan.base_url || `https://${(plan.org||'').toLowerCase().replace(/[^a-z0-9]/g,'')}.skiclubpro.team`, { waitUntil:'domcontentloaded' });
+          await page.evaluate(s => {
+            try {
+              const parsed = typeof s === 'string' ? JSON.parse(s) : s;
+              const { local, session } = parsed.storage || parsed;
+              if (local) { const l = JSON.parse(local); Object.keys(l).forEach(k => localStorage.setItem(k, l[k])); }
+              if (session) { const se = JSON.parse(session); Object.keys(se).forEach(k => sessionStorage.setItem(k, se[k])); }
+            } catch {}
+          }, JSON.stringify(restored));
         }
-
-        // Decrypt the session data
-        const cookies = await aesDecrypt(sessionState.cookies);
-        const storage = await aesDecrypt(sessionState.storage);
-
-        // Restore cookies
-        await page.context().addCookies(cookies);
-
-        // Restore localStorage and sessionStorage
-        await page.evaluate((storageData) => {
-          if (storageData.local) {
-            const localData = JSON.parse(storageData.local);
-            Object.keys(localData).forEach(key => {
-              localStorage.setItem(key, localData[key]);
-            });
-          }
-          if (storageData.session) {
-            const sessionData = JSON.parse(storageData.session);
-            Object.keys(sessionData).forEach(key => {
-              sessionStorage.setItem(key, sessionData[key]);
-            });
-          }
-        }, storage);
-
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: "Worker: Session state restored successfully" 
-        });
-
-        return { success: true, restored: true };
-      } catch (error) {
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: `Worker: Failed to restore session state: ${error.message}` 
-        });
-        return { success: false, error: error.message };
+        await supabase.from('plan_logs').insert({ plan_id: plan.id, msg: 'Worker: Session state restored' });
+        return true;
+      } catch (e) {
+        await supabase.from('plan_logs').insert({ plan_id: plan.id, msg: `Worker: Session restore error: ${e.message}` });
+        return false;
       }
     }
 
