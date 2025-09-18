@@ -2,7 +2,34 @@ console.log("🚀 Worker starting up...");
 import express from "express";
 import { createClient } from "@supabase/supabase-js";
 import { chromium } from "playwright-core";
-import { scrollUntilVisible } from "../supabase/functions/_shared/playwright-helpers.js";
+
+// ===== SHARED HELPER FUNCTIONS =====
+/**
+ * Scrolls until a selector becomes visible or throws after max attempts
+ * @param page Playwright page instance
+ * @param selector CSS selector to find and scroll to
+ * @param maxScrolls Maximum number of scroll attempts (default: 20)
+ * @returns The visible element
+ * @throws Error if element not found or not visible after maxScrolls
+ */
+async function scrollUntilVisible(page, selector, maxScrolls = 20) {
+  for (let i = 0; i < maxScrolls; i++) {
+    const element = page.locator(selector).first();
+    if (await element.count()) {
+      try {
+        await element.scrollIntoViewIfNeeded();
+        await element.waitFor({ state: "visible", timeout: 2000 });
+        return element;
+      } catch {
+        // continue scrolling
+      }
+    }
+    // scroll down a bit and retry
+    await page.mouse.wheel(0, 400);
+    await page.waitForTimeout(200);
+  }
+  throw new Error(`Element not visible for selector: ${selector}`);
+}
 
 // ===== INFRASTRUCTURE: PROCESS ERROR HANDLERS =====
 // Prevent silent crashes that cause 502 errors
@@ -2306,195 +2333,32 @@ async function executeSignup(page, plan, credentials, nordicColorGroup, nordicRe
       // Antibot may not exist on all sites
     }
     
-    // Wait for visible register/enroll/details buttons with visibility check
-    await page.waitForFunction(() => {
-      const els = Array.from(document.querySelectorAll('a,button,input[type="submit"]'));
-      return els.some(el => {
-        const label = (el.textContent || el.value || '').toLowerCase();
-        const visible = !!(el.offsetParent); // visibility check
-        return visible && /(register|enroll|details)/i.test(label);
-      });
-    }, { timeout: 15000 });
-
-    // Robust discovery with fuzzy matching (no exact string concatenation)
-    const targetName = new RegExp((plan.preferred_class_name || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-    const targetDay = new RegExp((plan.preferred || '').match(/(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i)?.[1] || '', 'i');
-    const targetTime = new RegExp((plan.preferred || '').match(/(\\d+):?(\\d+)|(\\d+\\.\\d+)|(\\d+h\\d+)/i)?.[0] || '', 'i');
-    
+    // Use the new robust Blackhawk discovery function
     await supabase.from('plan_logs').insert({
       plan_id,
-      msg: `Worker: Looking for target program with fuzzy matching - Name: "${plan.preferred_class_name}", Day: "${targetDay.source}", Time: "${targetTime.source}"`
+      msg: "Worker: Using Blackhawk discovery function for program registration"
     });
-
-    if (plan.preferred_class_name || plan.preferred) {
-      // Find all clickable elements (broader search)
-      const allClickableElements = await page.locator('a, button, input[type="submit"], [role="button"]').all();
-      
+    
+    const discoveryResult = await discoverBlackhawkRegistration(page, plan, supabase);
+    
+    if (discoveryResult.success) {
       await supabase.from('plan_logs').insert({
         plan_id,
-        msg: `Worker: Found ${allClickableElements.length} clickable elements, analyzing for program matches...`
+        msg: `Worker: Program discovery successful, proceeding to fill form at: ${discoveryResult.startUrl}`
       });
-
-      // Find candidate cards/tiles containing program information
-      const cards = await page.locator('article, .event, .card, li, tr, .program, .class').all();
       
-      let bestMatch = null;
-      let bestScore = 0;
-      let allCandidates = [];
+      // Wait for registration form to load
+      await page.waitForLoadState('networkidle');
       
-      for (let i = 0; i < Math.min(cards.length, 20); i++) {
-        try {
-          const card = cards[i];
-          const cardText = (await card.innerText()).toLowerCase();
-          
-          let score = 0;
-          let matchReasons = [];
-          
-          // Score each card by text content
-          if (plan.preferred_class_name && targetName.test(cardText)) {
-            score += 2;
-            matchReasons.push('class name match');
-          }
-          if (plan.preferred && targetDay.test(cardText)) {
-            score += 1;
-            matchReasons.push('day match');
-          }
-          if (plan.preferred && targetTime.test(cardText)) {
-            score += 1;
-            matchReasons.push('time match');
-          }
-          
-          // Additional keyword scoring
-          if (cardText.includes('nordic')) score += 0.5;
-          if (cardText.includes('kids') || cardText.includes('junior')) score += 0.5;
-          
-          if (score > bestScore) {
-            bestScore = score;
-            bestMatch = card;
-          }
-          
-          if (score > 0) {
-            allCandidates.push({
-              index: i,
-              score,
-              reasons: matchReasons,
-              preview: cardText.substring(0, 100)
-            });
-          }
-        } catch (e) {
-          // Continue to next card
-        }
-      }
+      // Fill out registration form
+      const formResult = await fillRegistrationForm(page, plan, credentials, nordicColorGroup, nordicRental, volunteer, allowNoCvv, supabase);
+      return formResult;
       
-      // Log all candidates for debugging
+    } else {
       await supabase.from('plan_logs').insert({
         plan_id,
-        msg: `Worker: Program candidates found: ${JSON.stringify(allCandidates, null, 2)}`
+        msg: `Worker: Program discovery failed: ${discoveryResult.error}`
       });
-
-      // If we found a good match, look for Register/Enroll/Details button within it
-      if (bestMatch && bestScore >= 1.0) {
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: Found best match (score: ${bestScore}) - attempting to find clickable element`
-        });
-        
-        try {
-          // Look for buttons within the best matching card using comprehensive selectors
-          const actionButton = await bestMatch.locator(`
-            a:has-text("Register"), button:has-text("Register"), 
-            a:has-text("Enroll"), button:has-text("Enroll"),
-            a:has-text("Details"), button:has-text("Details"),
-            input[type="submit"][value*="Register"], 
-            input[type="submit"][value*="Enroll"],
-            [role="button"]:has-text("Register"),
-            [role="button"]:has-text("Enroll")
-          `).first();
-          
-          if (await actionButton.isVisible()) {
-            await supabase.from('plan_logs').insert({
-              plan_id,
-              msg: `Worker: Found clickable element in best match - proceeding with registration`
-            });
-            
-            await actionButton.click();
-            
-            // Wait for form or next page to load
-            await page.waitForLoadState('networkidle');
-            
-            // Check if we need to go through "Details -> Register" flow
-            try {
-              const registerButton = await page.locator('a:has-text("Register"), button:has-text("Register"), input[type="submit"][value*="Register"]').first();
-              if (await registerButton.isVisible()) {
-                await registerButton.click();
-                await page.waitForLoadState('networkidle');
-              }
-            } catch (e) {
-              // Direct to form, continue
-            }
-            
-            // Fill out registration form
-            const formResult = await fillRegistrationForm(page, plan, credentials, nordicColorGroup, nordicRental, volunteer, allowNoCvv, supabase);
-            return formResult;
-          }
-        } catch (e) {
-          await supabase.from('plan_logs').insert({
-            plan_id,
-            msg: `Worker: Error clicking within best match: ${e.message}`
-          });
-        }
-      }
-      
-      // If no good match found, implement smart fallback with diagnostic logging
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Worker: No suitable match found (best score: ${bestScore}). Capturing diagnostics...`
-      });
-      
-      // Capture diagnostic information for debugging
-      try {
-        // Full page screenshot for debugging
-        const screenshot = await page.screenshot({ fullPage: true });
-        
-        // Log all clickable elements and their text
-        const allClickable = await page.locator('a, button, input[type="submit"], [role="button"]').all();
-        let clickableElements = [];
-        for (let i = 0; i < Math.min(allClickable.length, 10); i++) {
-          try {
-            const element = allClickable[i];
-            const text = await element.textContent();
-            const visible = await element.isVisible();
-            clickableElements.push(`${i+1}: "${text}" (visible: ${visible})`);
-          } catch (e) {
-            clickableElements.push(`${i+1}: Error reading element`);
-          }
-        }
-        
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: Clickable elements found:\n${clickableElements.join('\n')}`
-        });
-        
-        // Log network requests that might indicate failed XHR
-        const networkActivity = await page.evaluate(() => {
-          return {
-            url: window.location.href,
-            title: document.title,
-            bodyClasses: document.body.className
-          };
-        });
-        
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: Page context: ${JSON.stringify(networkActivity)}`
-        });
-        
-      } catch (diagError) {
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: Diagnostic capture failed: ${diagError.message}`
-        });
-      }
       
       // Set plan status to action_required to keep session alive  
       await supabase.from('plans').update({ status: 'action_required' }).eq('id', plan_id);
@@ -2502,14 +2366,9 @@ async function executeSignup(page, plan, credentials, nordicColorGroup, nordicRe
       return {
         success: false,
         requiresAction: true,
-        message: `Target program not found after deterministic wait. Session kept alive for manual assistance. Best match score: ${bestScore}`
+        message: `Program discovery failed: ${discoveryResult.error}. Session kept alive for manual assistance.`
       };
     }
-    
-    return {
-      success: false,
-      message: "No target program specified"
-    };
 
   } catch (error) {
     await supabase.from('plan_logs').insert({
