@@ -2054,33 +2054,43 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
     const baseUrl = plan.base_url || `https://${(plan.org||'').toLowerCase().replace(/[^a-z0-9]/g,'')}.skiclubpro.team`;
     const registrationPages = [`${baseUrl}/registration`, `${baseUrl}/registration/events`];
     
-    // Build target text from plan details
+    // Build target text from plan details - focus on program names, not times
     let targetText = '';
-    if (plan.preferred_class_name && plan.preferred) {
-      targetText = `${plan.preferred_class_name} ${plan.preferred}`;
-    } else if (plan.preferred_class_name) {
+    
+    // Primary: Use preferred_class_name if available
+    if (plan.preferred_class_name) {
       targetText = plan.preferred_class_name;
-    } else if (plan.preferred) {
+    }
+    // Secondary: Use preferred only if it looks like a program name (not a time)
+    else if (plan.preferred && !plan.preferred.match(/^\d{1,2}:\d{2}$|at \d{1,2}:\d{2}$/)) {
       targetText = plan.preferred;
     }
     
-    // Deduplicate accidental repeats (e.g. "Wednesday Wednesday")
+    // Create fallback patterns for better matching
+    const searchPatterns = [];
     if (targetText) {
-      const words = targetText.split(/\s+/);
-      const uniqueWords = words.filter((word, index) => 
-        words.indexOf(word.toLowerCase()) === words.findIndex(w => w.toLowerCase() === word.toLowerCase())
-      );
-      targetText = uniqueWords.join(' ');
+      searchPatterns.push(targetText); // Exact match
+      
+      // Add variations (e.g., "Wednesday Nordic Kids" -> ["Nordic Kids Wednesday", "Nordic Kids", "Wednesday"])
+      const words = targetText.toLowerCase().split(/\s+/);
+      if (words.includes('nordic') && words.includes('kids')) {
+        searchPatterns.push('Nordic Kids Wednesday');
+        searchPatterns.push('Wednesday Nordic Kids');  
+        searchPatterns.push('Nordic Kids');
+      }
+      if (words.includes('wednesday')) {
+        searchPatterns.push('Wednesday');
+      }
     }
     
     // Fallback to default
-    if (!targetText) {
-      targetText = "Nordic Kids Wednesday";
+    if (searchPatterns.length === 0) {
+      searchPatterns.push("Nordic Kids Wednesday", "Wednesday Nordic Kids", "Nordic Kids");
     }
     
     await supabase.from('plan_logs').insert({
       plan_id,
-      msg: `Worker: Target text constructed: "${targetText}"`
+      msg: `Worker: Target search patterns: [${searchPatterns.map(p => `"${p}"`).join(', ')}]`
     });
 
     // Try each registration page
@@ -2196,145 +2206,194 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
         
         await supabase.from('plan_logs').insert({
           plan_id,
-          msg: `Worker: Found ${rows.length} rows on ${regUrl}${rowTexts.length > 0 ? `:\n${rowTexts.join('\n')}` : ' (no program rows found)'}`
+          msg: `Worker: Found ${rows.length} rows on ${regUrl}. Program rows: ${rowTexts.length > 0 ? `\n${rowTexts.join('\n')}` : '(none found)'}`
         });
         
-        // Scoped row search - exact match first
+        // Enhanced scoped row search - try each pattern
         let targetRow = null;
         let selectorUsed = null;
+        let matchedPattern = null;
         
-        try {
-          // Try multiple ancestor patterns for different row types
-          const ancestorPatterns = ["tr[1]", ".views-row[1]", ".row[1]", ".program-row[1]", ".event-row[1]"];
+        for (const pattern of searchPatterns) {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: Searching for pattern: "${pattern}"`
+          });
           
-          for (const pattern of ancestorPatterns) {
-            try {
-              targetRow = page.locator(`text=${targetText}`).first().locator(`xpath=ancestor::${pattern}`);
-              if (await targetRow.isVisible()) {
-                await supabase.from('plan_logs').insert({
-                  plan_id,
-                  msg: `Worker: Found target row using ancestor pattern: ${pattern}`
-                });
-                break;
+          try {
+            // Try multiple strategies to find the program
+            const strategies = [
+              // Strategy 1: Exact text match with different ancestor patterns
+              { type: 'exact', locator: `text="${pattern}"`, ancestors: ["tr[1]", ".views-row[1]", ".row[1]", ".program-row[1]", "div[1]"] },
+              // Strategy 2: Case-insensitive text match
+              { type: 'case-insensitive', locator: `text=/${pattern}/i`, ancestors: ["tr[1]", ".views-row[1]", ".row[1]", ".program-row[1]", "div[1]"] },
+              // Strategy 3: Partial text match
+              { type: 'partial', locator: `text=/${pattern.split(' ')[0]}/i`, ancestors: ["tr[1]", ".views-row[1]", ".row[1]", ".program-row[1]", "div[1]"] }
+            ];
+            
+            for (const strategy of strategies) {
+              for (const ancestor of strategy.ancestors) {
+                try {
+                  targetRow = page.locator(strategy.locator).first().locator(`xpath=ancestor::${ancestor}`);
+                  if (await targetRow.isVisible()) {
+                    await supabase.from('plan_logs').insert({
+                      plan_id,
+                      msg: `Worker: Found target row using ${strategy.type} match "${pattern}" with ancestor: ${ancestor}`
+                    });
+                    matchedPattern = pattern;
+                    break;
+                  }
+                } catch (e) {
+                  continue;
+                }
               }
-            } catch (e) {
-              continue;
+              if (targetRow && matchedPattern) break;
             }
+            
+            if (targetRow && matchedPattern) break;
+            
+          } catch (e) {
+            continue;
           }
-        } catch (e) {
-          // Try partial match fallback
         }
         
         // Try to click register button within the target row
-        if (targetRow) {
+        if (targetRow && matchedPattern) {
           try {
-            for (const selector of REGISTER_SELECTORS) {
+            // Enhanced register button selectors for card-based layouts
+            const registerSelectors = [
+              'button:has-text("Register")',
+              'a:has-text("Register")', 
+              'input[type="submit"][value*="Register" i]',
+              '[value*="Register" i]',
+              'button[class*="register"]',
+              'a[class*="register"]',
+              '.register-btn',
+              '.btn-register',
+              'button:contains("Register")',
+              'a[href*="register"]',
+              'button.btn:has-text("Register")',
+              'input[type="button"][value*="Register" i]'
+            ];
+            
+            for (const selector of registerSelectors) {
               try {
                 // Check if button exists in target row
                 const button = targetRow.locator(selector).first();
                 if (await button.count() > 0) {
-                  // Log scroll attempt
                   await supabase.from('plan_logs').insert({
                     plan_id,
-                    msg: `Worker: Trying to scroll into view for selector ${selector}`
+                    msg: `Worker: Found Register button in target row using: ${selector}`
                   });
                   
-                  // Use helper to scroll until visible and click
-                  try {
-                    const visibleButton = await scrollUntilVisible(page, selector);
-                    await visibleButton.click();
-                    selectorUsed = selector;
-                    
-                    await supabase.from('plan_logs').insert({
-                      plan_id,
-                      msg: `Worker: Clicked exact match using selector: ${selector}`
-                    });
-                    break;
-                  } catch (scrollError) {
-                    await supabase.from('plan_logs').insert({
-                      plan_id,
-                      msg: `Worker: Failed to scroll ${selector}: ${scrollError.message}`
-                    });
-                  }
+                  // Scroll button into view and click
+                  await button.scrollIntoViewIfNeeded();
+                  await button.waitFor({ state: 'visible', timeout: 5000 });
+                  await button.click();
+                  selectorUsed = selector;
+                  
+                  await supabase.from('plan_logs').insert({
+                    plan_id,
+                    msg: `Worker: Successfully clicked Register button for "${matchedPattern}" using: ${selector}`
+                  });
+                  break;
                 }
               } catch (e) {
                 continue;
               }
             }
           } catch (e) {
-            // Continue to fallbacks
+            await supabase.from('plan_logs').insert({
+              plan_id,
+              msg: `Worker: Error clicking Register button in target row: ${e.message}`
+            });
           }
         }
         
-        // Fallback 1: Partial match with "Nordic Kids"
-        if (!selectorUsed) {
+        // Fallback 1: Try to find any Register button near the matched pattern text
+        if (!selectorUsed && matchedPattern) {
           try {
-            const partialRow = page.locator('text=/Nordic Kids/i').first().locator("xpath=ancestor::tr[1]");
-            if (await partialRow.isVisible()) {
-              for (const selector of REGISTER_SELECTORS) {
-                try {
-                  const button = partialRow.locator(selector).first();
-                  if (await button.count() > 0) {
-                    // Log scroll attempt
-                    await supabase.from('plan_logs').insert({
-                      plan_id,
-                      msg: `Worker: Trying to scroll into view for selector ${selector} (partial match)`
-                    });
-                    
-                    // Use helper to scroll until visible and click
-                    try {
-                      const visibleButton = await scrollUntilVisible(page, selector);
-                      await visibleButton.click();
-                      selectorUsed = selector;
-                      
-                      await supabase.from('plan_logs').insert({
-                        plan_id,
-                        msg: `Worker: Clicked partial match (Nordic Kids) using selector: ${selector}`
-                      });
-                      break;
-                    } catch (scrollError) {
-                      await supabase.from('plan_logs').insert({
-                        plan_id,
-                        msg: `Worker: Failed to scroll ${selector}: ${scrollError.message}`
-                      });
-                    }
-                  }
-                } catch (e) {
-                  continue;
+            await supabase.from('plan_logs').insert({
+              plan_id,
+              msg: `Worker: Trying fallback - looking for Register buttons near "${matchedPattern}"`
+            });
+            
+            for (const pattern of searchPatterns) {
+              // Look for Register buttons within the same container as the program text
+              const programText = page.locator(`text=/${pattern}/i`).first();
+              if (await programText.count() > 0) {
+                const container = programText.locator('xpath=ancestor::div[1]');
+                const registerBtn = container.locator('button:has-text("Register"), a:has-text("Register")').first();
+                
+                if (await registerBtn.count() > 0) {
+                  await registerBtn.scrollIntoViewIfNeeded();
+                  await registerBtn.click();
+                  selectorUsed = 'container-scoped-register';
+                  
+                  await supabase.from('plan_logs').insert({
+                    plan_id,
+                    msg: `Worker: Clicked Register button using container fallback for "${pattern}"`
+                  });
+                  break;
                 }
               }
             }
           } catch (e) {
-            // Continue to global fallback
+            await supabase.from('plan_logs').insert({
+              plan_id,
+              msg: `Worker: Container fallback failed: ${e.message}`
+            });
           }
         }
         
-        // Fallback 2: Global click attempt
+        // Fallback 2: Global Register button search (last resort)
         if (!selectorUsed) {
-          for (const selector of REGISTER_SELECTORS) {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: Trying global fallback - searching for any visible Register button`
+          });
+          
+          const globalRegisterSelectors = [
+            'button:has-text("Register")',
+            'a:has-text("Register")', 
+            'input[type="submit"][value*="Register" i]',
+            '[value*="Register" i]',
+            'button[class*="register"]',
+            'a[class*="register"]',
+            '.register-btn',
+            '.btn-register'
+          ];
+          
+          for (const selector of globalRegisterSelectors) {
             try {
-              // Log scroll attempt
-              await supabase.from('plan_logs').insert({
-                plan_id,
-                msg: `Worker: Trying to scroll into view for selector ${selector} (global fallback)`
-              });
+              const buttons = await page.locator(selector).all();
               
-              // Use helper to scroll until visible and click
-              try {
-                const visibleButton = await scrollUntilVisible(page, selector);
-                await visibleButton.click();
-                selectorUsed = selector;
+              if (buttons.length > 0) {
+                await supabase.from('plan_logs').insert({
+                  plan_id,
+                  msg: `Worker: Found ${buttons.length} Register buttons with selector: ${selector}`
+                });
                 
-                await supabase.from('plan_logs').insert({
-                  plan_id,
-                  msg: `Worker: Clicked global fallback using selector: ${selector}`
-                });
-                break;
-              } catch (scrollError) {
-                await supabase.from('plan_logs').insert({
-                  plan_id,
-                  msg: `Worker: Failed to scroll ${selector}: ${scrollError.message}`
-                });
+                // Click the first visible Register button
+                for (const button of buttons) {
+                  try {
+                    if (await button.isVisible()) {
+                      await button.scrollIntoViewIfNeeded();
+                      await button.click();
+                      selectorUsed = selector;
+                      
+                      await supabase.from('plan_logs').insert({
+                        plan_id,
+                        msg: `Worker: Clicked global Register button using: ${selector}`
+                      });
+                      break;
+                    }
+                  } catch (e) {
+                    continue;
+                  }
+                }
+                
+                if (selectorUsed) break;
               }
             } catch (e) {
               continue;
