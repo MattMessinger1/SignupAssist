@@ -2088,11 +2088,56 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
       try {
         await page.goto(regUrl, { waitUntil: 'networkidle', timeout: 15000 });
         
+        // Check where we actually landed
+        const currentUrl = page.url();
+        const pageTitle = await page.title();
+        
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Navigated to ${currentUrl}, page title: "${pageTitle}"`
+        });
+        
+        // Check if we're on a login page instead of registration
+        const hasLoginForm = await page.locator('input[type="password"], input[name="password"], #edit-pass').count() > 0;
+        
+        if (hasLoginForm) {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: Detected login page, trying to access programs directly`
+          });
+          
+          // Try to find a link to programs/registration
+          const programLinks = [
+            'a[href*="program"]', 'a[href*="registration"]', 'a[href*="class"]',
+            'text=Programs', 'text=Registration', 'text=Classes', 'text=Lessons'
+          ];
+          
+          for (const linkSelector of programLinks) {
+            try {
+              const link = page.locator(linkSelector).first();
+              if (await link.isVisible()) {
+                await link.click();
+                await page.waitForLoadState("networkidle", { timeout: 10000 });
+                await supabase.from('plan_logs').insert({
+                  plan_id,
+                  msg: `Worker: Clicked ${linkSelector}, now at ${page.url()}`
+                });
+                break;
+              }
+            } catch (e) {
+              continue;
+            }
+          }
+        }
+        
+        // Enhanced waits for content loading
+        await advancedHumanizedDelay(page, 1000, 3000);
+        
         // Deterministic waits
         await page.waitForLoadState("networkidle", { timeout: 15000 });
         
-        // Try multiple selector patterns for rows
-        const rowSelectors = [".views-row", "tr", ".row", ".program-row", ".event-row", "tbody tr"];
+        // Try multiple selector patterns for rows (including program-specific ones)
+        const rowSelectors = [".views-row", "tr", ".row", ".program-row", ".event-row", "tbody tr", ".program", ".class", ".lesson"];
         let foundRows = false;
         
         for (const selector of rowSelectors) {
@@ -2112,7 +2157,15 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
         if (!foundRows) {
           await supabase.from('plan_logs').insert({
             plan_id,
-            msg: `Worker: No standard row selectors found on ${regUrl}, proceeding anyway`
+            msg: `Worker: No standard row selectors found, checking page content`
+          });
+          
+          // Log page content to understand what we're looking at
+          const pageText = await page.locator('body').textContent();
+          const shortText = pageText?.substring(0, 500) || 'No content';
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: Page content preview: "${shortText}..."`
           });
         }
         
@@ -2131,7 +2184,11 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
         for (let i = 0; i < Math.min(10, rows.length); i++) {
           try {
             const text = await rows[i].innerText();
-            rowTexts.push(`Row ${i+1}: ${text.substring(0, 100)}...`);
+            // Only include rows that might be programs (filter out login/navigation stuff)
+            const textLower = text.toLowerCase();
+            if (!textLower.includes('log in') && !textLower.includes('password') && !textLower.includes('email address')) {
+              rowTexts.push(`Row ${i+1}: ${text.substring(0, 100)}...`);
+            }
           } catch (e) {
             rowTexts.push(`Row ${i+1}: Error reading`);
           }
@@ -2139,7 +2196,7 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
         
         await supabase.from('plan_logs').insert({
           plan_id,
-          msg: `Worker: Found ${rows.length} rows on ${regUrl}:\n${rowTexts.join('\n')}`
+          msg: `Worker: Found ${rows.length} rows on ${regUrl}${rowTexts.length > 0 ? `:\n${rowTexts.join('\n')}` : ' (no program rows found)'}`
         });
         
         // Scoped row search - exact match first
