@@ -37,15 +37,19 @@ serve(async (req) => {
       .gte('open_time', seedingTime.toISOString()) // Plans opening in 10+ minutes
       .lte('open_time', seedingEndTime.toISOString()); // Plans opening in 10-15 minutes
 
-    // Find plans ready for execution (60 seconds before signup time, up to 5 minutes late)
-    const earlyExecutionTime = new Date(now.getTime() + 60 * 1000); // 60 seconds from now
+    // Find plans ready for execution 
+    // Execute plans that either:
+    // 1. Are within 10 minutes of open time (to catch plans that missed seeding), OR
+    // 2. Are within 60 seconds to 5 minutes after open time (normal execution window)
+    const earlyExecutionTime = new Date(now.getTime() + 10 * 60 * 1000); // 10 minutes from now
+    const normalExecutionTime = new Date(now.getTime() + 60 * 1000); // 60 seconds from now
 
     const { data: plansToExecute, error: fetchError } = await supabase
       .from('plans')
       .select('*')
       .eq('status', 'scheduled') // Only get scheduled plans (not cancelled, executed, etc.)
       .gte('open_time', lateWindow.toISOString()) // Not more than 5 minutes late
-      .lte('open_time', earlyExecutionTime.toISOString()); // Execute 60s early
+      .lte('open_time', earlyExecutionTime.toISOString()); // Execute up to 10 minutes early
 
     if (seedFetchError || fetchError) {
       console.error('Error fetching plans:', seedFetchError || fetchError);
