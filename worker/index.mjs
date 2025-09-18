@@ -49,15 +49,32 @@ const PER_USER_WEEKLY_LIMIT = 3; // Maximum plans per user per 7 days
 const SMS_IMMEDIATE_ON_ACTION_REQUIRED = true; // Send SMS immediately when action required
 const HOLD_OPEN_ENABLED = process.env.HOLD_OPEN_ENABLED === 'true'; // Keep browser open on target page until open_time
 
-// ===== SHARED REGISTER SELECTORS =====
+// ===== EXPANDED REGISTER SELECTORS FOR COMPREHENSIVE DETECTION =====
 const REGISTER_SELECTORS = [
   'button:has-text("Register")',
   'a:has-text("Register")',
   'input[type="submit"][value*="Register" i]',
   '[value*="Register" i]',
-  // friendly synonyms some clubs use:
+  // Broader registration terms
   'button:has-text("Enroll")',
-  'a:has-text("Enroll")'
+  'a:has-text("Enroll")',
+  'button:has-text("Sign Up")',
+  'a:has-text("Sign Up")',
+  'button:has-text("Join")',
+  'a:has-text("Join")',
+  'button:has-text("Book")',
+  'a:has-text("Book")',
+  'button:has-text("Reserve")',
+  'a:has-text("Reserve")',
+  'button:has-text("Details")',
+  'a:has-text("Details")',
+  'button:has-text("Add to Cart")',
+  'a:has-text("Add to Cart")',
+  // CSS class-based selectors for common frameworks
+  '[class*="register"]',
+  '[class*="enroll"]',
+  '[class*="signup"]',
+  '[class*="book"]'
 ];
 
 // ===== ADVANCED ANTI-BOT: RANDOMIZATION UTILITIES =====
@@ -602,15 +619,11 @@ async function executeRunPlanBackground(plan_id, supabase) {
         await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Playwright connected with enhanced anti-bot profile" });
         dlog("Connected Playwright to session:", session.id);
 
-        // Debug logging before function call
-        console.log("DEBUG: About to call advancedSeedBrowserSession");
-        console.log("DEBUG: page exists:", !!page);
-        console.log("DEBUG: plan exists:", !!plan);
-        console.log("DEBUG: supabase exists:", !!supabase);
-        console.log("DEBUG: supabase.from type:", typeof supabase?.from);
-
-        // ===== ADVANCED SESSION SEEDING WITH TIMING =====
-        await advancedSeedBrowserSession(page, plan, supabase);
+        // ===== REMOVED ADVANCED SEEDING - NOW DETERMINISTIC =====
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: "Worker: Skipping advanced seeding - proceeding with deterministic approach" 
+        });
 
       } catch (e) {
         console.error("Playwright connect error:", e);
@@ -643,7 +656,7 @@ async function executeRunPlanBackground(plan_id, supabase) {
       
       // Navigate to base origin and check if already logged in
       await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Checking login status..." });
-      await page.goto(normalizedBaseUrl, { waitUntil: 'domcontentloaded' });
+      await page.goto(normalizedBaseUrl, { waitUntil: 'networkidle' });
       
       const content = (await page.content()).toLowerCase();
       const url = page.url();
@@ -1749,21 +1762,21 @@ async function advancedLoginWithPlaywright(page, loginUrl, email, password, supa
       msg: "Worker: Navigating to login with advanced behavior patterns"
     });
     
-    await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.goto(loginUrl, { waitUntil: "networkidle", timeout: 30000 });
     
-    // Advanced page analysis before interaction
-    await advancedHumanizedDelay(getWeightedRandomDelay(2000, 5000));
-    
-    // Simulate page scan before filling form
-    await advancedSimulateMouseMovement(page);
-    await advancedHumanizedScroll(page, plan_id, supabase);
+    // Wait for Antibot and dynamic content deterministically  
+    try {
+      await page.waitForSelector('form.antibot', { timeout: 15000 });
+    } catch (e) {
+      // Antibot form may not exist on all sites
+    }
     
     await supabase.from('plan_logs').insert({
       plan_id,
-      msg: "Worker: Waiting for login form with enhanced detection"
+      msg: "Worker: Waiting for login form with deterministic detection"
     });
     
-    // Enhanced form field detection
+    // Wait for form fields to be available
     await page.waitForSelector('#edit-name', { timeout: 20000 });
     await page.waitForSelector('#edit-pass', { timeout: 20000 });
     
@@ -2010,170 +2023,216 @@ async function executeSignup(page, plan, credentials, nordicColorGroup, nordicRe
       msg: "Worker: Starting signup execution with advanced anti-bot measures"
     });
 
-    // Navigate to registration page
+    // Navigate to registration page with deterministic timing
     const baseUrl = plan.base_url || `https://${(plan.org||'').toLowerCase().replace(/[^a-z0-9]/g,'')}.skiclubpro.team`;
     const registrationUrl = `${baseUrl}/registration`;
     
-    await page.goto(registrationUrl, { waitUntil: 'domcontentloaded' });
-    await advancedHumanizedDelay(getWeightedRandomDelay(2000, 4000));
+    await page.goto(registrationUrl, { waitUntil: 'networkidle' });
+    
+    // Wait for Antibot form to unhide controls
+    try {
+      await page.waitForSelector('form.antibot', { timeout: 15000 });
+    } catch (e) {
+      // Antibot may not exist on all sites
+    }
+    
+    // Wait for visible register/enroll/details buttons with visibility check
+    await page.waitForFunction(() => {
+      const els = Array.from(document.querySelectorAll('a,button,input[type="submit"]'));
+      return els.some(el => {
+        const label = (el.textContent || el.value || '').toLowerCase();
+        const visible = !!(el.offsetParent); // visibility check
+        return visible && /(register|enroll|details)/i.test(label);
+      });
+    }, { timeout: 15000 });
 
-    // Look for the target program with intelligent search
-    const className = plan.preferred_class_name || '';
-    const timeSlot = plan.preferred || '';
+    // Robust discovery with fuzzy matching (no exact string concatenation)
+    const targetName = new RegExp((plan.preferred_class_name || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    const targetDay = new RegExp((plan.preferred || '').match(/(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i)?.[1] || '', 'i');
+    const targetTime = new RegExp((plan.preferred || '').match(/(\\d+):?(\\d+)|(\\d+\\.\\d+)|(\\d+h\\d+)/i)?.[0] || '', 'i');
     
     await supabase.from('plan_logs').insert({
       plan_id,
-      msg: `Worker: Looking for target program: "${className}" at "${timeSlot}"`
+      msg: `Worker: Looking for target program with fuzzy matching - Name: "${plan.preferred_class_name}", Day: "${targetDay.source}", Time: "${targetTime.source}"`
     });
 
-    if (className || timeSlot) {
-      // Try to find and click register button for target program using smart search
-      const registerButtons = await page.locator(REGISTER_SELECTORS.join(', ')).all();
+    if (plan.preferred_class_name || plan.preferred) {
+      // Find all clickable elements (broader search)
+      const allClickableElements = await page.locator('a, button, input[type="submit"], [role="button"]').all();
       
-      // First pass: Debug logging to see what text we're actually working with
       await supabase.from('plan_logs').insert({
         plan_id,
-        msg: `Worker: Found ${registerButtons.length} register buttons, analyzing text content...`
+        msg: `Worker: Found ${allClickableElements.length} clickable elements, analyzing for program matches...`
       });
+
+      // Find candidate cards/tiles containing program information
+      const cards = await page.locator('article, .event, .card, li, tr, .program, .class').all();
       
-      let allFoundText = [];
-      for (let i = 0; i < Math.min(registerButtons.length, 10); i++) {
+      let bestMatch = null;
+      let bestScore = 0;
+      let allCandidates = [];
+      
+      for (let i = 0; i < Math.min(cards.length, 20); i++) {
         try {
-          const button = registerButtons[i];
-          const buttonText = await button.textContent();
-          const nearbyText = await button.locator('xpath=../..').textContent();
-          const tableRowText = await button.locator('xpath=ancestor::tr[1]').textContent().catch(() => '');
-          const cardText = await button.locator('xpath=ancestor::*[contains(@class,"card") or contains(@class,"program") or contains(@class,"class")][1]').textContent().catch(() => '');
+          const card = cards[i];
+          const cardText = (await card.innerText()).toLowerCase();
           
-          const contextText = [nearbyText, tableRowText, cardText].filter(Boolean).join(' | ');
-          allFoundText.push(`Button ${i+1}: ${contextText.substring(0, 200)}`);
+          let score = 0;
+          let matchReasons = [];
+          
+          // Score each card by text content
+          if (plan.preferred_class_name && targetName.test(cardText)) {
+            score += 2;
+            matchReasons.push('class name match');
+          }
+          if (plan.preferred && targetDay.test(cardText)) {
+            score += 1;
+            matchReasons.push('day match');
+          }
+          if (plan.preferred && targetTime.test(cardText)) {
+            score += 1;
+            matchReasons.push('time match');
+          }
+          
+          // Additional keyword scoring
+          if (cardText.includes('nordic')) score += 0.5;
+          if (cardText.includes('kids') || cardText.includes('junior')) score += 0.5;
+          
+          if (score > bestScore) {
+            bestScore = score;
+            bestMatch = card;
+          }
+          
+          if (score > 0) {
+            allCandidates.push({
+              index: i,
+              score,
+              reasons: matchReasons,
+              preview: cardText.substring(0, 100)
+            });
+          }
         } catch (e) {
-          allFoundText.push(`Button ${i+1}: Error reading text`);
+          // Continue to next card
         }
       }
       
+      // Log all candidates for debugging
       await supabase.from('plan_logs').insert({
         plan_id,
-        msg: `Worker: Program text analysis:\n${allFoundText.join('\n')}`
+        msg: `Worker: Program candidates found: ${JSON.stringify(allCandidates, null, 2)}`
       });
 
-      // Second pass: Smart search with multiple strategies
-      for (const button of registerButtons) {
+      // If we found a good match, look for Register/Enroll/Details button within it
+      if (bestMatch && bestScore >= 1.0) {
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Found best match (score: ${bestScore}) - attempting to find clickable element`
+        });
+        
         try {
-          const buttonText = await button.textContent() || '';
-          const nearbyText = await button.locator('xpath=../..').textContent() || '';
-          const tableRowText = await button.locator('xpath=ancestor::tr[1]').textContent().catch(() => '');
-          const cardText = await button.locator('xpath=ancestor::*[contains(@class,"card") or contains(@class,"program") or contains(@class,"class")][1]').textContent().catch(() => '');
+          // Look for buttons within the best matching card using comprehensive selectors
+          const actionButton = await bestMatch.locator(`
+            a:has-text("Register"), button:has-text("Register"), 
+            a:has-text("Enroll"), button:has-text("Enroll"),
+            a:has-text("Details"), button:has-text("Details"),
+            input[type="submit"][value*="Register"], 
+            input[type="submit"][value*="Enroll"],
+            [role="button"]:has-text("Register"),
+            [role="button"]:has-text("Enroll")
+          `).first();
           
-          // Combine all possible text contexts
-          const fullContext = [buttonText, nearbyText, tableRowText, cardText].join(' ').toLowerCase();
-          
-          // Strategy 1: Look for class name + time components
-          const classNameLower = className.toLowerCase();
-          const timeSlotLower = timeSlot.toLowerCase();
-          
-          let matchScore = 0;
-          let matchReasons = [];
-          
-          // Check class name match (fuzzy)
-          if (classNameLower && fullContext.includes(classNameLower)) {
-            matchScore += 2;
-            matchReasons.push('exact class name');
-          } else if (classNameLower) {
-            // Try partial class name matches
-            const classWords = classNameLower.split(' ').filter(w => w.length > 2);
-            const matchedWords = classWords.filter(word => fullContext.includes(word));
-            if (matchedWords.length >= Math.ceil(classWords.length * 0.6)) {
-              matchScore += 1.5;
-              matchReasons.push(`partial class name (${matchedWords.length}/${classWords.length} words)`);
-            }
-          }
-          
-          // Check time match (handle various formats)
-          if (timeSlotLower) {
-            const timeFormats = [
-              timeSlotLower, // Original format
-              timeSlotLower.replace(/:\d+/, ''), // Remove minutes
-              timeSlotLower.replace('wednesday', 'wed').replace('thursday', 'thu').replace('friday', 'fri'), // Day abbreviations
-              timeSlotLower.replace(/(\d+):(\d+)/, '$1.$2'), // Dot format
-              timeSlotLower.replace(/(\d+):(\d+)/, '$1h$2'), // Hour format
-            ];
-            
-            for (const timeFormat of timeFormats) {
-              if (fullContext.includes(timeFormat)) {
-                matchScore += 1;
-                matchReasons.push(`time match (${timeFormat})`);
-                break;
-              }
-            }
-            
-            // Extract and match time numbers
-            const timeMatch = timeSlotLower.match(/(\d+):?(\d+)?/);
-            if (timeMatch) {
-              const hour = timeMatch[1];
-              if (fullContext.includes(hour)) {
-                matchScore += 0.5;
-                matchReasons.push(`hour match (${hour})`);
-              }
-            }
-            
-            // Match day of week
-            const dayMatch = timeSlotLower.match(/(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)/);
-            if (dayMatch) {
-              const day = dayMatch[1];
-              const dayVariations = [day, day.substring(0, 3), day.substring(0, 2)];
-              for (const dayVar of dayVariations) {
-                if (fullContext.includes(dayVar)) {
-                  matchScore += 0.5;
-                  matchReasons.push(`day match (${dayVar})`);
-                  break;
-                }
-              }
-            }
-          }
-          
-          // Strategy 2: Look for Nordic/Kids keywords if in class name
-          if (classNameLower.includes('nordic') && fullContext.includes('nordic')) {
-            matchScore += 0.5;
-            matchReasons.push('nordic keyword');
-          }
-          if (classNameLower.includes('kids') && (fullContext.includes('kids') || fullContext.includes('junior') || fullContext.includes('child'))) {
-            matchScore += 0.5;
-            matchReasons.push('kids/junior keyword');
-          }
-          
-          // If we have a good match, try clicking
-          if (matchScore >= 1.5) {
+          if (await actionButton.isVisible()) {
             await supabase.from('plan_logs').insert({
               plan_id,
-              msg: `Worker: Found potential match (score: ${matchScore}) - ${matchReasons.join(', ')}`
+              msg: `Worker: Found clickable element in best match - proceeding with registration`
             });
             
-            await supabase.from('plan_logs').insert({
-              plan_id,
-              msg: `Worker: Match context: "${fullContext.substring(0, 300)}"`
-            });
+            await actionButton.click();
             
-            await advancedSimulateMouseMovement(page, button);
-            await advancedHumanizedDelay(getWeightedRandomDelay(1000, 2000));
-            await button.click();
+            // Wait for form or next page to load
+            await page.waitForLoadState('networkidle');
             
-            // Wait for form to load
-            await advancedHumanizedDelay(getWeightedRandomDelay(3000, 5000));
+            // Check if we need to go through "Details -> Register" flow
+            try {
+              const registerButton = await page.locator('a:has-text("Register"), button:has-text("Register"), input[type="submit"][value*="Register"]').first();
+              if (await registerButton.isVisible()) {
+                await registerButton.click();
+                await page.waitForLoadState('networkidle');
+              }
+            } catch (e) {
+              // Direct to form, continue
+            }
             
             // Fill out registration form
             const formResult = await fillRegistrationForm(page, plan, credentials, nordicColorGroup, nordicRental, volunteer, allowNoCvv, supabase);
-            
             return formResult;
           }
         } catch (e) {
-          // Continue to next button
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: Error clicking within best match: ${e.message}`
+          });
         }
       }
       
+      // If no good match found, implement smart fallback with diagnostic logging
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: No suitable match found (best score: ${bestScore}). Capturing diagnostics...`
+      });
+      
+      // Capture diagnostic information for debugging
+      try {
+        // Full page screenshot for debugging
+        const screenshot = await page.screenshot({ fullPage: true });
+        
+        // Log all clickable elements and their text
+        const allClickable = await page.locator('a, button, input[type="submit"], [role="button"]').all();
+        let clickableElements = [];
+        for (let i = 0; i < Math.min(allClickable.length, 10); i++) {
+          try {
+            const element = allClickable[i];
+            const text = await element.textContent();
+            const visible = await element.isVisible();
+            clickableElements.push(`${i+1}: "${text}" (visible: ${visible})`);
+          } catch (e) {
+            clickableElements.push(`${i+1}: Error reading element`);
+          }
+        }
+        
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Clickable elements found:\n${clickableElements.join('\n')}`
+        });
+        
+        // Log network requests that might indicate failed XHR
+        const networkActivity = await page.evaluate(() => {
+          return {
+            url: window.location.href,
+            title: document.title,
+            bodyClasses: document.body.className
+          };
+        });
+        
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Page context: ${JSON.stringify(networkActivity)}`
+        });
+        
+      } catch (diagError) {
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Diagnostic capture failed: ${diagError.message}`
+        });
+      }
+      
+      // Set plan status to action_required to keep session alive  
+      await supabase.from('plans').update({ status: 'action_required' }).eq('id', plan_id);
+      
       return {
         success: false,
-        message: `Target program "${className} ${timeSlot}" not found or not available for registration`
+        requiresAction: true,
+        message: `Target program not found after deterministic wait. Session kept alive for manual assistance. Best match score: ${bestScore}`
       };
     }
     
