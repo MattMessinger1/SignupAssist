@@ -2048,8 +2048,343 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
   try {
     await supabase.from('plan_logs').insert({
       plan_id,
-      msg: "Worker: Starting Blackhawk program discovery"
+      msg: "Worker: Starting Blackhawk program discovery with fuzzy matching"
     });
+
+    const baseUrl = plan.base_url || `https://${(plan.org||'').toLowerCase().replace(/[^a-z0-9]/g,'')}.skiclubpro.team`;
+    const registrationPages = [`${baseUrl}/registration`, `${baseUrl}/registration/events`];
+    
+    // Build fuzzy matchers based on plan details
+    const nameMatcher = /nordic/i;
+    const dayMatcher = /wednesday/i;  
+    const timeMatcher = /(16:30|4:30)/i;
+    
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: Using fuzzy matchers - name: ${nameMatcher}, day: ${dayMatcher}, time: ${timeMatcher}`
+    });
+
+    // Try each registration page
+    for (const regUrl of registrationPages) {
+      try {
+        await page.goto(regUrl, { waitUntil: 'networkidle', timeout: 15000 });
+        
+        // Enhanced waits as specified
+        await page.waitForLoadState("networkidle", { timeout: 15000 });
+        await page.waitForSelector(".views-row, tr", { timeout: 15000 });
+        
+        const currentUrl = page.url();
+        const pageTitle = await page.title();
+        
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Navigated to ${currentUrl}, page title: "${pageTitle}"`
+        });
+        
+        // Check if we're on a login page instead of registration
+        const hasLoginForm = await page.locator('input[type="password"], input[name="password"], #edit-pass').count() > 0;
+        
+        if (hasLoginForm) {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: Detected login page, trying to access programs directly`
+          });
+          
+          // Try to find a link to programs/registration
+          const programLinks = [
+            'a[href*="program"]', 'a[href*="registration"]', 'a[href*="class"]',
+            'text=Programs', 'text=Registration', 'text=Classes', 'text=Lessons'
+          ];
+          
+          for (const linkSelector of programLinks) {
+            try {
+              const link = page.locator(linkSelector).first();
+              if (await link.isVisible()) {
+                await link.click();
+                await page.waitForLoadState("networkidle", { timeout: 15000 });
+                await page.waitForSelector(".views-row, tr", { timeout: 15000 });
+                await supabase.from('plan_logs').insert({
+                  plan_id,
+                  msg: `Worker: Clicked ${linkSelector}, now at ${page.url()}`
+                });
+                break;
+              }
+            } catch (e) {
+              continue;
+            }
+          }
+        }
+        
+        // Find all program containers using comprehensive selectors
+        const containers = await page.locator('.views-row, tr, article, .card').all();
+        
+        if (containers.length === 0) {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: No program containers found on ${regUrl}`
+          });
+          continue;
+        }
+        
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Found ${containers.length} program containers to analyze`
+        });
+        
+        // Score each container using fuzzy matching
+        let bestMatch = null;
+        let bestScore = 0;
+        const containerAnalysis = [];
+        
+        for (let i = 0; i < Math.min(15, containers.length); i++) {
+          try {
+            const container = containers[i];
+            const text = await container.innerText();
+            const textLower = text.toLowerCase();
+            
+            // Skip obvious navigation/login containers
+            if (textLower.includes('log in') && textLower.includes('password') && textLower.length < 100) {
+              continue;
+            }
+            
+            let score = 0;
+            const matches = [];
+            
+            // Score based on fuzzy matchers
+            if (nameMatcher.test(textLower)) {
+              score += 3;
+              matches.push('nordic');
+            }
+            if (dayMatcher.test(textLower)) {
+              score += 2; 
+              matches.push('wednesday');
+            }
+            if (timeMatcher.test(textLower)) {
+              score += 1;
+              matches.push('time');
+            }
+            
+            // Additional scoring for relevant keywords
+            if (textLower.includes('kids')) {
+              score += 2;
+              matches.push('kids');
+            }
+            if (textLower.includes('register') || textLower.includes('enroll')) {
+              score += 1;
+              matches.push('register');
+            }
+            
+            const shortText = text.substring(0, 150).replace(/\n/g, ' ');
+            containerAnalysis.push(`Row ${i+1} (score: ${score}): ${shortText}...`);
+            
+            if (score > bestScore) {
+              bestScore = score;
+              bestMatch = { container, index: i, text, score, matches };
+            }
+          } catch (e) {
+            containerAnalysis.push(`Row ${i+1}: Error reading`);
+          }
+        }
+        
+        // Log container analysis
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Container analysis:\n${containerAnalysis.join('\n')}`
+        });
+        
+        if (!bestMatch || bestScore === 0) {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: No matching programs found on ${regUrl} (best score: ${bestScore})`
+          });
+          continue;
+        }
+        
+        // Log the best match
+        const bestText = bestMatch.text.substring(0, 200).replace(/\n/g, ' ');
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Best match (score: ${bestScore}, matches: [${bestMatch.matches.join(', ')}]): "${bestText}..."`
+        });
+        
+        // Two-step flow: First look for Details button, then Register/Enroll
+        let navigationSuccess = false;
+        
+        // Step 1: Look for Details button in the best match container
+        try {
+          const detailsSelectors = [
+            'a:has-text("Details")', 
+            'button:has-text("Details")', 
+            'a:has-text("View Details")', 
+            'a:has-text("More Info")',
+            '[href*="detail"]',
+            '.details-link'
+          ];
+          
+          for (const selector of detailsSelectors) {
+            try {
+              const detailsButton = bestMatch.container.locator(selector).first();
+              if (await detailsButton.count() > 0) {
+                await supabase.from('plan_logs').insert({
+                  plan_id,
+                  msg: `Worker: Found Details button using selector: ${selector}`
+                });
+                
+                // Use scrollUntilVisible helper
+                const btn = await scrollUntilVisible(page, selector);
+                await btn.click();
+                
+                // Wait for navigation and new content
+                await page.waitForLoadState("networkidle", { timeout: 15000 });
+                await page.waitForSelector("button:has-text('Register'), a:has-text('Register'), button:has-text('Enroll'), a:has-text('Enroll')", { timeout: 10000 });
+                
+                navigationSuccess = true;
+                await supabase.from('plan_logs').insert({
+                  plan_id,
+                  msg: `Worker: Successfully navigated via Details button to ${page.url()}`
+                });
+                break;
+              }
+            } catch (e) {
+              continue;
+            }
+          }
+        } catch (e) {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: Details button search failed: ${e.message}`
+          });
+        }
+        
+        // Step 2: Look for Register/Enroll button (either after Details navigation or directly)
+        const targetContainer = navigationSuccess ? page : bestMatch.container;
+        const registerSelectors = [
+          'button:has-text("Register")',
+          'a:has-text("Register")', 
+          'button:has-text("Enroll")',
+          'a:has-text("Enroll")',
+          'input[type="submit"][value*="Register" i]',
+          'input[type="submit"][value*="Enroll" i]',
+          '[value*="Register" i]',
+          '[value*="Enroll" i]',
+          'button[class*="register"]',
+          'a[class*="register"]',
+          '.register-btn',
+          '.btn-register'
+        ];
+        
+        let registrationStarted = false;
+        
+        for (const selector of registerSelectors) {
+          try {
+            const button = targetContainer.locator(selector).first();
+            if (await button.count() > 0) {
+              await supabase.from('plan_logs').insert({
+                plan_id,
+                msg: `Worker: Found Register/Enroll button using selector: ${selector}`
+              });
+              
+              // Use scrollUntilVisible helper
+              const btn = await scrollUntilVisible(page, selector);
+              await btn.click();
+              
+              // Wait for registration page to load
+              try {
+                await page.waitForURL(/\/registration\/.*\/start|\/register|\/enroll/, { timeout: 10000 });
+                registrationStarted = true;
+              } catch (e) {
+                // Check if we're on a registration form page by URL pattern
+                await page.waitForLoadState('networkidle', { timeout: 5000 });
+                const currentUrl = page.url();
+                if (currentUrl.includes('registration') && !currentUrl.includes('/events')) {
+                  registrationStarted = true;
+                }
+              }
+              
+              if (registrationStarted) {
+                const startUrl = page.url();
+                await supabase.from('plan_logs').insert({
+                  plan_id,
+                  msg: `Worker: Successfully started registration at: ${startUrl}`
+                });
+                return { success: true, startUrl: startUrl };
+              }
+              
+              break;
+            }
+          } catch (e) {
+            await supabase.from('plan_logs').insert({
+              plan_id,
+              msg: `Worker: Error with selector ${selector}: ${e.message}`
+            });
+          }
+        }
+        
+        if (!registrationStarted) {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: Could not start registration from best match container`
+          });
+        }
+        
+      } catch (pageError) {
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Error on page ${regUrl}: ${pageError.message}`
+        });
+      }
+    }
+    
+    // If we get here, all attempts failed
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: Program discovery failed: Target program not found after trying all registration pages`
+    });
+    
+    // Final fallback: log first 10 rows for debugging
+    try {
+      const debugRows = await page.locator('.views-row, tr, article, .card').all();
+      const debugTexts = [];
+      
+      for (let i = 0; i < Math.min(10, debugRows.length); i++) {
+        try {
+          const text = await debugRows[i].innerText();
+          debugTexts.push(`Row ${i+1}: ${text.substring(0, 200).replace(/\n/g, ' ')}...`);
+        } catch (e) {
+          debugTexts.push(`Row ${i+1}: Error reading`);
+        }
+      }
+      
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `BLACKHAWK_DISCOVERY_FAILED - Debugging rows:\n${debugTexts.join('\n')}`
+      });
+    } catch (debugError) {
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: Could not capture debug information: ${debugError.message}`
+      });
+    }
+    
+    return { 
+      success: false, 
+      error: `Target program not found after trying all registration pages`, 
+      code: "BLACKHAWK_DISCOVERY_FAILED" 
+    };
+    
+  } catch (error) {
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `BLACKHAWK_DISCOVERY_FAILED - Error: ${error.message}`
+    });
+    
+    return { 
+      success: false, 
+      error: error.message, 
+      code: "BLACKHAWK_DISCOVERY_FAILED" 
+    };
+  }
+}
 
     const baseUrl = plan.base_url || `https://${(plan.org||'').toLowerCase().replace(/[^a-z0-9]/g,'')}.skiclubpro.team`;
     const registrationPages = [`${baseUrl}/registration`, `${baseUrl}/registration/events`];
