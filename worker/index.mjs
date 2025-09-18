@@ -257,6 +257,144 @@ app.post("/run-plan", async (req, res) => {
       return decoder.decode(decrypted);
     }
 
+    // ===== AES-GCM CRYPTO HELPERS =====
+    async function importKey() {
+      const keyBytes = Uint8Array.from(atob(CRED_ENC_KEY), c => c.charCodeAt(0));
+      return await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, ['encrypt','decrypt']);
+    }
+
+    async function aesEncrypt(obj) {
+      const key = await importKey();
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ct = new Uint8Array(await crypto.subtle.encrypt({ name:'AES-GCM', iv }, key, new TextEncoder().encode(JSON.stringify(obj))));
+      return { iv: Array.from(iv), ct: Array.from(ct) };
+    }
+
+    async function aesDecrypt(payload) {
+      const key = await importKey();
+      const iv = new Uint8Array(payload.iv);
+      const ct = new Uint8Array(payload.ct);
+      const pt = await crypto.subtle.decrypt({ name:'AES-GCM', iv }, key, ct);
+      return JSON.parse(new TextDecoder().decode(pt));
+    }
+
+    // ===== SESSION STATE SAVE/RESTORE =====
+    async function saveSessionState(page, plan_id, user_id, supabase) {
+      try {
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: "Worker: Saving session state (cookies + storage)" 
+        });
+
+        // Get cookies and storage
+        const cookies = await page.context().cookies();
+        const localStorage = await page.evaluate(() => JSON.stringify(localStorage));
+        const sessionStorage = await page.evaluate(() => JSON.stringify(sessionStorage));
+
+        // Prepare data for encryption
+        const sessionData = {
+          cookies,
+          storage: {
+            local: localStorage,
+            session: sessionStorage
+          }
+        };
+
+        // Encrypt the session data
+        const encryptedCookies = await aesEncrypt(sessionData.cookies);
+        const encryptedStorage = await aesEncrypt(sessionData.storage);
+
+        // Save to session_states table
+        const { error } = await supabase
+          .from('session_states')
+          .insert({
+            plan_id,
+            user_id,
+            cookies: encryptedCookies,
+            storage: encryptedStorage,
+            expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // 24 hours
+          });
+
+        if (error) throw error;
+
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: "Worker: Session state saved successfully" 
+        });
+
+        return { success: true };
+      } catch (error) {
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: `Worker: Failed to save session state: ${error.message}` 
+        });
+        return { success: false, error: error.message };
+      }
+    }
+
+    async function restoreSessionState(page, plan_id, user_id, supabase) {
+      try {
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: "Worker: Attempting to restore previous session state" 
+        });
+
+        // Get the most recent session state for this user
+        const { data: sessionState, error } = await supabase
+          .from('session_states')
+          .select('*')
+          .eq('user_id', user_id)
+          .gt('expires_at', new Date().toISOString())
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (error || !sessionState) {
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: "Worker: No valid session state found - starting fresh" 
+          });
+          return { success: true, restored: false };
+        }
+
+        // Decrypt the session data
+        const cookies = await aesDecrypt(sessionState.cookies);
+        const storage = await aesDecrypt(sessionState.storage);
+
+        // Restore cookies
+        await page.context().addCookies(cookies);
+
+        // Restore localStorage and sessionStorage
+        await page.evaluate((storageData) => {
+          if (storageData.local) {
+            const localData = JSON.parse(storageData.local);
+            Object.keys(localData).forEach(key => {
+              localStorage.setItem(key, localData[key]);
+            });
+          }
+          if (storageData.session) {
+            const sessionData = JSON.parse(storageData.session);
+            Object.keys(sessionData).forEach(key => {
+              sessionStorage.setItem(key, sessionData[key]);
+            });
+          }
+        }, storage);
+
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: "Worker: Session state restored successfully" 
+        });
+
+        return { success: true, restored: true };
+      } catch (error) {
+        await supabase.from("plan_logs").insert({ 
+          plan_id, 
+          msg: `Worker: Failed to restore session state: ${error.message}` 
+        });
+        return { success: false, error: error.message };
+      }
+    }
+
     let credentials;
     try {
       const email = await decrypt(credentialData.email_enc);
