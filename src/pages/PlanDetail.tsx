@@ -286,17 +286,22 @@ export default function PlanDetail() {
                       {plan.paid ? "Paid" : "Unpaid"}
                     </Badge>
                   )}
+                  {/* Edit button available for most statuses */}
+                  {plan.status !== 'executing' && plan.status !== 'running' && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setEditingPlan(plan)}
+                      className="ml-2"
+                    >
+                      <Edit className="h-4 w-4 mr-1" />
+                      Edit Plan
+                    </Button>
+                  )}
+                  
+                  {/* Cancel and Test buttons only for scheduled plans */}
                   {plan.status === 'scheduled' && (
                     <>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setEditingPlan(plan)}
-                        className="ml-2"
-                      >
-                        <Edit className="h-4 w-4 mr-1" />
-                        Edit Plan
-                      </Button>
                       <Button
                         variant="destructive"
                         size="sm"
@@ -315,6 +320,18 @@ export default function PlanDetail() {
                         Test Execution
                       </Button>
                     </>
+                  )}
+                  
+                  {/* Test execution for completed plans */}
+                  {(plan.status === 'success' || plan.status === 'alt_success' || plan.status === 'error') && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={testExecution}
+                      className="ml-2"
+                    >
+                      Test Execution
+                    </Button>
                   )}
                 </div>
               </div>
