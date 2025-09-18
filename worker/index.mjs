@@ -911,57 +911,10 @@ async function seedBrowserSessionWithTiming(page, plan, plan_id, supabase) {
   }
 }
 
-// Session seeding to bypass antibot detection
-async function seedBrowserSession(page, plan, supabase, opts={}) {
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const jitter = (a,b)=> a + Math.random()*(b-a);
-  try {
-    await supabase.from('plan_logs').insert({ plan_id: plan.id, msg: 'Worker: Starting browser session seeding' });
-    
-    // Home
-    const base = plan.base_url ? new URL(plan.base_url).origin :
-      `https://${(plan.org||'').toLowerCase().replace(/[^a-z0-9]/g,'')}.skiclubpro.team`;
-    await page.goto(base, { waitUntil:'networkidle' });
-    await page.mouse.move(120, 220, { steps: 12 }); 
-    await sleep(jitter(15000,30000));
-    
-    await supabase.from('plan_logs').insert({ plan_id: plan.id, msg: 'Worker: Explored homepage, moving to registration pages' });
-    
-    // Explore 1-2 pages
-    const anchors = await page.locator('a[href*="/registration"]').all();
-    for (let i=0;i<Math.min(2,anchors.length);i++) {
-      const href = await anchors[i].getAttribute('href'); 
-      if (!href) continue;
-      await page.goto(new URL(href, base).toString(), { waitUntil:'networkidle' });
-      await page.mouse.move(180+i*40, 320, { steps: 10 }); 
-      await sleep(jitter(12000,25000));
-    }
-    
-    await supabase.from('plan_logs').insert({ plan_id: plan.id, msg: 'Worker: Explored registration pages, viewing target program' });
-    
-    // Target view (no register click)
-    const tx = `${plan.preferred_class_name||''} ${plan.preferred||''}`.trim();
-    if (tx) {
-      const title = page.locator(`text=${tx}`).first();
-      if (await title.count()) { 
-        await title.scrollIntoViewIfNeeded(); 
-        await sleep(jitter(6000,12000)); 
-      }
-    }
-    
-    await supabase.from('plan_logs').insert({ plan_id: plan.id, msg: 'Worker: Session seeding completed' });
-    
-    // Save state
-    await saveSessionState(page, plan, supabase);
-    return true;
-  } catch (e) {
-    await supabase.from('plan_logs').insert({ plan_id: plan.id, msg: `Worker: Seeding error: ${e.message}` });
-    return false;
-  }
-}
 
 // Session seeding to bypass antibot detection
-async function seedBrowserSession(page, plan, plan_id, supabase) {
+async function seedBrowserSession(page, plan, supabase, opts={}) {
+  const plan_id = plan.id;
   try {
     await supabase.from("plan_logs").insert({
       plan_id,
@@ -1085,8 +1038,12 @@ async function seedBrowserSession(page, plan, plan_id, supabase) {
 
     await supabase.from("plan_logs").insert({
       plan_id,
-      msg: "Worker: Session seeding completed successfully"
+      msg: "Worker: Session seeding completed"
     });
+
+    // Save session state
+    await saveSessionState(page, plan, supabase);
+    return true;
 
   } catch (error) {
     await supabase.from("plan_logs").insert({
@@ -1094,6 +1051,7 @@ async function seedBrowserSession(page, plan, plan_id, supabase) {
       msg: `Worker: Session seeding error (continuing): ${error.message}`
     });
     // Don't fail the entire process if seeding fails
+    return false;
   }
 }
 
