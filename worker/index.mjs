@@ -633,8 +633,15 @@ async function seedBrowserSessionWithTiming(page, plan, plan_id, supabase) {
       });
     }
 
-    // Perform the actual session seeding
-    await seedBrowserSession(page, plan, supabase);
+    // Perform the actual session seeding (non-blocking)
+    try {
+      await seedBrowserSession(page, plan, supabase);
+    } catch (seedError) {
+      await supabase.from("plan_logs").insert({
+        plan_id,
+        msg: `Worker: Session seeding failed but continuing: ${seedError.message}`
+      });
+    }
     
     // After seeding, wait until 30 seconds before open_time to start signup
     const signupStartTime = new Date(openTime.getTime() - 30 * 1000); // 30s before open
@@ -660,8 +667,15 @@ async function seedBrowserSessionWithTiming(page, plan, plan_id, supabase) {
       plan_id,
       msg: `Worker: Timing calibration error (continuing): ${error.message}`
     });
-    // Continue with immediate seeding as fallback
-    await seedBrowserSession(page, plan, supabase);
+    // Continue with immediate seeding as fallback (non-blocking)
+    try {
+      await seedBrowserSession(page, plan, supabase);
+    } catch (seedError) {
+      await supabase.from("plan_logs").insert({
+        plan_id,
+        msg: `Worker: Fallback session seeding failed but continuing: ${seedError.message}`
+      });
+    }
   }
 }
 
