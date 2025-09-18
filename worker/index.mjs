@@ -2017,27 +2017,141 @@ async function executeSignup(page, plan, credentials, nordicColorGroup, nordicRe
     await page.goto(registrationUrl, { waitUntil: 'domcontentloaded' });
     await advancedHumanizedDelay(getWeightedRandomDelay(2000, 4000));
 
-    // Look for the target program
-    const targetText = `${plan.preferred_class_name||''} ${plan.preferred||''}`.trim();
+    // Look for the target program with intelligent search
+    const className = plan.preferred_class_name || '';
+    const timeSlot = plan.preferred || '';
     
-    if (targetText) {
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Worker: Looking for target program: "${targetText}"`
-      });
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: Looking for target program: "${className}" at "${timeSlot}"`
+    });
 
-      // Try to find and click register button for target program
+    if (className || timeSlot) {
+      // Try to find and click register button for target program using smart search
       const registerButtons = await page.locator(REGISTER_SELECTORS.join(', ')).all();
       
-      for (const button of registerButtons) {
+      // First pass: Debug logging to see what text we're actually working with
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: Found ${registerButtons.length} register buttons, analyzing text content...`
+      });
+      
+      let allFoundText = [];
+      for (let i = 0; i < Math.min(registerButtons.length, 10); i++) {
         try {
+          const button = registerButtons[i];
           const buttonText = await button.textContent();
           const nearbyText = await button.locator('xpath=../..').textContent();
+          const tableRowText = await button.locator('xpath=ancestor::tr[1]').textContent().catch(() => '');
+          const cardText = await button.locator('xpath=ancestor::*[contains(@class,"card") or contains(@class,"program") or contains(@class,"class")][1]').textContent().catch(() => '');
           
-          if (nearbyText && nearbyText.includes(targetText)) {
+          const contextText = [nearbyText, tableRowText, cardText].filter(Boolean).join(' | ');
+          allFoundText.push(`Button ${i+1}: ${contextText.substring(0, 200)}`);
+        } catch (e) {
+          allFoundText.push(`Button ${i+1}: Error reading text`);
+        }
+      }
+      
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: Program text analysis:\n${allFoundText.join('\n')}`
+      });
+
+      // Second pass: Smart search with multiple strategies
+      for (const button of registerButtons) {
+        try {
+          const buttonText = await button.textContent() || '';
+          const nearbyText = await button.locator('xpath=../..').textContent() || '';
+          const tableRowText = await button.locator('xpath=ancestor::tr[1]').textContent().catch(() => '');
+          const cardText = await button.locator('xpath=ancestor::*[contains(@class,"card") or contains(@class,"program") or contains(@class,"class")][1]').textContent().catch(() => '');
+          
+          // Combine all possible text contexts
+          const fullContext = [buttonText, nearbyText, tableRowText, cardText].join(' ').toLowerCase();
+          
+          // Strategy 1: Look for class name + time components
+          const classNameLower = className.toLowerCase();
+          const timeSlotLower = timeSlot.toLowerCase();
+          
+          let matchScore = 0;
+          let matchReasons = [];
+          
+          // Check class name match (fuzzy)
+          if (classNameLower && fullContext.includes(classNameLower)) {
+            matchScore += 2;
+            matchReasons.push('exact class name');
+          } else if (classNameLower) {
+            // Try partial class name matches
+            const classWords = classNameLower.split(' ').filter(w => w.length > 2);
+            const matchedWords = classWords.filter(word => fullContext.includes(word));
+            if (matchedWords.length >= Math.ceil(classWords.length * 0.6)) {
+              matchScore += 1.5;
+              matchReasons.push(`partial class name (${matchedWords.length}/${classWords.length} words)`);
+            }
+          }
+          
+          // Check time match (handle various formats)
+          if (timeSlotLower) {
+            const timeFormats = [
+              timeSlotLower, // Original format
+              timeSlotLower.replace(/:\d+/, ''), // Remove minutes
+              timeSlotLower.replace('wednesday', 'wed').replace('thursday', 'thu').replace('friday', 'fri'), // Day abbreviations
+              timeSlotLower.replace(/(\d+):(\d+)/, '$1.$2'), // Dot format
+              timeSlotLower.replace(/(\d+):(\d+)/, '$1h$2'), // Hour format
+            ];
+            
+            for (const timeFormat of timeFormats) {
+              if (fullContext.includes(timeFormat)) {
+                matchScore += 1;
+                matchReasons.push(`time match (${timeFormat})`);
+                break;
+              }
+            }
+            
+            // Extract and match time numbers
+            const timeMatch = timeSlotLower.match(/(\d+):?(\d+)?/);
+            if (timeMatch) {
+              const hour = timeMatch[1];
+              if (fullContext.includes(hour)) {
+                matchScore += 0.5;
+                matchReasons.push(`hour match (${hour})`);
+              }
+            }
+            
+            // Match day of week
+            const dayMatch = timeSlotLower.match(/(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)/);
+            if (dayMatch) {
+              const day = dayMatch[1];
+              const dayVariations = [day, day.substring(0, 3), day.substring(0, 2)];
+              for (const dayVar of dayVariations) {
+                if (fullContext.includes(dayVar)) {
+                  matchScore += 0.5;
+                  matchReasons.push(`day match (${dayVar})`);
+                  break;
+                }
+              }
+            }
+          }
+          
+          // Strategy 2: Look for Nordic/Kids keywords if in class name
+          if (classNameLower.includes('nordic') && fullContext.includes('nordic')) {
+            matchScore += 0.5;
+            matchReasons.push('nordic keyword');
+          }
+          if (classNameLower.includes('kids') && (fullContext.includes('kids') || fullContext.includes('junior') || fullContext.includes('child'))) {
+            matchScore += 0.5;
+            matchReasons.push('kids/junior keyword');
+          }
+          
+          // If we have a good match, try clicking
+          if (matchScore >= 1.5) {
             await supabase.from('plan_logs').insert({
               plan_id,
-              msg: `Worker: Found target program, clicking register button`
+              msg: `Worker: Found potential match (score: ${matchScore}) - ${matchReasons.join(', ')}`
+            });
+            
+            await supabase.from('plan_logs').insert({
+              plan_id,
+              msg: `Worker: Match context: "${fullContext.substring(0, 300)}"`
             });
             
             await advancedSimulateMouseMovement(page, button);
@@ -2059,7 +2173,7 @@ async function executeSignup(page, plan, credentials, nordicColorGroup, nordicRe
       
       return {
         success: false,
-        message: `Target program "${targetText}" not found or not available for registration`
+        message: `Target program "${className} ${timeSlot}" not found or not available for registration`
       };
     }
     
