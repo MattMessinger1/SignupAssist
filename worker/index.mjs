@@ -594,6 +594,189 @@ app.post("/run-plan", async (req, res) => {
   }
 });
 
+// Seed-plan endpoint - performs session seeding only
+app.post("/seed-plan", async (req, res) => {
+  const plan_id = req.body?.plan_id || "unknown";
+  console.log(`🌱 /seed-plan request for plan_id: ${plan_id}`);
+
+  if (!plan_id) {
+    return res.status(400).json({ error: "plan_id is required" });
+  }
+
+  try {
+    // ===== UPFRONT ENVIRONMENT VALIDATION =====
+    const requiredEnvVars = [
+      'SUPABASE_URL',
+      'SUPABASE_SERVICE_ROLE_KEY', 
+      'BROWSERBASE_API_KEY',
+      'BROWSERBASE_PROJECT_ID',
+      'CRED_ENC_KEY'
+    ];
+    
+    const missingEnvVars = requiredEnvVars.filter(varName => !process.env[varName]);
+    if (missingEnvVars.length > 0) {
+      console.error('Missing environment variables:', missingEnvVars);
+      return res.status(500).json({ 
+        ok: false, 
+        code: 'MISSING_ENV', 
+        msg: `Missing environment variables: ${missingEnvVars.join(', ')}`,
+        details: { missingVars: missingEnvVars }
+      });
+    }
+
+    const supabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE_KEY
+    );
+
+    console.log(`Starting session seeding for plan_id: ${plan_id}`);
+
+    // Log the start of seeding
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: 'Worker: Session seeding started - loading plan details...'
+    });
+
+    // Fetch plan details using service role
+    const { data: plan, error: planError } = await supabase
+      .from('plans')
+      .select('*')
+      .eq('id', plan_id)
+      .maybeSingle();
+
+    if (planError || !plan) {
+      const errorMsg = 'Plan not found or access denied';
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker Error: ${errorMsg}`
+      });
+      
+      return res.status(404).json({ 
+        ok: false, 
+        code: 'PLAN_NOT_FOUND', 
+        msg: errorMsg,
+        details: { plan_id, planError: planError?.message }
+      });
+    }
+
+    // Create Browserbase session and connect Playwright
+    const browserbaseApiKey = process.env.BROWSERBASE_API_KEY;
+    const browserbaseProjectId = process.env.BROWSERBASE_PROJECT_ID;
+    
+    let session = null;
+    let browser = null;
+    
+    try {
+      const sessionResp = await fetch("https://api.browserbase.com/v1/sessions", {
+        method: "POST",
+        headers: { "X-BB-API-Key": browserbaseApiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: browserbaseProjectId })
+      });
+      if (!sessionResp.ok) {
+        const t = await sessionResp.text().catch(()=>"");
+        console.error("Session create failed:", sessionResp.status, sessionResp.statusText, t);
+        await supabase.from("plan_logs").insert({ plan_id, msg: `Worker Error: Browserbase session failed ${sessionResp.status}` });
+        return res.status(500).json({ ok:false, code:"BROWSERBASE_SESSION_FAILED", msg:"Cannot create browser session" });
+      }
+      session = await sessionResp.json();
+      await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: ✅ Browserbase session created: ${session.id}` });
+
+      // Connect Playwright over CDP
+      let page = null;
+      try {
+        await supabase.from("plan_logs").insert({
+          plan_id,
+          msg: "Worker: PLAYWRIGHT_CONNECT_START"
+        });
+        
+        browser = await chromium.connectOverCDP(session.connectUrl);
+        
+        await supabase.from("plan_logs").insert({
+          plan_id,
+          msg: "Worker: PLAYWRIGHT_CONNECT_SUCCESS"
+        });
+
+        const ctx = browser.contexts()[0] ?? await browser.newContext();
+        page = ctx.pages()[0] ?? await ctx.newPage();
+
+        await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Playwright connected for seeding" });
+
+        // Perform session seeding
+        const seedResult = await seedBrowserSession(page, plan, supabase);
+        
+        if (seedResult) {
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: "Worker: Session seeding completed successfully" 
+          });
+        } else {
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: "Worker: Session seeding completed with warnings" 
+          });
+        }
+
+        res.json({ 
+          ok: true, 
+          msg: 'Session seeding completed',
+          sessionId: session.id,
+          plan_id
+        });
+
+      } catch (e) {
+        console.error("Playwright connect error:", e);
+        await supabase.from("plan_logs").insert({
+          plan_id,
+          msg: "Worker: PLAYWRIGHT_CONNECT_FAILED: " + (e?.message ?? String(e))
+        });
+        return res.status(500).json({ ok:false, code:"PLAYWRIGHT_CONNECT_FAILED", msg:"Cannot connect Playwright" });
+      }
+
+    } catch (error) {
+      console.error("Seeding error:", error);
+      await supabase.from("plan_logs").insert({ 
+        plan_id, 
+        msg: `Worker: Seeding error: ${error.message}` 
+      });
+
+      res.status(500).json({ 
+        ok: false, 
+        code: 'SEEDING_ERROR', 
+        msg: error.message 
+      });
+    } finally {
+      // Clean up browser connection and Browserbase session
+      if (browser) {
+        try {
+          await browser.close();
+          await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Browser connection closed" });
+        } catch (e) {
+          console.error("Error closing browser:", e);
+        }
+      }
+      
+      // Close Browserbase session
+      if (session) {
+        try {
+          await fetch(`https://api.browserbase.com/v1/sessions/${session.id}`, {
+            method: "DELETE",
+            headers: { "X-BB-API-Key": process.env.BROWSERBASE_API_KEY }
+          });
+          await supabase.from("plan_logs").insert({ 
+            plan_id, 
+            msg: "Worker: Browserbase session closed after seeding" 
+          });
+        } catch (e) {
+          console.error("Error closing Browserbase session:", e);
+        }
+      }
+    }
+  } catch (error) {
+    console.error("❌ Worker error in /seed-plan:", error);
+    res.status(500).json({ ok: false, error: String(error) });
+  }
+});
+
 // Session seeding with timing calibration to bypass antibot detection  
 async function seedBrowserSessionWithTiming(page, plan, plan_id, supabase) {
   try {
