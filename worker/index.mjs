@@ -3,6 +3,43 @@ import express from "express";
 import { createClient } from "@supabase/supabase-js";
 import { chromium } from "playwright-core";
 
+// ===== INFRASTRUCTURE: PROCESS ERROR HANDLERS =====
+// Prevent silent crashes that cause 502 errors
+process.on('uncaughtException', async (error) => {
+  console.error('🚨 Uncaught Exception:', error);
+  try {
+    // Log to Supabase if possible
+    const supabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE_KEY
+    );
+    await supabase.from('plan_logs').insert({
+      plan_id: 'SYSTEM',
+      msg: `CRITICAL ERROR: Uncaught Exception: ${error.message}`
+    });
+  } catch (e) {
+    console.error('Failed to log uncaught exception:', e);
+  }
+  // Give time to log before exit
+  setTimeout(() => process.exit(1), 1000);
+});
+
+process.on('unhandledRejection', async (reason, promise) => {
+  console.error('🚨 Unhandled Rejection at:', promise, 'reason:', reason);
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE_KEY
+    );
+    await supabase.from('plan_logs').insert({
+      plan_id: 'SYSTEM',
+      msg: `CRITICAL ERROR: Unhandled Rejection: ${String(reason)}`
+    });
+  } catch (e) {
+    console.error('Failed to log unhandled rejection:', e);
+  }
+});
+
 const app = express();
 app.use(express.json());
 
@@ -22,6 +59,80 @@ const REGISTER_SELECTORS = [
   'button:has-text("Enroll")',
   'a:has-text("Enroll")'
 ];
+
+// ===== ADVANCED ANTI-BOT: RANDOMIZATION UTILITIES =====
+
+// Real browser user agent pool for randomization
+const USER_AGENT_POOL = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:120.0) Gecko/20100101 Firefox/120.0'
+];
+
+// Viewport size pool for randomization
+const VIEWPORT_POOL = [
+  { width: 1920, height: 1080 },
+  { width: 1366, height: 768 },
+  { width: 1536, height: 864 },
+  { width: 1440, height: 900 },
+  { width: 1280, height: 720 },
+  { width: 1600, height: 900 }
+];
+
+// Timezone pool for randomization
+const TIMEZONE_POOL = [
+  'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
+  'America/Toronto', 'America/Vancouver', 'Europe/London', 'Europe/Berlin'
+];
+
+// Language pool for randomization
+const LANGUAGE_POOL = ['en-US', 'en-CA', 'en-GB'];
+
+// Weighted random delay generator (favors human-like timing)
+function getWeightedRandomDelay(minMs, maxMs) {
+  // Create weighted distribution favoring middle values
+  const weights = [0.1, 0.2, 0.4, 0.2, 0.1]; // Bell curve
+  const segments = weights.length;
+  const segmentSize = (maxMs - minMs) / segments;
+  
+  // Select segment based on weights
+  let random = Math.random();
+  let selectedSegment = 0;
+  let cumulative = 0;
+  
+  for (let i = 0; i < weights.length; i++) {
+    cumulative += weights[i];
+    if (random <= cumulative) {
+      selectedSegment = i;
+      break;
+    }
+  }
+  
+  // Random value within selected segment
+  const segmentStart = minMs + (selectedSegment * segmentSize);
+  const segmentEnd = segmentStart + segmentSize;
+  
+  return Math.floor(Math.random() * (segmentEnd - segmentStart)) + segmentStart;
+}
+
+// Context-aware delay (longer for complex pages)
+function getContextAwareDelay(baseMin, baseMax, complexity = 1) {
+  const multiplier = Math.max(1, complexity);
+  return getWeightedRandomDelay(baseMin * multiplier, baseMax * multiplier);
+}
+
+// Random browser characteristics
+function getRandomBrowserProfile() {
+  return {
+    userAgent: USER_AGENT_POOL[Math.floor(Math.random() * USER_AGENT_POOL.length)],
+    viewport: VIEWPORT_POOL[Math.floor(Math.random() * VIEWPORT_POOL.length)],
+    timezone: TIMEZONE_POOL[Math.floor(Math.random() * TIMEZONE_POOL.length)],
+    language: LANGUAGE_POOL[Math.floor(Math.random() * LANGUAGE_POOL.length)]
+  };
+}
 
 // ===== FUZZY MATCHING UTILITY =====
 function jaroWinkler(s1, s2) {
@@ -89,7 +200,7 @@ app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
 
-// Run-plan endpoint - full automation logic
+// ===== INFRASTRUCTURE: ASYNCHRONOUS /run-plan ENDPOINT =====
 app.post("/run-plan", async (req, res) => {
   const plan_id = req.body?.plan_id || "unknown";
   console.log(`🎯 /run-plan request for plan_id: ${plan_id}`);
@@ -124,12 +235,35 @@ app.post("/run-plan", async (req, res) => {
       process.env.SUPABASE_SERVICE_ROLE_KEY
     );
 
-    console.log(`Starting plan execution for plan_id: ${plan_id}`);
+    // ===== INFRASTRUCTURE FIX: IMMEDIATE RESPONSE + BACKGROUND PROCESSING =====
+    // Return HTTP 200 immediately to avoid Railway timeout
+    res.status(200).json({
+      ok: true,
+      msg: 'Plan execution started in background',
+      plan_id: plan_id,
+      timestamp: new Date().toISOString()
+    });
+
+    // Start background execution (non-blocking)
+    setImmediate(() => {
+      executeRunPlanBackground(plan_id, supabase);
+    });
+
+  } catch (error) {
+    console.error("❌ Worker error in /run-plan:", error);
+    res.status(500).json({ ok: false, error: String(error) });
+  }
+});
+
+// Background execution function for /run-plan
+async function executeRunPlanBackground(plan_id, supabase) {
+  try {
+    console.log(`Starting background execution for plan_id: ${plan_id}`);
 
     // Log the start of the attempt
     await supabase.from('plan_logs').insert({
       plan_id,
-      msg: 'Worker: Attempt started - loading plan details...'
+      msg: 'Worker: Background execution started - loading plan details...'
     });
 
     // Fetch plan details using service role
@@ -145,45 +279,30 @@ app.post("/run-plan", async (req, res) => {
         plan_id,
         msg: `Worker Error: ${errorMsg}`
       });
-      
-      return res.status(404).json({ 
-        ok: false, 
-        code: 'PLAN_NOT_FOUND', 
-        msg: errorMsg,
-        details: { plan_id, planError: planError?.message }
-      });
+      return;
     }
 
     // ===== SINGLE-EXECUTION POLICY =====
-    if (plan.status !== 'scheduled' && plan.status !== 'action_required' && plan.status !== 'executing') {
-      console.log(`Ignoring execution request for plan ${plan_id} with status '${plan.status}' - only 'scheduled', 'action_required', or 'executing' plans can be executed`);
+    if (plan.status !== 'scheduled' && plan.status !== 'seeded' && plan.status !== 'action_required' && plan.status !== 'executing') {
+      console.log(`Ignoring execution request for plan ${plan_id} with status '${plan.status}' - only 'scheduled', 'seeded', 'action_required', or 'executing' plans can be executed`);
       await supabase.from('plan_logs').insert({
         plan_id,
         msg: `Worker: Execution ignored - plan status is '${plan.status}' (cannot execute ${plan.status === 'cancelled' ? 'cancelled' : plan.status} plans)`
       });
-      
-      return res.status(200).json({ 
-        ok: false, 
-        code: 'INVALID_PLAN_STATUS', 
-        msg: `Plan execution ignored - status is '${plan.status}'`,
-        details: { 
-          current_status: plan.status, 
-          allowed_statuses: ['scheduled', 'action_required', 'executing'] 
-        }
-      });
+      return;
     }
-
-    // Log plan details found
-    await supabase.from('plan_logs').insert({
-      plan_id,
-      msg: `Worker: Plan loaded: ${plan.child_name} at ${plan.org} - proceeding with execution`
-    });
 
     // Update plan status to executing
     await supabase
       .from('plans')
       .update({ status: 'executing' })
       .eq('id', plan_id);
+
+    // Log plan details found
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: Plan loaded: ${plan.child_name} at ${plan.org} - proceeding with execution`
+    });
 
     // Fetch credentials using service role
     await supabase.from('plan_logs').insert({
@@ -205,12 +324,11 @@ app.post("/run-plan", async (req, res) => {
         msg: `Worker Error: ${errorMsg}`
       });
       
-      return res.status(404).json({ 
-        ok: false, 
-        code: 'CREDENTIALS_NOT_FOUND', 
-        msg: errorMsg,
-        details: { credential_id: plan.credential_id, credError: credError?.message }
-      });
+      await supabase
+        .from('plans')
+        .update({ status: 'failed' })
+        .eq('id', plan_id);
+      return;
     }
 
     // Decrypt credentials using the encryption key
@@ -222,11 +340,11 @@ app.post("/run-plan", async (req, res) => {
         msg: `Worker Error: ${errorMsg}`
       });
       
-      return res.status(500).json({ 
-        ok: false, 
-        code: 'MISSING_ENCRYPTION_KEY', 
-        msg: errorMsg 
-      });
+      await supabase
+        .from('plans')
+        .update({ status: 'failed' })
+        .eq('id', plan_id);
+      return;
     }
 
     // Decrypt function (matching cred-store implementation)
@@ -348,12 +466,11 @@ app.post("/run-plan", async (req, res) => {
         msg: `Worker Error: ${errorMsg}`
       });
       
-      return res.status(500).json({ 
-        ok: false, 
-        code: 'DECRYPTION_FAILED', 
-        msg: errorMsg,
-        details: { error: decryptError.message }
-      });
+      await supabase
+        .from('plans')
+        .update({ status: 'failed' })
+        .eq('id', plan_id);
+      return;
     }
 
     await supabase.from('plan_logs').insert({
@@ -379,7 +496,10 @@ app.post("/run-plan", async (req, res) => {
     const nordicColorGroup = isAuto(nordicColorGroupRaw) ? null : nordicColorGroupRaw;
     const volunteer = isAuto(volunteerRaw) ? null : volunteerRaw;
 
-    // Create Browserbase session and connect Playwright
+    // ===== ADVANCED ANTI-BOT: RANDOM BROWSER PROFILE =====
+    const browserProfile = getRandomBrowserProfile();
+
+    // Create Browserbase session with randomized characteristics
     const browserbaseApiKey = process.env.BROWSERBASE_API_KEY;
     const browserbaseProjectId = process.env.BROWSERBASE_PROJECT_ID;
     
@@ -390,19 +510,25 @@ app.post("/run-plan", async (req, res) => {
       const sessionResp = await fetch("https://api.browserbase.com/v1/sessions", {
         method: "POST",
         headers: { "X-BB-API-Key": browserbaseApiKey, "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId: browserbaseProjectId })
+        body: JSON.stringify({ 
+          projectId: browserbaseProjectId,
+          browserSettings: {
+            viewport: browserProfile.viewport
+          }
+        })
       });
       if (!sessionResp.ok) {
         const t = await sessionResp.text().catch(()=>"");
         console.error("Session create failed:", sessionResp.status, sessionResp.statusText, t);
         await supabase.from("plan_logs").insert({ plan_id, msg: `Worker Error: Browserbase session failed ${sessionResp.status}` });
-        return res.status(500).json({ ok:false, code:"BROWSERBASE_SESSION_FAILED", msg:"Cannot create browser session" });
+        await supabase.from('plans').update({ status: 'failed' }).eq('id', plan_id);
+        return;
       }
       session = await sessionResp.json();
       dlog("Browserbase session created:", session);
       await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: ✅ Browserbase session created: ${session.id}` });
 
-      // Connect Playwright over CDP
+      // Connect Playwright over CDP with advanced anti-bot settings
       let page = null;
       try {
         await supabase.from("plan_logs").insert({
@@ -417,22 +543,76 @@ app.post("/run-plan", async (req, res) => {
           msg: "Worker: PLAYWRIGHT_CONNECT_SUCCESS"
         });
 
-        const ctx = browser.contexts()[0] ?? await browser.newContext();
+        const ctx = browser.contexts()[0] ?? await browser.newContext({
+          userAgent: browserProfile.userAgent,
+          viewport: browserProfile.viewport,
+          locale: browserProfile.language,
+          timezoneId: browserProfile.timezone,
+          // Advanced anti-bot: Randomize additional characteristics
+          hasTouch: Math.random() < 0.3, // 30% chance of touch device
+          isMobile: false,
+          deviceScaleFactor: 1 + (Math.random() * 0.5), // Slight scale variation
+        });
         page = ctx.pages()[0] ?? await ctx.newPage();
 
-        await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Playwright connected" });
-        dlog("Connected Playwright to session:", session.id);
-        await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Playwright connected to Browserbase" });
+        // ===== ADVANCED ANTI-BOT: OVERRIDE NAVIGATOR PROPERTIES =====
+        await page.addInitScript(`
+          // Randomize canvas fingerprint
+          const originalGetContext = HTMLCanvasElement.prototype.getContext;
+          HTMLCanvasElement.prototype.getContext = function(type) {
+            const context = originalGetContext.call(this, type);
+            if (type === '2d') {
+              const originalFillText = context.fillText;
+              context.fillText = function() {
+                // Add slight randomization to canvas rendering
+                context.globalAlpha = 0.99 + Math.random() * 0.01;
+                return originalFillText.apply(this, arguments);
+              };
+            }
+            return context;
+          };
 
-        // Session seeding to bypass antibot detection with timing calibration
-        await seedBrowserSessionWithTiming(page, plan, plan_id, supabase);
+          // Randomize WebGL fingerprint
+          const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
+          WebGLRenderingContext.prototype.getParameter = function(parameter) {
+            if (parameter === 37445) {
+              return 'Intel Inc.'; // UNMASKED_VENDOR_WEBGL
+            }
+            if (parameter === 37446) {
+              return 'Intel Iris OpenGL Engine'; // UNMASKED_RENDERER_WEBGL
+            }
+            return originalGetParameter.call(this, parameter);
+          };
+
+          // Randomize memory info
+          Object.defineProperty(navigator, 'deviceMemory', {
+            get: () => [4, 8, 16][Math.floor(Math.random() * 3)]
+          });
+
+          // Randomize connection info
+          Object.defineProperty(navigator, 'connection', {
+            get: () => ({
+              effectiveType: ['4g', '3g'][Math.floor(Math.random() * 2)],
+              rtt: Math.floor(Math.random() * 100) + 50,
+              downlink: Math.random() * 10 + 1
+            })
+          });
+        `);
+
+        await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Playwright connected with enhanced anti-bot profile" });
+        dlog("Connected Playwright to session:", session.id);
+
+        // ===== ADVANCED SESSION SEEDING WITH TIMING =====
+        await advancedSeedBrowserSession(page, plan, plan_id, supabase);
+
       } catch (e) {
         console.error("Playwright connect error:", e);
         await supabase.from("plan_logs").insert({
           plan_id,
           msg: "Worker: PLAYWRIGHT_CONNECT_FAILED: " + (e?.message ?? String(e))
         });
-        return res.status(500).json({ ok:false, code:"PLAYWRIGHT_CONNECT_FAILED", msg:"Cannot connect Playwright" });
+        await supabase.from('plans').update({ status: 'failed' }).eq('id', plan_id);
+        return;
       }
 
       // Normalize plan.base_url to root domain
@@ -469,115 +649,62 @@ app.post("/run-plan", async (req, res) => {
         const loginUrl = `${normalizedBaseUrl}/user/login`;
         console.log(`Worker: Normalized login URL = ${loginUrl}`);
         
-        // Perform login with Playwright
+        // Perform login with enhanced Playwright
         await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Navigating to login: ${loginUrl}` });
-        const loginResult = await loginWithPlaywright(page, loginUrl, credentials.email, credentials.password);
+        const loginResult = await advancedLoginWithPlaywright(page, loginUrl, credentials.email, credentials.password, supabase, plan_id);
         if (!loginResult.success) {
-          await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Login failed: ${loginResult.error}` });
-          return res.status(400).json({ ok:false, code:"LOGIN_FAILED", msg: loginResult.error });
+          await supabase.from("plan_logs").insert({
+            plan_id,
+            msg: `Worker: Login failed: ${loginResult.error}`
+          });
+          
+          await supabase
+            .from('plans')
+            .update({ status: 'failed' })
+            .eq('id', plan_id);
+          
+          return;
         }
-        await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Login successful" });
       }
 
-      //// ===== PAYMENT READINESS GATE =====
-      await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Checking payment readiness…' });
-
-      // We handle saved-card + CVV flows; allow override if site never asks for CVV.
-      const hasCVV = !!(credentials?.cvv && String(credentials.cvv).trim().length > 0);
-      if (!allowNoCvv && !hasCVV) {
+      // Continue with signup execution...
+      const signupResult = await executeSignup(page, plan, credentials, nordicColorGroup, nordicRental, volunteer, allowNoCvv, supabase);
+      
+      // Update plan status based on result
+      if (signupResult.success) {
+        await supabase
+          .from('plans')
+          .update({ status: 'completed' })
+          .eq('id', plan_id);
+        
         await supabase.from('plan_logs').insert({
           plan_id,
-          msg: 'Worker: Payment not ready: saved card CVV required or set extras.allow_no_cvv=true'
+          msg: `Worker: ✅ Plan execution completed successfully`
         });
-        return res.status(422).json({
-          ok: false,
-          code: 'PAYMENT_NOT_READY',
-          msg: 'Saved card CVV required (or set extras.allow_no_cvv=true if checkout never requests CVV).'
-        });
-      }
-
-      // Optional probe: if full card fields appear, we can't proceed (we don't collect PAN)
-      try {
-        const origin = plan.base_url ? new URL(plan.base_url) : new URL(`https://${subdomain}.skiclubpro.team/`);
-        const cartUrl = new URL('/cart', origin).toString();
-        await page.goto(cartUrl, { waitUntil: 'domcontentloaded' });
-        const probe = (await page.content()).toLowerCase();
-        const fullCard = /(card number|cardnumber|name on card|expiration|exp month|exp year)/i.test(probe);
-        if (fullCard && !allowNoCvv) {
-          await supabase.from('plan_logs').insert({
-            plan_id,
-            msg: 'Worker: Detected full-card fields; saved card required. Aborting.'
-          });
-          return res.status(422).json({
-            ok: false,
-            code: 'PAYMENT_NOT_READY',
-            msg: 'Checkout requires full card entry. Save a card on your SkiClubPro account first.'
-          });
-        }
-      } catch { /* non-fatal */ }
-
-      // Navigate to target page for Blackhawk flow
-      const targetUrl = plan.discovered_url || plan.base_url || `https://${subdomain}.skiclubpro.team/dashboard`;
-      await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Opening target page: ${targetUrl}` });
-      await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
-
-      // Execute the Blackhawk-specific signup flow (no separate discovery needed)
-      const signupResult = await executeSignup(page, plan, credentials, supabase);
-      
-      if (!signupResult.success) {
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: `Worker: Signup failed: ${signupResult.error}` 
-        });
-        return res.status(signupResult.statusCode || 400).json({ 
-          ok: false, 
-          code: signupResult.code || 'SIGNUP_FAILED', 
-          msg: signupResult.error,
-          details: signupResult.details 
+      } else {
+        const newStatus = signupResult.requiresAction ? 'action_required' : 'failed';
+        await supabase
+          .from('plans')
+          .update({ status: newStatus })
+          .eq('id', plan_id);
+        
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Plan execution ${signupResult.requiresAction ? 'requires user action' : 'failed'}: ${signupResult.message}`
         });
       }
-
-      await supabase.from("plan_logs").insert({ 
-        plan_id, 
-        msg: "Worker: Signup completed successfully" 
-      });
-
-      // Update plan status
-      await supabase
-        .from('plans')
-        .update({ 
-          status: signupResult.requiresAction ? 'action_required' : 'completed',
-          completed_at: signupResult.requiresAction ? null : new Date().toISOString()
-        })
-        .eq('id', plan_id);
-
-      res.json({ 
-        ok: true, 
-        msg: signupResult.requiresAction ? 'Signup initiated - action required' : 'Signup completed successfully',
-        requiresAction: signupResult.requiresAction,
-        details: signupResult.details,
-        sessionId: session.id,
-        plan_id
-      });
 
     } catch (error) {
-      console.error("Execution error:", error);
+      console.error("Background execution error:", error);
       await supabase.from("plan_logs").insert({ 
         plan_id, 
-        msg: `Worker: Execution error: ${error.message}` 
+        msg: `Worker: Background execution error: ${error.message}` 
       });
-      
-      // Update plan status to failed
+
       await supabase
         .from('plans')
         .update({ status: 'failed' })
         .eq('id', plan_id);
-
-      res.status(500).json({ 
-        ok: false, 
-        code: 'EXECUTION_ERROR', 
-        msg: error.message 
-      });
     } finally {
       // Clean up browser connection and Browserbase session
       if (browser) {
@@ -605,13 +732,22 @@ app.post("/run-plan", async (req, res) => {
         }
       }
     }
-  } catch (error) {
-    console.error("❌ Worker error in /run-plan:", error);
-    res.status(500).json({ ok: false, error: String(error) });
-  }
-});
 
-// Seed-plan endpoint - performs session seeding only
+  } catch (error) {
+    console.error("❌ Critical background execution error:", error);
+    try {
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: CRITICAL BACKGROUND ERROR: ${error.message}`
+      });
+      await supabase.from('plans').update({ status: 'failed' }).eq('id', plan_id);
+    } catch (e) {
+      console.error("Failed to log critical error:", e);
+    }
+  }
+}
+
+// ===== INFRASTRUCTURE: ASYNCHRONOUS /seed-plan ENDPOINT =====
 app.post("/seed-plan", async (req, res) => {
   const plan_id = req.body?.plan_id || "unknown";
   console.log(`🌱 /seed-plan request for plan_id: ${plan_id}`);
@@ -646,12 +782,57 @@ app.post("/seed-plan", async (req, res) => {
       process.env.SUPABASE_SERVICE_ROLE_KEY
     );
 
-    console.log(`Starting session seeding for plan_id: ${plan_id}`);
+    // Fetch plan to validate it exists
+    const { data: plan, error: planError } = await supabase
+      .from('plans')
+      .select('id, status, open_time')
+      .eq('id', plan_id)
+      .maybeSingle();
+
+    if (planError || !plan) {
+      return res.status(404).json({ 
+        ok: false, 
+        code: 'PLAN_NOT_FOUND', 
+        msg: 'Plan not found or access denied',
+        details: { plan_id, planError: planError?.message }
+      });
+    }
+
+    // ===== INFRASTRUCTURE FIX: IMMEDIATE RESPONSE + BACKGROUND PROCESSING =====
+    // Return HTTP 200 immediately to avoid Railway timeout
+    res.status(200).json({
+      ok: true,
+      msg: 'Session seeding started in background',
+      plan_id: plan_id,
+      timestamp: new Date().toISOString()
+    });
+
+    // Update plan status to 'seeding' to track progress
+    await supabase
+      .from('plans')
+      .update({ status: 'seeding' })
+      .eq('id', plan_id);
+
+    // Start background seeding (non-blocking)
+    setImmediate(() => {
+      executeSeedPlanBackground(plan_id, supabase);
+    });
+
+  } catch (error) {
+    console.error("❌ Worker error in /seed-plan:", error);
+    res.status(500).json({ ok: false, error: String(error) });
+  }
+});
+
+// Background execution function for /seed-plan
+async function executeSeedPlanBackground(plan_id, supabase) {
+  try {
+    console.log(`Starting background seeding for plan_id: ${plan_id}`);
 
     // Log the start of seeding
     await supabase.from('plan_logs').insert({
       plan_id,
-      msg: 'Worker: Session seeding started - loading plan details...'
+      msg: 'Worker: Background seeding started - loading plan details...'
     });
 
     // Fetch plan details using service role
@@ -667,16 +848,14 @@ app.post("/seed-plan", async (req, res) => {
         plan_id,
         msg: `Worker Error: ${errorMsg}`
       });
-      
-      return res.status(404).json({ 
-        ok: false, 
-        code: 'PLAN_NOT_FOUND', 
-        msg: errorMsg,
-        details: { plan_id, planError: planError?.message }
-      });
+      await supabase.from('plans').update({ status: 'failed' }).eq('id', plan_id);
+      return;
     }
 
-    // Create Browserbase session and connect Playwright
+    // ===== ADVANCED ANTI-BOT: RANDOM BROWSER PROFILE =====
+    const browserProfile = getRandomBrowserProfile();
+
+    // Create Browserbase session with randomized characteristics
     const browserbaseApiKey = process.env.BROWSERBASE_API_KEY;
     const browserbaseProjectId = process.env.BROWSERBASE_PROJECT_ID;
     
@@ -687,18 +866,24 @@ app.post("/seed-plan", async (req, res) => {
       const sessionResp = await fetch("https://api.browserbase.com/v1/sessions", {
         method: "POST",
         headers: { "X-BB-API-Key": browserbaseApiKey, "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId: browserbaseProjectId })
+        body: JSON.stringify({ 
+          projectId: browserbaseProjectId,
+          browserSettings: {
+            viewport: browserProfile.viewport
+          }
+        })
       });
       if (!sessionResp.ok) {
         const t = await sessionResp.text().catch(()=>"");
         console.error("Session create failed:", sessionResp.status, sessionResp.statusText, t);
         await supabase.from("plan_logs").insert({ plan_id, msg: `Worker Error: Browserbase session failed ${sessionResp.status}` });
-        return res.status(500).json({ ok:false, code:"BROWSERBASE_SESSION_FAILED", msg:"Cannot create browser session" });
+        await supabase.from('plans').update({ status: 'failed' }).eq('id', plan_id);
+        return;
       }
       session = await sessionResp.json();
       await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: ✅ Browserbase session created: ${session.id}` });
 
-      // Connect Playwright over CDP
+      // Connect Playwright over CDP with enhanced anti-bot settings
       let page = null;
       try {
         await supabase.from("plan_logs").insert({
@@ -713,23 +898,78 @@ app.post("/seed-plan", async (req, res) => {
           msg: "Worker: PLAYWRIGHT_CONNECT_SUCCESS"
         });
 
-        const ctx = browser.contexts()[0] ?? await browser.newContext();
+        const ctx = browser.contexts()[0] ?? await browser.newContext({
+          userAgent: browserProfile.userAgent,
+          viewport: browserProfile.viewport,
+          locale: browserProfile.language,
+          timezoneId: browserProfile.timezone,
+          // Advanced anti-bot: Randomize additional characteristics
+          hasTouch: Math.random() < 0.3, // 30% chance of touch device
+          isMobile: false,
+          deviceScaleFactor: 1 + (Math.random() * 0.5), // Slight scale variation
+        });
         page = ctx.pages()[0] ?? await ctx.newPage();
 
-        await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Playwright connected for seeding" });
+        // ===== ADVANCED ANTI-BOT: OVERRIDE NAVIGATOR PROPERTIES =====
+        await page.addInitScript(`
+          // Randomize canvas fingerprint
+          const originalGetContext = HTMLCanvasElement.prototype.getContext;
+          HTMLCanvasElement.prototype.getContext = function(type) {
+            const context = originalGetContext.call(this, type);
+            if (type === '2d') {
+              const originalFillText = context.fillText;
+              context.fillText = function() {
+                // Add slight randomization to canvas rendering
+                context.globalAlpha = 0.99 + Math.random() * 0.01;
+                return originalFillText.apply(this, arguments);
+              };
+            }
+            return context;
+          };
 
-        // Perform session seeding
-        const seedResult = await seedBrowserSession(page, plan, supabase);
+          // Randomize WebGL fingerprint
+          const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
+          WebGLRenderingContext.prototype.getParameter = function(parameter) {
+            if (parameter === 37445) {
+              return 'Intel Inc.'; // UNMASKED_VENDOR_WEBGL
+            }
+            if (parameter === 37446) {
+              return 'Intel Iris OpenGL Engine'; // UNMASKED_RENDERER_WEBGL
+            }
+            return originalGetParameter.call(this, parameter);
+          };
+
+          // Randomize memory info
+          Object.defineProperty(navigator, 'deviceMemory', {
+            get: () => [4, 8, 16][Math.floor(Math.random() * 3)]
+          });
+
+          // Randomize connection info
+          Object.defineProperty(navigator, 'connection', {
+            get: () => ({
+              effectiveType: ['4g', '3g'][Math.floor(Math.random() * 2)],
+              rtt: Math.floor(Math.random() * 100) + 50,
+              downlink: Math.random() * 10 + 1
+            })
+          });
+        `);
+
+        await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Playwright connected for advanced seeding" });
+
+        // ===== ADVANCED SESSION SEEDING WITH TIMING =====
+        const seedResult = await advancedSeedBrowserSessionWithTiming(page, plan, plan_id, supabase);
         
         if (seedResult) {
+          await supabase.from('plans').update({ status: 'seeded' }).eq('id', plan_id);
           await supabase.from("plan_logs").insert({ 
             plan_id, 
-            msg: "Worker: Session seeding completed successfully" 
+            msg: "Worker: ✅ Session seeding completed successfully" 
           });
         } else {
+          await supabase.from('plans').update({ status: 'failed' }).eq('id', plan_id);
           await supabase.from("plan_logs").insert({ 
             plan_id, 
-            msg: "Worker: Session seeding completed with warnings" 
+            msg: "Worker: ❌ Session seeding failed" 
           });
         }
 
@@ -746,17 +986,8 @@ app.post("/seed-plan", async (req, res) => {
               msg: "Worker: Entering HOLD_OPEN mode - navigating to target page" 
             });
             
-            await holdOpenOnTargetPage(page, plan, supabase, openTime);
-            
-            // After holding open, respond
-            res.json({ 
-              ok: true, 
-              msg: 'Session held open until execution time',
-              sessionId: session.id,
-              plan_id,
-              heldOpen: true
-            });
-            return;
+            await advancedHoldOpenOnTargetPage(page, plan, supabase, openTime);
+            return; // Keep session open
           } else {
             await supabase.from("plan_logs").insert({ 
               plan_id, 
@@ -765,37 +996,26 @@ app.post("/seed-plan", async (req, res) => {
           }
         }
 
-        res.json({ 
-          ok: true, 
-          msg: 'Session seeding completed',
-          sessionId: session.id,
-          plan_id
-        });
-
       } catch (e) {
         console.error("Playwright connect error:", e);
         await supabase.from("plan_logs").insert({
           plan_id,
           msg: "Worker: PLAYWRIGHT_CONNECT_FAILED: " + (e?.message ?? String(e))
         });
-        return res.status(500).json({ ok:false, code:"PLAYWRIGHT_CONNECT_FAILED", msg:"Cannot connect Playwright" });
+        await supabase.from('plans').update({ status: 'failed' }).eq('id', plan_id);
+        return;
       }
 
     } catch (error) {
-      console.error("Seeding error:", error);
+      console.error("Background seeding error:", error);
       await supabase.from("plan_logs").insert({ 
         plan_id, 
-        msg: `Worker: Seeding error: ${error.message}` 
+        msg: `Worker: Background seeding error: ${error.message}` 
       });
-
-      res.status(500).json({ 
-        ok: false, 
-        code: 'SEEDING_ERROR', 
-        msg: error.message 
-      });
+      await supabase.from('plans').update({ status: 'failed' }).eq('id', plan_id);
     } finally {
-      // Clean up browser connection and Browserbase session
-      if (browser) {
+      // Clean up browser connection and Browserbase session (unless HOLD_OPEN)
+      if (browser && !HOLD_OPEN_ENABLED) {
         try {
           await browser.close();
           await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Browser connection closed" });
@@ -804,8 +1024,8 @@ app.post("/seed-plan", async (req, res) => {
         }
       }
       
-      // Close Browserbase session
-      if (session) {
+      // Close Browserbase session (unless HOLD_OPEN)
+      if (session && !HOLD_OPEN_ENABLED) {
         try {
           await fetch(`https://api.browserbase.com/v1/sessions/${session.id}`, {
             method: "DELETE",
@@ -820,105 +1040,127 @@ app.post("/seed-plan", async (req, res) => {
         }
       }
     }
-  } catch (error) {
-    console.error("❌ Worker error in /seed-plan:", error);
-    res.status(500).json({ ok: false, error: String(error) });
-  }
-});
 
-// Session seeding with timing calibration to bypass antibot detection  
-async function seedBrowserSessionWithTiming(page, plan, plan_id, supabase) {
+  } catch (error) {
+    console.error("❌ Critical background seeding error:", error);
+    try {
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: CRITICAL SEEDING ERROR: ${error.message}`
+      });
+      await supabase.from('plans').update({ status: 'failed' }).eq('id', plan_id);
+    } catch (e) {
+      console.error("Failed to log critical seeding error:", e);
+    }
+  }
+}
+
+// ===== ADVANCED ANTI-BOT: ENHANCED SESSION SEEDING WITH TIMING =====
+async function advancedSeedBrowserSessionWithTiming(page, plan, plan_id, supabase) {
   try {
     // Parse open_time and calculate optimal timing
     const openTime = new Date(plan.open_time);
     const currentTime = new Date();
     
-    // Session seeding takes approximately 1-3 minutes
-    // Start seeding 4 minutes before open_time to ensure completion before action
-    const SEEDING_DURATION_MS = 3 * 60 * 1000; // 3 minutes buffer
+    // Advanced timing calculation with randomization
+    const SEEDING_DURATION_MS = getWeightedRandomDelay(2 * 60 * 1000, 4 * 60 * 1000); // 2-4 minutes randomized
     const seedingStartTime = new Date(openTime.getTime() - SEEDING_DURATION_MS);
     
     await supabase.from("plan_logs").insert({
       plan_id, 
-      msg: `Worker: Timing calibration - Open: ${openTime.toISOString()}, Seeding start: ${seedingStartTime.toISOString()}, Current: ${currentTime.toISOString()}`
+      msg: `Worker: Advanced timing calibration - Open: ${openTime.toISOString()}, Seeding start: ${seedingStartTime.toISOString()}, Current: ${currentTime.toISOString()}`
     });
 
-    // If we're before seeding time, wait
+    // If we're before seeding time, wait with randomization
     if (currentTime < seedingStartTime) {
       const waitTime = seedingStartTime.getTime() - currentTime.getTime();
+      // Add small random variation to avoid synchronized starts
+      const randomizedWaitTime = waitTime + getWeightedRandomDelay(-30000, 30000); // ±30 seconds
+      
       await supabase.from("plan_logs").insert({
         plan_id,
-        msg: `Worker: Waiting ${Math.round(waitTime/1000)}s until seeding start time (${seedingStartTime.toISOString()})`
+        msg: `Worker: Waiting ${Math.round(randomizedWaitTime/1000)}s until optimal seeding start time`
       });
       
-      // Wait until seeding start time
-      await new Promise(resolve => setTimeout(resolve, waitTime));
+      await new Promise(resolve => setTimeout(resolve, Math.max(0, randomizedWaitTime)));
       
       await supabase.from("plan_logs").insert({
         plan_id,
-        msg: "Worker: Starting session seeding at optimal time"
+        msg: "Worker: Starting advanced session seeding at optimal time"
       });
     } else {
       await supabase.from("plan_logs").insert({
         plan_id,
-        msg: "Worker: Starting session seeding immediately (past optimal start time)"
+        msg: "Worker: Starting advanced session seeding immediately (past optimal start time)"
       });
     }
 
-    // Perform the actual session seeding (non-blocking)
-    try {
-      await seedBrowserSession(page, plan, supabase);
-    } catch (seedError) {
-      await supabase.from("plan_logs").insert({
-        plan_id,
-        msg: `Worker: Session seeding failed but continuing: ${seedError.message}`
-      });
+    // Perform the advanced session seeding
+    const seedResult = await advancedSeedBrowserSession(page, plan, supabase);
+    
+    if (!seedResult) {
+      return false;
     }
     
-    // After seeding, wait until 30 seconds before open_time to start signup
-    const signupStartTime = new Date(openTime.getTime() - 30 * 1000); // 30s before open
+    // After seeding, wait until randomized time before open_time
+    const signupBuffer = getWeightedRandomDelay(15000, 45000); // 15-45 seconds before open
+    const signupStartTime = new Date(openTime.getTime() - signupBuffer);
     const nowAfterSeeding = new Date();
     
     if (nowAfterSeeding < signupStartTime) {
       const finalWaitTime = signupStartTime.getTime() - nowAfterSeeding.getTime();
       await supabase.from("plan_logs").insert({
         plan_id,
-        msg: `Worker: Seeding complete. Waiting ${Math.round(finalWaitTime/1000)}s until signup time (${signupStartTime.toISOString()})`
+        msg: `Worker: Advanced seeding complete. Waiting ${Math.round(finalWaitTime/1000)}s until optimal execution time`
       });
       
-      await new Promise(resolve => setTimeout(resolve, finalWaitTime));
+      // Random micro-activities during wait
+      const microActivityInterval = getWeightedRandomDelay(30000, 60000);
+      let lastMicroActivity = Date.now();
+      
+      while (Date.now() < signupStartTime.getTime()) {
+        const now = Date.now();
+        if (now - lastMicroActivity > microActivityInterval) {
+          // Perform subtle micro-activity
+          await advancedMicroActivity(page);
+          lastMicroActivity = now;
+        }
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      }
     }
     
     await supabase.from("plan_logs").insert({
       plan_id,
-      msg: "Worker: Session seeding and timing calibration complete - ready for signup"
+      msg: "Worker: ✅ Advanced session seeding and timing calibration complete"
     });
+
+    return true;
 
   } catch (error) {
     await supabase.from("plan_logs").insert({
       plan_id,
-      msg: `Worker: Timing calibration error (continuing): ${error.message}`
+      msg: `Worker: Advanced timing calibration error: ${error.message}`
     });
-    // Continue with immediate seeding as fallback (non-blocking)
+    // Still attempt basic seeding as fallback
     try {
-      await seedBrowserSession(page, plan, supabase);
+      return await advancedSeedBrowserSession(page, plan, supabase);
     } catch (seedError) {
       await supabase.from("plan_logs").insert({
         plan_id,
-        msg: `Worker: Fallback session seeding failed but continuing: ${seedError.message}`
+        msg: `Worker: Fallback advanced seeding failed: ${seedError.message}`
       });
+      return false;
     }
   }
 }
 
-
-// Session seeding to bypass antibot detection
-async function seedBrowserSession(page, plan, supabase, opts={}) {
+// ===== ADVANCED ANTI-BOT: ENHANCED SESSION SEEDING =====
+async function advancedSeedBrowserSession(page, plan, supabase, opts={}) {
   const plan_id = plan.id;
   try {
     await supabase.from("plan_logs").insert({
       plan_id,
-      msg: "Worker: Starting session seeding to bypass antibot detection"
+      msg: "Worker: Starting advanced session seeding with sophisticated anti-bot measures"
     });
 
     // Normalize base URL
@@ -936,142 +1178,162 @@ async function seedBrowserSession(page, plan, supabase, opts={}) {
       baseUrl = `https://${subdomain}.skiclubpro.team`;
     }
 
-    // Phase 1: Homepage exploration
+    // ===== PHASE 1: SOPHISTICATED HOMEPAGE EXPLORATION =====
     await supabase.from("plan_logs").insert({
       plan_id,
-      msg: "Worker: Seeding Phase 1 - Homepage exploration"
+      msg: "Worker: Phase 1 - Sophisticated homepage exploration with human behavior patterns"
     });
     
     await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
-    await humanizedDelay(2000, 4000);
     
-    // Human-like homepage interactions
-    await simulateMouseMovement(page);
-    await humanizedScroll(page, plan_id, supabase);
-    await humanizedDelay(15000, 25000); // Dwell time 15-25 seconds
+    // Advanced initial page analysis
+    const pageComplexity = await analyzePageComplexity(page);
+    const initialDwellTime = getContextAwareDelay(15000, 30000, pageComplexity);
+    
+    await advancedHumanizedDelay(initialDwellTime);
+    
+    // Advanced mouse movement simulation
+    await advancedSimulateMouseMovement(page);
+    
+    // Sophisticated scrolling with reading simulation
+    await advancedHumanizedScroll(page, plan_id, supabase);
+    
+    // Extended dwell time with micro-activities
+    await advancedDwellTime(page, initialDwellTime, supabase, plan_id);
 
-    // Phase 2: Program discovery
+    // ===== PHASE 2: INTELLIGENT PROGRAM DISCOVERY =====
     await supabase.from("plan_logs").insert({
       plan_id,
-      msg: "Worker: Seeding Phase 2 - Program discovery"
+      msg: "Worker: Phase 2 - Intelligent program discovery with randomized exploration paths"
     });
 
-    // Try to find and visit programs page
-    const programsSelectors = [
-      'a[href*="programs"]',
-      'a[href*="registration"]', 
-      'a[href*="classes"]',
-      'a:has-text("Programs")',
-      'a:has-text("Classes")',
-      'a:has-text("Registration")'
+    // Randomized discovery approach
+    const discoveryApproaches = [
+      () => discoverViaNavigation(page, plan_id, supabase),
+      () => discoverViaSearch(page, plan_id, supabase),
+      () => discoverViaDirectLinks(page, plan_id, supabase)
     ];
+    
+    // Shuffle approaches for unpredictability
+    for (let i = discoveryApproaches.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [discoveryApproaches[i], discoveryApproaches[j]] = [discoveryApproaches[j], discoveryApproaches[i]];
+    }
 
-    let programsFound = false;
-    for (const selector of programsSelectors) {
+    let discoverySuccess = false;
+    for (const approach of discoveryApproaches) {
       try {
-        const element = await page.locator(selector).first();
-        if (await element.isVisible()) {
-          await simulateMouseMovement(page, element);
-          await humanizedDelay(1000, 2000);
-          await element.click();
-          programsFound = true;
-          await humanizedDelay(3000, 5000);
+        if (await approach()) {
+          discoverySuccess = true;
           break;
         }
+        // Random delay between attempts
+        await advancedHumanizedDelay(getWeightedRandomDelay(3000, 8000));
       } catch (e) {
-        // Continue to next selector
+        // Continue to next approach
       }
     }
 
-    if (programsFound) {
+    if (discoverySuccess) {
       await supabase.from("plan_logs").insert({
         plan_id,
-        msg: "Worker: Found programs page, exploring content"
+        msg: "Worker: Program discovery successful, exploring with advanced behavior patterns"
       });
       
-      // Explore programs page
-      await humanizedScroll(page, plan_id, supabase);
-      await simulateReadingBehavior(page);
-      await humanizedDelay(20000, 30000); // Longer dwell time on programs page
+      // Advanced content exploration
+      await advancedContentExploration(page, plan, supabase);
     }
 
-    // Phase 3: Target program interest
+    // ===== PHASE 3: SOPHISTICATED TARGET INTEREST SIMULATION =====
     await supabase.from("plan_logs").insert({
       plan_id,
-      msg: "Worker: Seeding Phase 3 - Target program interest simulation"
+      msg: "Worker: Phase 3 - Sophisticated target program interest simulation"
     });
 
-    // Look for target program elements (without clicking register)
-    const targetKeywords = [
-      plan.preferred_class_name,
-      plan.child_name,
-      plan.preferred?.split(' ')[0], // Day of week
-      'Nordic', 'Kids'
-    ].filter(Boolean);
+    await advancedTargetInterestSimulation(page, plan, supabase);
 
-    for (const keyword of targetKeywords) {
-      try {
-        const elements = await page.locator(`text="${keyword}"`).all();
-        if (elements.length > 0) {
-          // Simulate interest by hovering over target program elements
-          for (let i = 0; i < Math.min(elements.length, 3); i++) {
-            await simulateMouseMovement(page, elements[i]);
-            await humanizedDelay(2000, 4000);
-          }
-          break;
-        }
-      } catch (e) {
-        // Continue with next keyword
-      }
-    }
-
-    // Phase 4: Decision pause and preparation
+    // ===== PHASE 4: ADVANCED DECISION PAUSE AND PREPARATION =====
     await supabase.from("plan_logs").insert({
       plan_id,
-      msg: "Worker: Seeding Phase 4 - Decision pause before action"
+      msg: "Worker: Phase 4 - Advanced decision pause with realistic hesitation patterns"
     });
 
-    // Final scroll and mouse movements to simulate decision-making
-    await humanizedScroll(page, plan_id, supabase);
-    await simulateMouseMovement(page);
-    await humanizedDelay(10000, 15000); // Decision pause
+    await advancedDecisionSimulation(page, plan, supabase);
+
+    // ===== SAVE SESSION STATE =====
+    await saveAdvancedSessionState(page, plan, supabase);
 
     await supabase.from("plan_logs").insert({
       plan_id,
-      msg: "Worker: Session seeding completed"
+      msg: "Worker: ✅ Advanced session seeding completed with sophisticated anti-bot measures"
     });
 
-    // Save session state
-    await saveSessionState(page, plan, supabase);
     return true;
 
   } catch (error) {
     await supabase.from("plan_logs").insert({
       plan_id,
-      msg: `Worker: Session seeding error (continuing): ${error.message}`
+      msg: `Worker: Advanced session seeding error: ${error.message}`
     });
-    // Don't fail the entire process if seeding fails
     return false;
   }
 }
 
-// Simulate natural mouse movement patterns
-async function simulateMouseMovement(page, targetElement = null) {
+// ===== ADVANCED ANTI-BOT: ENHANCED HUMAN BEHAVIOR UTILITIES =====
+
+// Advanced humanized delay with weighted random distribution
+async function advancedHumanizedDelay(baseMs) {
+  // Add natural variation (±20%)
+  const variation = baseMs * 0.2;
+  const delay = baseMs + (Math.random() * 2 - 1) * variation;
+  
+  // Simulate typing/thinking pauses within longer delays
+  if (delay > 10000) {
+    const segments = Math.floor(delay / 3000); // Break into 3-second segments
+    for (let i = 0; i < segments; i++) {
+      await new Promise(resolve => setTimeout(resolve, 3000 + Math.random() * 1000));
+      // Micro-pause to simulate thinking
+      if (Math.random() < 0.3) {
+        await new Promise(resolve => setTimeout(resolve, Math.random() * 500));
+      }
+    }
+    const remainder = delay % 3000;
+    if (remainder > 0) {
+      await new Promise(resolve => setTimeout(resolve, remainder));
+    }
+  } else {
+    await new Promise(resolve => setTimeout(resolve, delay));
+  }
+}
+
+// Advanced mouse movement with realistic curves and hesitation
+async function advancedSimulateMouseMovement(page, targetElement = null) {
   try {
     if (targetElement) {
-      // Move to specific element with natural curve
-      await targetElement.hover();
+      // Move to specific element with natural hesitation
+      const box = await targetElement.boundingBox();
+      if (box) {
+        // Random point within element
+        const targetX = box.x + box.width * (0.2 + Math.random() * 0.6);
+        const targetY = box.y + box.height * (0.2 + Math.random() * 0.6);
+        
+        // Move in segments with hesitation
+        await advancedMouseMove(page, targetX, targetY);
+        
+        // Hesitation hover
+        await advancedHumanizedDelay(getWeightedRandomDelay(1000, 3000));
+      }
     } else {
-      // Random mouse movements across the page
+      // Random explorative movements
       const viewport = page.viewportSize();
-      const movements = Math.floor(Math.random() * 3) + 2; // 2-4 movements
+      const movements = Math.floor(Math.random() * 4) + 3; // 3-6 movements
       
       for (let i = 0; i < movements; i++) {
         const x = Math.floor(Math.random() * viewport.width * 0.8) + viewport.width * 0.1;
         const y = Math.floor(Math.random() * viewport.height * 0.8) + viewport.height * 0.1;
         
-        await page.mouse.move(x, y);
-        await humanizedDelay(500, 1500);
+        await advancedMouseMove(page, x, y);
+        await advancedHumanizedDelay(getWeightedRandomDelay(1000, 3000));
       }
     }
   } catch (e) {
@@ -1079,1335 +1341,528 @@ async function simulateMouseMovement(page, targetElement = null) {
   }
 }
 
-// Simulate reading behavior with pauses
-async function simulateReadingBehavior(page) {
+// Advanced mouse movement with realistic curves
+async function advancedMouseMove(page, targetX, targetY) {
   try {
-    // Look for text-heavy elements and simulate reading
-    const textElements = await page.locator('p, div, li').all();
-    const readableElements = textElements.slice(0, 5); // Read first 5 elements
+    const currentPos = { x: Math.random() * 100, y: Math.random() * 100 }; // Start position
+    const steps = Math.floor(Math.random() * 20) + 10; // 10-30 steps
     
-    for (const element of readableElements) {
+    for (let i = 0; i <= steps; i++) {
+      const progress = i / steps;
+      
+      // Ease-in-out curve for natural movement
+      const easeProgress = 0.5 * (1 - Math.cos(progress * Math.PI));
+      
+      // Add slight randomness to path
+      const noise = (Math.random() - 0.5) * 10;
+      
+      const x = currentPos.x + (targetX - currentPos.x) * easeProgress + noise;
+      const y = currentPos.y + (targetY - currentPos.y) * easeProgress + noise;
+      
+      await page.mouse.move(x, y);
+      
+      // Variable speed (slower at start/end, faster in middle)
+      const speed = Math.sin(progress * Math.PI) * 50 + 20;
+      await new Promise(resolve => setTimeout(resolve, speed));
+    }
+  } catch (e) {
+    // Fallback to simple move
+    await page.mouse.move(targetX, targetY);
+  }
+}
+
+// Advanced scrolling with reading patterns
+async function advancedHumanizedScroll(page, plan_id, supabase) {
+  try {
+    const viewport = page.viewportSize();
+    const scrollSessions = Math.floor(Math.random() * 3) + 2; // 2-4 scroll sessions
+    
+    for (let session = 0; session < scrollSessions; session++) {
+      // Random scroll direction and amount
+      const scrollDown = Math.random() > 0.2; // 80% down, 20% up
+      const scrollAmount = Math.floor(Math.random() * viewport.height * 0.8) + 100;
+      
+      // Scroll in natural segments
+      const segments = Math.floor(scrollAmount / 100) + 1;
+      
+      for (let i = 0; i < segments; i++) {
+        const segmentScroll = scrollDown ? 100 : -100;
+        await page.mouse.wheel(0, segmentScroll);
+        
+        // Reading pause
+        await advancedHumanizedDelay(getWeightedRandomDelay(200, 800));
+        
+        // Occasional hesitation (like re-reading)
+        if (Math.random() < 0.3) {
+          await page.mouse.wheel(0, scrollDown ? -20 : 20); // Small reverse scroll
+          await advancedHumanizedDelay(getWeightedRandomDelay(500, 1500));
+        }
+      }
+      
+      // Pause between scroll sessions
+      await advancedHumanizedDelay(getWeightedRandomDelay(3000, 8000));
+    }
+  } catch (e) {
+    // Ignore scroll errors
+  }
+}
+
+// Advanced dwell time with micro-activities
+async function advancedDwellTime(page, baseDwellMs, supabase, plan_id) {
+  const startTime = Date.now();
+  const endTime = startTime + baseDwellMs;
+  
+  while (Date.now() < endTime) {
+    // Random micro-activities
+    const activity = Math.random();
+    
+    if (activity < 0.3) {
+      // Micro-scroll
+      await page.mouse.wheel(0, (Math.random() - 0.5) * 50);
+    } else if (activity < 0.6) {
+      // Small mouse movement
+      const currentPos = { x: Math.random() * 100, y: Math.random() * 100 };
+      await page.mouse.move(
+        currentPos.x + (Math.random() - 0.5) * 30,
+        currentPos.y + (Math.random() - 0.5) * 30
+      );
+    } else {
+      // Just wait (simulating reading/thinking)
+    }
+    
+    // Random interval between micro-activities
+    await advancedHumanizedDelay(getWeightedRandomDelay(2000, 8000));
+  }
+}
+
+// Analyze page complexity to adjust timing
+async function analyzePageComplexity(page) {
+  try {
+    const elementCount = await page.locator('*').count();
+    const imageCount = await page.locator('img').count();
+    const linkCount = await page.locator('a').count();
+    
+    // Simple complexity score
+    const complexity = Math.min((elementCount + imageCount * 2 + linkCount) / 1000, 3);
+    return complexity;
+  } catch (e) {
+    return 1; // Default complexity
+  }
+}
+
+// Advanced content exploration
+async function advancedContentExploration(page, plan, supabase) {
+  const plan_id = plan.id;
+  
+  try {
+    // Find interesting elements to explore
+    const interestingElements = await page.locator('a, button, [role="button"]').all();
+    const elementsToExplore = interestingElements.slice(0, Math.min(5, interestingElements.length));
+    
+    for (const element of elementsToExplore) {
       try {
         if (await element.isVisible()) {
-          await element.scrollIntoViewIfNeeded();
-          await simulateMouseMovement(page, element);
+          await advancedSimulateMouseMovement(page, element);
           
-          // Simulate reading time based on text length
+          // Simulate reading the element text
           const text = await element.textContent();
-          const readingTime = Math.min(text?.length || 0 * 50, 8000); // Max 8 seconds
-          await humanizedDelay(readingTime, readingTime + 2000);
+          const readingTime = Math.min((text?.length || 0) * 100, 5000);
+          await advancedHumanizedDelay(readingTime);
+          
+          // Random chance to hover longer (showing interest)
+          if (Math.random() < 0.4) {
+            await advancedHumanizedDelay(getWeightedRandomDelay(2000, 5000));
+          }
         }
       } catch (e) {
         // Continue with next element
       }
     }
   } catch (e) {
-    // Ignore reading simulation errors
+    await supabase.from("plan_logs").insert({
+      plan_id,
+      msg: `Worker: Content exploration error (continuing): ${e.message}`
+    });
   }
 }
 
-// Login with Playwright
-async function loginWithPlaywright(page, loginUrl, email, password) {
+// Advanced target interest simulation
+async function advancedTargetInterestSimulation(page, plan, supabase) {
+  const plan_id = plan.id;
+  
   try {
-    console.log("Worker: Navigating to login");
+    // Build interest keywords from plan
+    const targetKeywords = [
+      plan.preferred_class_name,
+      plan.child_name,
+      plan.preferred?.split(' ')[0], // Day of week
+      'Nordic', 'Kids', 'Junior'
+    ].filter(Boolean);
+
+    for (const keyword of targetKeywords) {
+      try {
+        const elements = await page.locator(`text="${keyword}"`).all();
+        
+        for (let i = 0; i < Math.min(elements.length, 3); i++) {
+          const element = elements[i];
+          
+          if (await element.isVisible()) {
+            // Show progressive interest (multiple visits to same elements)
+            await advancedSimulateMouseMovement(page, element);
+            await advancedHumanizedDelay(getWeightedRandomDelay(3000, 7000));
+            
+            // Simulate comparing (look at nearby elements)
+            const nearbyElements = await element.locator('xpath=..//*').all();
+            if (nearbyElements.length > 0) {
+              const randomNearby = nearbyElements[Math.floor(Math.random() * Math.min(nearbyElements.length, 3))];
+              await advancedSimulateMouseMovement(page, randomNearby);
+              await advancedHumanizedDelay(getWeightedRandomDelay(2000, 4000));
+              
+              // Return to target (showing preference)
+              await advancedSimulateMouseMovement(page, element);
+              await advancedHumanizedDelay(getWeightedRandomDelay(1000, 3000));
+            }
+          }
+        }
+      } catch (e) {
+        // Continue with next keyword
+      }
+    }
+  } catch (e) {
+    await supabase.from("plan_logs").insert({
+      plan_id,
+      msg: `Worker: Target interest simulation error (continuing): ${e.message}`
+    });
+  }
+}
+
+// Advanced decision simulation
+async function advancedDecisionSimulation(page, plan, supabase) {
+  const plan_id = plan.id;
+  
+  try {
+    // Simulate decision-making process
+    const decisionPhases = ['consideration', 'hesitation', 'confirmation'];
+    
+    for (const phase of decisionPhases) {
+      switch (phase) {
+        case 'consideration':
+          // Review key information areas
+          await advancedHumanizedScroll(page, plan_id, supabase);
+          await advancedHumanizedDelay(getWeightedRandomDelay(5000, 10000));
+          break;
+          
+        case 'hesitation':
+          // Simulate uncertainty with back-and-forth movements
+          for (let i = 0; i < 3; i++) {
+            await advancedSimulateMouseMovement(page);
+            await advancedHumanizedDelay(getWeightedRandomDelay(2000, 5000));
+          }
+          break;
+          
+        case 'confirmation':
+          // Final review before action
+          await advancedHumanizedScroll(page, plan_id, supabase);
+          await advancedHumanizedDelay(getWeightedRandomDelay(3000, 8000));
+          break;
+      }
+    }
+  } catch (e) {
+    await supabase.from("plan_logs").insert({
+      plan_id,
+      msg: `Worker: Decision simulation error (continuing): ${e.message}`
+    });
+  }
+}
+
+// Advanced micro-activity during waits
+async function advancedMicroActivity(page) {
+  try {
+    const activities = [
+      async () => await page.mouse.wheel(0, (Math.random() - 0.5) * 30),
+      async () => {
+        const viewport = page.viewportSize();
+        const x = Math.random() * viewport.width;
+        const y = Math.random() * viewport.height;
+        await page.mouse.move(x, y);
+      },
+      async () => {
+        // Simulate brief attention to different areas
+        await new Promise(resolve => setTimeout(resolve, getWeightedRandomDelay(1000, 3000)));
+      }
+    ];
+    
+    const activity = activities[Math.floor(Math.random() * activities.length)];
+    await activity();
+  } catch (e) {
+    // Ignore micro-activity errors
+  }
+}
+
+// Discovery approaches for randomization
+async function discoverViaNavigation(page, plan_id, supabase) {
+  try {
+    const navSelectors = [
+      'nav a', '[role="navigation"] a', 'header a', '.menu a', '.navigation a'
+    ];
+    
+    for (const selector of navSelectors) {
+      const navLinks = await page.locator(selector).all();
+      for (const link of navLinks) {
+        const text = await link.textContent();
+        if (text && /program|class|registration|enroll/i.test(text)) {
+          await advancedSimulateMouseMovement(page, link);
+          await advancedHumanizedDelay(getWeightedRandomDelay(1000, 3000));
+          await link.click();
+          await advancedHumanizedDelay(getWeightedRandomDelay(3000, 6000));
+          return true;
+        }
+      }
+    }
+  } catch (e) {
+    // Method failed
+  }
+  return false;
+}
+
+async function discoverViaSearch(page, plan_id, supabase) {
+  try {
+    const searchSelectors = ['input[type="search"]', 'input[placeholder*="search" i]', '#search', '.search input'];
+    
+    for (const selector of searchSelectors) {
+      const searchInput = page.locator(selector).first();
+      if (await searchInput.isVisible()) {
+        await advancedSimulateMouseMovement(page, searchInput);
+        await searchInput.click();
+        await advancedHumanizedDelay(getWeightedRandomDelay(1000, 2000));
+        
+        // Type search term with human-like typing
+        const searchTerm = 'programs';
+        await advancedHumanizedType(page, searchInput, searchTerm);
+        await page.keyboard.press('Enter');
+        await advancedHumanizedDelay(getWeightedRandomDelay(2000, 5000));
+        return true;
+      }
+    }
+  } catch (e) {
+    // Method failed
+  }
+  return false;
+}
+
+async function discoverViaDirectLinks(page, plan_id, supabase) {
+  try {
+    const directSelectors = [
+      'a[href*="program"]', 'a[href*="registration"]', 'a[href*="class"]',
+      'button:has-text("Register")', 'a:has-text("Programs")'
+    ];
+    
+    for (const selector of directSelectors) {
+      const element = page.locator(selector).first();
+      if (await element.isVisible()) {
+        await advancedSimulateMouseMovement(page, element);
+        await advancedHumanizedDelay(getWeightedRandomDelay(1000, 3000));
+        await element.click();
+        await advancedHumanizedDelay(getWeightedRandomDelay(3000, 6000));
+        return true;
+      }
+    }
+  } catch (e) {
+    // Method failed
+  }
+  return false;
+}
+
+// Advanced humanized typing
+async function advancedHumanizedType(page, element, text) {
+  try {
+    await element.focus();
+    
+    for (const char of text) {
+      await element.type(char);
+      
+      // Human-like typing speed variation
+      const typeDelay = getWeightedRandomDelay(80, 200);
+      await new Promise(resolve => setTimeout(resolve, typeDelay));
+      
+      // Occasional hesitation (like thinking about spelling)
+      if (Math.random() < 0.1) {
+        await new Promise(resolve => setTimeout(resolve, getWeightedRandomDelay(300, 800)));
+      }
+    }
+  } catch (e) {
+    // Fallback to simple type
+    await element.type(text);
+  }
+}
+
+// Advanced session state saving
+async function saveAdvancedSessionState(page, plan, supabase) {
+  // Same implementation as original but with better error handling
+  try {
+    const cookies = await page.context().cookies();
+    const storage = await page.evaluate(() => ({ 
+      local: JSON.stringify(localStorage), 
+      session: JSON.stringify(sessionStorage) 
+    }));
+    
+    // Use existing encryption function
+    const CRED_ENC_KEY = process.env.CRED_ENC_KEY;
+    const keyBytes = Uint8Array.from(atob(CRED_ENC_KEY), c => c.charCodeAt(0));
+    const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, ['encrypt']);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = new Uint8Array(await crypto.subtle.encrypt({ name:'AES-GCM', iv }, key, new TextEncoder().encode(JSON.stringify({ cookies, storage, user_id: plan.user_id, plan_id: plan.id }))));
+    const payload = { iv: Array.from(iv), ct: Array.from(ct) };
+    
+    await supabase.from('session_states').insert({
+      plan_id: plan.id, 
+      user_id: plan.user_id,
+      cookies: payload, 
+      storage: { stub: true },
+      expires_at: new Date(Date.now() + 24*60*60*1000).toISOString()
+    });
+    
+    await supabase.from('plan_logs').insert({ 
+      plan_id: plan.id, 
+      msg: 'Worker: Advanced session state saved with enhanced security' 
+    });
+  } catch (e) {
+    await supabase.from('plan_logs').insert({ 
+      plan_id: plan.id, 
+      msg: `Worker: Session save error: ${e.message}` 
+    });
+  }
+}
+
+// ===== ENHANCED LOGIN WITH ADVANCED ANTI-BOT =====
+async function advancedLoginWithPlaywright(page, loginUrl, email, password, supabase, plan_id) {
+  try {
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: "Worker: Navigating to login with advanced behavior patterns"
+    });
+    
     await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
     
-    // Save debug screenshot
-    await page.screenshot({ path: "login-debug.png" });
-    console.log("Worker: Screenshot saved");
+    // Advanced page analysis before interaction
+    await advancedHumanizedDelay(getWeightedRandomDelay(2000, 5000));
     
-    // Explicitly wait for email and password fields after navigation
-    console.log("Worker: Waiting for email/password fields");
+    // Simulate page scan before filling form
+    await advancedSimulateMouseMovement(page);
+    await advancedHumanizedScroll(page, plan_id, supabase);
+    
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: "Worker: Waiting for login form with enhanced detection"
+    });
+    
+    // Enhanced form field detection
     await page.waitForSelector('#edit-name', { timeout: 20000 });
     await page.waitForSelector('#edit-pass', { timeout: 20000 });
     
-    // Fill email field
-    console.log("Worker: Filling email");
-    await page.fill('#edit-name', email);
+    // Simulate form inspection
+    const emailField = page.locator('#edit-name');
+    const passwordField = page.locator('#edit-pass');
     
-    // Fill password field  
-    console.log("Worker: Filling password");
-    await page.fill('#edit-pass', password);
+    await advancedSimulateMouseMovement(page, emailField);
+    await advancedHumanizedDelay(getWeightedRandomDelay(1000, 2000));
     
-    // Click login button
-    console.log("Worker: Clicking login button");
-    await page.click('#edit-submit');
+    // Advanced form filling
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: "Worker: Filling credentials with human-like patterns"
+    });
     
-    // Wait for dashboard URL after login
+    await emailField.click();
+    await advancedHumanizedDelay(getWeightedRandomDelay(500, 1500));
+    await advancedHumanizedType(page, emailField, email);
+    
+    // Tab or click to password field
+    if (Math.random() > 0.5) {
+      await page.keyboard.press('Tab');
+    } else {
+      await advancedSimulateMouseMovement(page, passwordField);
+      await passwordField.click();
+    }
+    
+    await advancedHumanizedDelay(getWeightedRandomDelay(500, 1500));
+    await advancedHumanizedType(page, passwordField, password);
+    
+    // Pre-submit hesitation
+    await advancedHumanizedDelay(getWeightedRandomDelay(1000, 3000));
+    
+    // Click login button with human-like interaction
+    const submitButton = page.locator('#edit-submit');
+    await advancedSimulateMouseMovement(page, submitButton);
+    await advancedHumanizedDelay(getWeightedRandomDelay(500, 1500));
+    await submitButton.click();
+    
+    // Enhanced login success detection
     try {
       await page.waitForURL(/dashboard/, { timeout: 30000 });
-      console.log("Worker: Login successful");
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: "Worker: ✅ Advanced login successful"
+      });
       return { success: true };
     } catch (error) {
-      // Fallback: check current URL and content for login success indicators
+      // Enhanced fallback detection
       const currentUrl = page.url();
       const content = await page.content();
       
       if (currentUrl.includes('dashboard') || currentUrl.includes('profile') || 
           content.includes('logout') || content.includes('sign out')) {
-        console.log("Worker: Login successful");
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: "Worker: ✅ Advanced login successful (fallback detection)"
+        });
         return { success: true };
       }
       
-      // Check for error messages
+      // Enhanced error detection
       const errorSelectors = [
-        '.error', '.alert-danger', '[class*="error"]', '[class*="invalid"]'
+        '.error', '.alert-danger', '[class*="error"]', '[class*="invalid"]',
+        '.message--error', '[role="alert"]'
       ];
       
       for (const selector of errorSelectors) {
-        const errorElement = await page.$(selector);
-        if (errorElement) {
-          const errorText = await errorElement.textContent();
-          if (errorText && errorText.trim()) {
-            return { success: false, error: `Login failed: ${errorText.trim()}` };
+        try {
+          const errorElement = await page.locator(selector).first();
+          if (await errorElement.isVisible()) {
+            const errorText = await errorElement.textContent();
+            if (errorText && errorText.trim()) {
+              return { success: false, error: `Login failed: ${errorText.trim()}` };
+            }
           }
+        } catch (e) {
+          // Continue checking other selectors
         }
       }
       
       return { success: false, error: 'Login failed - please check credentials' };
     }
   } catch (error) {
-    return { success: false, error: `Login error: ${error.message}` };
+    return { success: false, error: `Advanced login error: ${error.message}` };
   }
 }
 
-// Blackhawk-specific discovery: Find and click Register using multiple strategies
-async function discoverBlackhawkRegistration(page, plan, supabase) {
+// Advanced hold open with sophisticated behavior
+async function advancedHoldOpenOnTargetPage(page, plan, supabase, openTime) {
   const plan_id = plan.id;
-  const baseUrl = page.url().split('/').slice(0, 3).join('/');
   
   try {
-    // Strategy 3: Direct Program ID (fast path)
-    if (plan.program_id) {
-      const directUrl = `${baseUrl}/registration/${plan.program_id}/start`;
-      
-      await supabase.from("plan_logs").insert({ 
-        plan_id, 
-        msg: `Worker: Navigated directly to program ID ${plan.program_id}` 
-      });
-      
-      await page.goto(directUrl, { waitUntil: "domcontentloaded" });
-      await page.waitForTimeout(2000);
-      
-      // Verify we're on a valid start page
-      const currentUrl = page.url();
-      if (currentUrl.includes('/registration/') && currentUrl.includes('/start')) {
-        return { success: true, startUrl: currentUrl };
-      }
-    }
-    
-    // Strategy 1: Program Name Discovery
-    const registrationUrls = [`${baseUrl}/registration`, `${baseUrl}/registration/events`];
-    
-    for (const registrationUrl of registrationUrls) {
-      await supabase.from("plan_logs").insert({ 
-        plan_id, 
-        msg: `Worker: Trying program name discovery at: ${registrationUrl}` 
-      });
-      
-      await page.goto(registrationUrl, { waitUntil: "domcontentloaded" });
-      
-      try {
-        // Build targetText from preferred_class_name and preferred
-        const rawName = plan.preferred_class_name || "";
-        const dayPart = plan.preferred || "";
-        let targetText = [rawName, dayPart].filter(Boolean).join(" ").trim();
-
-        // Remove accidental duplicates like "Wednesday Wednesday"
-        targetText = targetText.replace(/\b(\w+)\s+\1\b/g, "$1");
-        
-        // Strip trailing time parts like "at 16:30" if both day+time already present
-        targetText = targetText.replace(/\s+at\s+\d{1,2}:\d{2}(\s*(AM|PM))?$/i, "");
-        
-        // Fallback if empty
-        if (!targetText) {
-          targetText = "Nordic Kids Wednesday";
-        }
-        
-        await supabase.from("plan_logs").insert({
-          plan_id,
-          msg: `Worker: Using targetText "${targetText}" for program discovery`
-        });
-        
-        // Wait for any program row to appear
-        await page.waitForSelector('.views-row, tr', { timeout: 15000 });
-        await supabase.from("plan_logs").insert({
-          plan_id,
-          msg: "Worker: Program rows detected on registration page"
-        });
-
-        // Immediately log visible program rows
-        try {
-          const rows = await page.locator('.views-row, tr').allTextContents();
-          await supabase.from("plan_logs").insert({
-            plan_id,
-            msg: `Worker: Visible rows: ${JSON.stringify(rows.slice(0, 10))}`
-          });
-        } catch (e) {
-          await supabase.from("plan_logs").insert({
-            plan_id,
-            msg: `Worker: Could not extract rows: ${e.message}`
-          });
-        }
-        
-        await supabase.from("plan_logs").insert({
-          plan_id,
-          msg: `Worker: Searching for program row with text "${targetText}"`
-        });
-        
-        let clicked = false;
-        
-        // Scope Register button search to the container row
-        try {
-          const row = page.locator(`text=${targetText}`).first()
-            .locator('xpath=ancestor::tr[1]').first();
-
-          for (const sel of REGISTER_SELECTORS) {
-            const btn = row.locator(sel).first();
-            if (await btn.count()) {
-              await btn.scrollIntoViewIfNeeded();
-              await btn.click();
-              clicked = true;
-              await supabase.from("plan_logs").insert({
-                plan_id,
-                msg: `Worker: Register clicked for "${targetText}" via ${sel}`
-              });
-              break;
-            }
-          }
-
-          // Fallback 1: Direct link inside the same row
-          if (!clicked) {
-            const link = row.locator('a[href*="/registration/"][href*="/start"]').first();
-            if (await link.count()) {
-              await link.click();
-              clicked = true;
-              await supabase.from("plan_logs").insert({
-                plan_id,
-                msg: `Worker: Register clicked via direct href for ${targetText}`
-              });
-            }
-          }
-        } catch (e) {
-          await supabase.from("plan_logs").insert({ 
-            plan_id, 
-            msg: `Worker: Direct row search failed: ${e.message}` 
-          });
-        }
-
-        // Fallback 2: Fuzzy matching across all rows if still not found
-        if (!clicked) {
-          try {
-            // Extract all row texts using the simpler allTextContents method
-            const rows = await page.locator('.views-row, tr').allTextContents();
-            const validRows = rows.filter(text => text && text.trim());
-            
-            if (validRows.length === 0) {
-              await supabase.from("plan_logs").insert({
-                plan_id,
-                msg: `Worker: No rows found for fuzzy matching`
-              });
-            } else {
-              // Compute Jaro-Winkler similarity with targetText
-              const scores = validRows.map((text, index) => ({
-                text: text.trim(),
-                index,
-                score: jaroWinkler(text.trim().toLowerCase(), targetText.toLowerCase())
-              }));
-              
-              // Sort by score descending and pick best ≥ 0.8
-              scores.sort((a, b) => b.score - a.score);
-              const best = scores[0];
-              
-              await supabase.from("plan_logs").insert({
-                plan_id,
-                msg: `Worker: Fuzzy match candidate: "${best.text.substring(0, 100)}" (score ${best.score.toFixed(2)})`
-              });
-              
-              if (best.score >= 0.8) {
-                // Get the actual row element by index and attempt register click
-                const rowElement = page.locator('.views-row, tr').nth(best.index);
-                let registerFound = false;
-                
-                for (const sel of REGISTER_SELECTORS) {
-                  const btn = rowElement.locator(sel).first();
-                  if (await btn.count()) {
-                    await btn.scrollIntoViewIfNeeded();
-                    await btn.click();
-                    clicked = true;
-                    registerFound = true;
-                    await supabase.from("plan_logs").insert({
-                      plan_id,
-                      msg: `Worker: Register clicked for fuzzy match "${best.text.substring(0, 50)}" via ${sel}`
-                    });
-                    break;
-                  }
-                }
-                
-                if (!registerFound) {
-                  await supabase.from("plan_logs").insert({
-                    plan_id,
-                    msg: `Worker: Fuzzy match found but no register button in row`
-                  });
-                }
-              } else {
-                await supabase.from("plan_logs").insert({
-                  plan_id,
-                  msg: `Worker: Best fuzzy match score ${best.score.toFixed(2)} below threshold 0.8`
-                });
-              }
-            }
-          } catch (e) {
-            await supabase.from("plan_logs").insert({ 
-              plan_id, 
-              msg: `Worker: Fuzzy matching failed: ${e.message}` 
-            });
-          }
-        }
-
-        // Partial/fallback matching if exact text fails
-        if (!clicked) {
-          const fallbackTitle = page.locator('text=Nordic Kids').first();
-          if (await fallbackTitle.count()) {
-            await supabase.from("plan_logs").insert({
-              plan_id,
-              msg: `Worker: Fallback search matched "Nordic Kids"`
-            });
-            const fallbackRow = fallbackTitle.locator('xpath=ancestor::tr[1]').first();
-            const fallbackBtn = fallbackRow.locator(REGISTER_SELECTORS.join(',')).first();
-            if (await fallbackBtn.count()) {
-              await fallbackBtn.click();
-              clicked = true;
-              await supabase.from("plan_logs").insert({
-                plan_id,
-                msg: `Worker: Register clicked via fallback container`
-              });
-            }
-          }
-        }
-
-        // Fallback 3: Global click attempt as last resort
-        if (!clicked) {
-          await supabase.from("plan_logs").insert({
-            plan_id,
-            msg: `Worker: No Register found for "${targetText}" — falling back to global search`
-          });
-          
-          clicked = await reliableClick(page, REGISTER_SELECTORS, plan_id, supabase, "Register (global fallback)");
-          if (clicked) {
-            await supabase.from("plan_logs").insert({ 
-              plan_id, 
-              msg: `Worker: Register clicked via global fallback for "${targetText}"` 
-            });
-          }
-        }
-
-        // Logging when discovery fails entirely
-        if (!clicked) {
-          try {
-            const rows = await page.locator('.views-row, tr').allTextContents();
-            const visibleRows = rows.filter(row => row && row.trim()).slice(0, 10);
-            await supabase.from("plan_logs").insert({
-              plan_id,
-              msg: `Worker: Visible rows: ${JSON.stringify(visibleRows)}`
-            });
-          } catch (e) {
-            await supabase.from("plan_logs").insert({
-              plan_id,
-              msg: `Worker: Could not extract program rows: ${e.message}`
-            });
-          }
-          
-          const html = await page.content();
-          await supabase.from("plan_logs").insert({
-            plan_id,
-            msg: `Worker: Program discovery failed. Tried target "${targetText}". DOM snippet: ${html.slice(0,500)}`
-          });
-        } else {
-          // Wait for navigation to start page
-          await page.waitForURL(/\/registration\/.*\/start/, { timeout: 30000 });
-          return { success: true, startUrl: page.url() };
-        }
-      } catch (error) {
-        // Continue to next strategy
-        console.log(`Program name strategy failed: ${error.message}`);
-      }
-    }
-    
-    // Strategy 2: Session Time (fallback)
-    if (plan.session_time || plan.time) {
-      const sessionTime = plan.session_time || plan.time;
-      
-      for (const registrationUrl of registrationUrls) {
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: `Worker: Trying session time discovery for: ${sessionTime}` 
-        });
-        
-        await page.goto(registrationUrl, { waitUntil: "domcontentloaded" });
-        await page.waitForTimeout(2000);
-        
-        try {
-          // Use shared REGISTER_SELECTORS for time-based discovery
-          const clicked = await reliableClick(page, REGISTER_SELECTORS, plan_id, supabase, "Register (time-based)");
-          
-          if (clicked) {
-            await supabase.from("plan_logs").insert({ 
-              plan_id, 
-              msg: "Worker: Program found by time" 
-            });
-            
-            // Wait for navigation to start page
-            await page.waitForURL(/\/registration\/.*\/start/, { timeout: 30000 });
-            return { success: true, startUrl: page.url() };
-          }
-        } catch (error) {
-          // Continue to failure
-          console.log(`Session time strategy failed: ${error.message}`);
-        }
-      }
-    }
-    
-    // All strategies failed - log attempted selectors and DOM snippet
-    try {
-      const html = await page.content();
-      const snippet = html.slice(0, 500);
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Worker: No Register/Enroll control found. Tried: ${REGISTER_SELECTORS.join(', ')}. Snippet: ${snippet}`
-      });
-    } catch (e) {
-      await supabase.from("plan_logs").insert({ 
-        plan_id, 
-        msg: `Worker: Program discovery failed. Tried selectors: ${REGISTER_SELECTORS.join(', ')}`
-      });
-    }
-    
-    return { 
-      success: false, 
-      error: "All discovery strategies failed - program not found by name, time, or direct ID" 
-    };
-    
-  } catch (error) {
-    await supabase.from("plan_logs").insert({ 
-      plan_id, 
-      msg: `Worker: Blackhawk registration discovery error: ${error.message}` 
-    });
-    
-    return { 
-      success: false, 
-      error: `Blackhawk registration discovery failed: ${error.message}` 
-    };
-  }
-}
-
-// Universal scrolling helper - scrolls until element is visible
-async function scrollUntilVisible(page, selector, maxScrolls = 15) {
-  for (let scrollAttempt = 1; scrollAttempt <= maxScrolls; scrollAttempt++) {
-    const locator = page.locator(selector).first();
-    
-    try {
-      // Check if element is visible
-      if (await locator.isVisible()) {
-        return locator;
-      }
-    } catch (error) {
-      // Element might not exist yet, continue scrolling
-    }
-    
-    console.log(`Scroll attempt ${scrollAttempt}: element not visible yet`);
-    
-    // Scroll down and wait
-    await page.mouse.wheel(0, 2000);
-    await page.waitForTimeout(500);
-  }
-  
-  throw new Error(`Element ${selector} not found after ${maxScrolls} scroll attempts`);
-}
-
-// Human-like behavior helpers
-function getRandomDelay(min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-async function humanizedDelay(minMs, maxMs) {
-  const baseDelay = getRandomDelay(minMs, maxMs);
-  const jitter = getRandomDelay(-100, 200); // Add ±200ms jitter
-  await new Promise(resolve => setTimeout(resolve, Math.max(100, baseDelay + jitter)));
-}
-
-async function humanizedMouseMove(page, locator) {
-  try {
-    const box = await locator.boundingBox();
-    if (box) {
-      // Move to target in 20 steps for natural movement
-      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 20 });
-      // Hover for 300-800ms
-      await humanizedDelay(300, 800);
-    }
-  } catch (error) {
-    // If mouse movement fails, continue without it
-    console.log('Mouse movement failed:', error.message);
-  }
-}
-
-async function humanizedScroll(page, plan_id, supabase) {
-  try {
-    const scrollAmount = getRandomDelay(200, 600);
-    await page.evaluate((amount) => {
-      window.scrollBy(0, amount);
-    }, scrollAmount);
-    
-    // Pause between scrolls
-    await humanizedDelay(200, 600);
-    
-    await supabase.from("plan_logs").insert({ 
-      plan_id, 
-      msg: `Worker: Human-like scroll (${scrollAmount}px)` 
-    });
-  } catch (error) {
-    console.log('Scroll failed:', error.message);
-  }
-}
-
-async function humanizedType(locator, text) {
-  try {
-    await locator.click();
-    await locator.clear();
-    
-    // Type character by character with natural delays
-    for (const char of text) {
-      await locator.type(char);
-      const delay = getRandomDelay(80, 150) + getRandomDelay(-20, 30); // 80-150ms ± jitter
-      await new Promise(resolve => setTimeout(resolve, Math.max(50, delay)));
-    }
-  } catch (error) {
-    // Fallback to regular fill if typing fails
-    await locator.fill(text);
-  }
-}
-
-// Reliable button click helper with human-like behavior
-async function reliableClick(page, selectors, plan_id, supabase, actionName) {
-  const maxRetries = 3;
-  const retryDelay = 500;
-  
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    for (const selector of selectors) {
-      try {
-        // Use scrollUntilVisible to find the element
-        const locator = await scrollUntilVisible(page, selector, 15);
-        
-        // Human-like mouse movement and hover
-        await humanizedMouseMove(page, locator);
-        
-        // Random delay before click (100-300ms)
-        await humanizedDelay(100, 300);
-        
-        // Click the element
-        await locator.click();
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: `Worker: Successfully clicked ${actionName} button (${selector}) with human-like behavior` 
-        });
-        return true;
-        
-      } catch (error) {
-        // Continue to next selector or retry
-        console.log(`Failed to find/click ${selector}: ${error.message}`);
-      }
-    }
-    
-    if (attempt < maxRetries) {
-      await page.waitForTimeout(retryDelay);
-    }
-  }
-  
-  // Log available buttons for debugging
-  try {
-    const pageContent = await page.content();
-    const snippet = pageContent.substring(0, 200);
-    await supabase.from("plan_logs").insert({ 
-      plan_id, 
-      msg: `Worker: No ${actionName} button found after ${maxRetries} retries. Page snippet: ${snippet}` 
-    });
-  } catch {
-    await supabase.from("plan_logs").insert({ 
-      plan_id, 
-      msg: `Worker: No ${actionName} button found after ${maxRetries} retries` 
-    });
-  }
-  
-  return false;
-}
-
-// Handle Blackhawk Options page - only runs on /registration/*/options URL
-async function handleBlackhawkOptions(page, plan, supabase) {
-  const plan_id = plan.id;
-  const currentUrl = page.url();
-  
-  // Only run on options page
-  if (!currentUrl.match(/\/registration\/.*\/options/)) {
-    await supabase.from("plan_logs").insert({ 
-      plan_id, 
-      msg: "Worker: Not on options page, skipping add-on handling" 
-    });
-    return { success: true };
-  }
-  
-  await supabase.from("plan_logs").insert({ 
-    plan_id, 
-    msg: `Worker: Current URL: ${currentUrl}` 
-  });
-  
-  try {
-    const EXTRAS = (plan?.extras ?? {});
-    
-    // Handle Color Group field
-    const colorGroupValue = EXTRAS.nordicColorGroup;
-    const colorGroupSelectors = [
-      'select[name*="color"], select[id*="color"]',
-      'input[type="radio"][name*="color"]',
-      'input[type="checkbox"][name*="color"]'
-    ];
-    
-    try {
-      let colorGroupHandled = false;
-      for (const selector of colorGroupSelectors) {
-        const elements = await page.$$(selector);
-        if (elements.length > 0) {
-          const element = elements[0];
-          const tagName = await element.evaluate(el => el.tagName.toLowerCase());
-          
-          if (tagName === 'select') {
-            const options = await element.$$('option');
-            let selectedOption = null;
-            
-            // Try to find matching color group
-            if (colorGroupValue) {
-              for (const option of options) {
-                const optionText = await option.textContent();
-                if (optionText && optionText.toLowerCase().includes(colorGroupValue.toLowerCase())) {
-                  selectedOption = optionText;
-                  await element.selectOption({ label: optionText });
-                  break;
-                }
-              }
-            }
-            
-            // Default to first option if not found or not specified
-            if (!selectedOption && options.length > 1) {
-              const firstOption = await options[1].textContent(); // Skip first empty option
-              await element.selectOption({ index: 1 });
-              selectedOption = firstOption;
-            }
-            
-            if (selectedOption) {
-              const logMsg = colorGroupValue && selectedOption.toLowerCase().includes(colorGroupValue.toLowerCase()) 
-                ? `Worker: Color group selected: ${selectedOption}`
-                : `Worker: Defaulted to first color group option: ${selectedOption}`;
-              await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
-              colorGroupHandled = true;
-            }
-          } else {
-            // Handle radio buttons - select first or matching
-            let selectedLabel = null;
-            
-            if (colorGroupValue) {
-              for (const radioElement of elements) {
-                const label = await page.evaluate(el => {
-                  const labelEl = document.querySelector(`label[for="${el.id}"]`);
-                  return labelEl ? labelEl.textContent : el.closest('label')?.textContent || '';
-                }, radioElement);
-                
-                if (label && label.toLowerCase().includes(colorGroupValue.toLowerCase())) {
-                  await radioElement.click();
-                  selectedLabel = label;
-                  break;
-                }
-              }
-            }
-            
-            // Default to first option
-            if (!selectedLabel && elements.length > 0) {
-              await elements[0].click();
-              selectedLabel = await page.evaluate(el => {
-                const labelEl = document.querySelector(`label[for="${el.id}"]`);
-                return labelEl ? labelEl.textContent : el.closest('label')?.textContent || 'First option';
-              }, elements[0]);
-            }
-            
-            if (selectedLabel) {
-              const logMsg = colorGroupValue && selectedLabel.toLowerCase().includes(colorGroupValue.toLowerCase()) 
-                ? `Worker: Color group selected: ${selectedLabel}`
-                : `Worker: Defaulted to first color group option: ${selectedLabel}`;
-              await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
-              colorGroupHandled = true;
-            }
-          }
-          
-          if (colorGroupHandled) break;
-        }
-      }
-      
-      if (!colorGroupHandled) {
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: "Worker: Color group skipped (no fields found)" 
-        });
-      }
-    } catch (error) {
-      await supabase.from("plan_logs").insert({ 
-        plan_id, 
-        msg: `Worker: Color group error (non-blocking): ${error.message}` 
-      });
-    }
-    
-    // Handle Rental field
-    const rentalValue = EXTRAS.nordicRental;
-    const rentalSelectors = [
-      'select[name*="rental"], select[id*="rental"]',
-      'input[type="radio"][name*="rental"]',
-      'input[type="checkbox"][name*="rental"]'
-    ];
-    
-    try {
-      let rentalHandled = false;
-      for (const selector of rentalSelectors) {
-        const elements = await page.$$(selector);
-        if (elements.length > 0) {
-          const element = elements[0];
-          const tagName = await element.evaluate(el => el.tagName.toLowerCase());
-          
-          if (tagName === 'select') {
-            // Handle dropdown
-            const options = await element.$$('option');
-            let selectedOption = null;
-            
-            // Try to match provided rental value
-            if (rentalValue) {
-              for (const option of options) {
-                const optionText = await option.textContent();
-                if (optionText && optionText.toLowerCase().includes(rentalValue.toLowerCase())) {
-                  await element.selectOption({ label: optionText });
-                  selectedOption = optionText;
-                  break;
-                }
-              }
-            }
-            
-            // Default to first visible option if not provided or not found
-            if (!selectedOption && options.length > 1) {
-              const firstOption = await options[1].textContent(); // Skip first empty option
-              await element.selectOption({ index: 1 });
-              selectedOption = firstOption;
-            }
-            
-            if (selectedOption) {
-              const logMsg = rentalValue && selectedOption.toLowerCase().includes(rentalValue.toLowerCase()) 
-                ? `Worker: Rental selected: ${selectedOption}`
-                : `Worker: Defaulted to first rental option: ${selectedOption}`;
-              await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
-              rentalHandled = true;
-            }
-          } else {
-            // Handle radio buttons/checkboxes
-            let selectedLabel = null;
-            
-            // Try to match provided rental value
-            if (rentalValue) {
-              for (const radioElement of elements) {
-                const label = await page.evaluate(el => {
-                  const labelEl = document.querySelector(`label[for="${el.id}"]`);
-                  return labelEl ? labelEl.textContent : el.closest('label')?.textContent || '';
-                }, radioElement);
-                
-                if (label && label.toLowerCase().includes(rentalValue.toLowerCase())) {
-                  await radioElement.click();
-                  selectedLabel = label;
-                  break;
-                }
-              }
-            }
-            
-            // Default to first option if not found or not provided
-            if (!selectedLabel && elements.length > 0) {
-              await elements[0].click();
-              selectedLabel = await page.evaluate(el => {
-                const labelEl = document.querySelector(`label[for="${el.id}"]`);
-                return labelEl ? labelEl.textContent : el.closest('label')?.textContent || 'First option';
-              }, elements[0]);
-            }
-            
-            if (selectedLabel) {
-              const logMsg = rentalValue && selectedLabel.toLowerCase().includes(rentalValue.toLowerCase()) 
-                ? `Worker: Rental selected: ${selectedLabel}`
-                : `Worker: Defaulted to first rental option: ${selectedLabel}`;
-              await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
-              rentalHandled = true;
-            }
-          }
-          
-          if (rentalHandled) break;
-        }
-      }
-      
-      if (!rentalHandled) {
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: "Worker: Rental skipped (no fields found)" 
-        });
-      }
-    } catch (error) {
-      await supabase.from("plan_logs").insert({ 
-        plan_id, 
-        msg: `Worker: Rental error (non-blocking): ${error.message}` 
-      });
-    }
-    
-    // Handle Volunteer field
-    const volunteerValue = EXTRAS.volunteer;
-    const volunteerSelectors = [
-      'input[type="checkbox"][name*="volunteer"]',
-      'input[type="radio"][name*="volunteer"]',
-      'select[name*="volunteer"], select[id*="volunteer"]'
-    ];
-    
-    try {
-      let volunteerHandled = false;
-      for (const selector of volunteerSelectors) {
-        const elements = await page.$$(selector);
-        if (elements.length > 0) {
-          const element = elements[0];
-          const tagName = await element.evaluate(el => el.tagName.toLowerCase());
-          
-          if (tagName === 'select') {
-            let selectedOption = null;
-            const options = await element.$$('option');
-            
-            if (volunteerValue) {
-              for (const option of options) {
-                const optionText = await option.textContent();
-                if (optionText && optionText.toLowerCase().includes(volunteerValue.toLowerCase())) {
-                  await element.selectOption({ label: optionText });
-                  selectedOption = optionText;
-                  break;
-                }
-              }
-            }
-            
-            // Default to first non-empty option
-            if (!selectedOption && options.length > 1) {
-              const firstOption = await options[1].textContent();
-              await element.selectOption({ index: 1 });
-              selectedOption = firstOption;
-            }
-            
-            if (selectedOption) {
-              const logMsg = volunteerValue && selectedOption.toLowerCase().includes(volunteerValue.toLowerCase()) 
-                ? `Worker: Volunteer selected: ${selectedOption}`
-                : `Worker: Defaulted to first volunteer option: ${selectedOption}`;
-              await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
-              volunteerHandled = true;
-            }
-          } else {
-            // Handle checkboxes/radio buttons
-            let selectedLabel = null;
-            
-            if (volunteerValue) {
-              for (const checkboxElement of elements) {
-                const label = await page.evaluate(el => {
-                  const labelEl = document.querySelector(`label[for="${el.id}"]`);
-                  return labelEl ? labelEl.textContent : el.closest('label')?.textContent || '';
-                }, checkboxElement);
-                
-                if (label && label.toLowerCase().includes(volunteerValue.toLowerCase())) {
-                  await checkboxElement.click();
-                  selectedLabel = label;
-                  break;
-                }
-              }
-            }
-            
-            // Default to first checkbox
-            if (!selectedLabel && elements.length > 0) {
-              await elements[0].click();
-              selectedLabel = await page.evaluate(el => {
-                const labelEl = document.querySelector(`label[for="${el.id}"]`);
-                return labelEl ? labelEl.textContent : el.closest('label')?.textContent || 'First option';
-              }, elements[0]);
-            }
-            
-            if (selectedLabel) {
-              const logMsg = volunteerValue && selectedLabel.toLowerCase().includes(volunteerValue.toLowerCase()) 
-                ? `Worker: Volunteer selected: ${selectedLabel}`
-                : `Worker: Defaulted to first volunteer option: ${selectedLabel}`;
-              await supabase.from("plan_logs").insert({ plan_id, msg: logMsg });
-              volunteerHandled = true;
-            }
-          }
-          
-          if (volunteerHandled) break;
-        }
-      }
-      
-      if (!volunteerHandled) {
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: "Worker: Volunteer skipped (no fields found)" 
-        });
-      }
-    } catch (error) {
-      await supabase.from("plan_logs").insert({ 
-        plan_id, 
-        msg: `Worker: Volunteer error (non-blocking): ${error.message}` 
-      });
-    }
-    
-    // Click Next to proceed to cart
-    const nextButtonSelectors = [
-      '#edit-submit',
-      'button#edit-submit',
-      'button:has-text("Next")',
-      'input[type="submit"][value*="Next"]'
-    ];
-    
-    const clicked = await reliableClick(page, nextButtonSelectors, plan_id, supabase, "Next");
-    if (clicked) {
-      // Wait for navigation to cart
-      try {
-        await page.waitForURL(/\/cart/, { timeout: 30000 });
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: "Worker: Navigated to cart after options" 
-        });
-      } catch (error) {
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: `Worker: Navigation to cart may have failed: ${error.message}` 
-        });
-      }
-    }
-    
-  } catch (error) {
-    await supabase.from("plan_logs").insert({ 
-      plan_id, 
-      msg: `Worker: Blackhawk options error (non-blocking): ${error.message}` 
-    });
-  }
-  
-  // Always return success to ensure non-blocking execution - handleNordicAddons never sets final status
-  return { success: true };
-}
-
-async function executeSignup(page, plan, credentials, supabase) {
-  try {
-    const plan_id = plan.id;
-    
-    await supabase.from("plan_logs").insert({ 
-      plan_id, 
-      msg: "Worker: Starting Blackhawk multi-step signup process with human-like behavior..." 
-    });
-    
-    // Step 1: Discovery & Register - Navigate to /registration and click Register button
-    const discoveryResult = await discoverBlackhawkRegistration(page, plan, supabase);
-    if (!discoveryResult.success) {
-      return { 
-        success: false, 
-        error: discoveryResult.error,
-        code: 'BLACKHAWK_DISCOVERY_FAILED'
-      };
-    }
-    
-    // Human-like delay after discovery navigation
-    await humanizedDelay(2000, 4000);
-    await supabase.from("plan_logs").insert({ 
-      plan_id, 
-      msg: "Worker: Post-discovery human delay completed" 
-    });
-    
-    // Step 2: Start Page (/registration/*/start) - Select participant from dropdown
-    let currentUrl = page.url();
-    await supabase.from("plan_logs").insert({ 
-      plan_id, 
-      msg: `Worker: Current URL: ${currentUrl}` 
-    });
-    
-    if (currentUrl.match(/\/registration\/.*\/start/)) {
-      await supabase.from("plan_logs").insert({ 
-        plan_id, 
-        msg: "Worker: On start page, selecting participant..." 
-      });
-      
-      // Human-like scroll on long pages
-      await humanizedScroll(page, plan_id, supabase);
-      
-      // Look for participant dropdown and select matching child
-      const participantSelectors = [
-        'select[name*="participant"]',
-        'select[id*="participant"]',
-        'select[name*="child"]',
-        'select[id*="child"]',
-        'select'
-      ];
-      
-      let participantSelected = false;
-      for (const selector of participantSelectors) {
-        const selects = await page.$$(selector);
-        if (selects.length > 0) {
-          const selectElement = selects[0];
-          const options = await selectElement.$$('option');
-          
-          // Try to find matching participant by name
-          for (const option of options) {
-            const optionText = await option.textContent();
-            if (optionText && optionText.toLowerCase().includes(plan.child_name.toLowerCase())) {
-              await selectElement.selectOption({ label: optionText });
-              await supabase.from("plan_logs").insert({ 
-                plan_id, 
-                msg: `Worker: Participant selected: ${plan.child_name}` 
-              });
-              participantSelected = true;
-              break;
-            }
-          }
-          
-          // Fallback to first non-empty option if exact match not found
-          if (!participantSelected && options.length > 1) {
-            const firstOption = await options[1].textContent();
-            await selectElement.selectOption({ index: 1 });
-            await supabase.from("plan_logs").insert({ 
-              plan_id, 
-              msg: `Worker: Participant selected: ${firstOption}` 
-            });
-            participantSelected = true;
-          }
-          
-          if (participantSelected) break;
-        }
-      }
-      
-      // Click Next button using robust selectors
-      const nextSelectors = [
-        '#edit-submit',
-        'button#edit-submit',
-        'button:has-text("Next")',
-        'input[type="submit"][value*="Next"]'
-      ];
-      
-      const nextClicked = await reliableClick(page, nextSelectors, plan_id, supabase, "Next");
-      if (nextClicked) {
-        try {
-          await page.waitForURL(/\/registration\/.*\/options/, { timeout: 30000 });
-          // Human-like delay after navigation
-          await humanizedDelay(2000, 4000);
-        } catch (error) {
-          await supabase.from("plan_logs").insert({ 
-            plan_id, 
-            msg: `Worker: Navigation to options may have failed: ${error.message}` 
-          });
-        }
-      }
-    }
-    
-    // Step 3: Options Page (/registration/*/options) - Fill add-ons
-    currentUrl = page.url();
-    await supabase.from("plan_logs").insert({ 
-      plan_id, 
-      msg: `Worker: Current URL: ${currentUrl}` 
-    });
-    
-    if (currentUrl.match(/\/registration\/.*\/options/)) {
-      // Human-like scroll and delay before handling options
-      await humanizedScroll(page, plan_id, supabase);
-      await humanizedDelay(1000, 2000);
-      
-      // Handle add-ons using the dedicated function (never sets final status)
-      await handleBlackhawkOptions(page, plan, supabase);
-    }
-    
-    // Step 4: Cart Page (/cart) - Click Checkout button
-    currentUrl = page.url();
-    await supabase.from("plan_logs").insert({ 
-      plan_id, 
-      msg: `Worker: Current URL: ${currentUrl}` 
-    });
-    
-    if (currentUrl.includes('/cart')) {
-      await supabase.from("plan_logs").insert({ 
-        plan_id, 
-        msg: "Worker: On cart page" 
-      });
-      
-      // Human-like behavior before checkout
-      await humanizedScroll(page, plan_id, supabase);
-      await humanizedDelay(1500, 3000);
-      
-      const checkoutSelectors = [
-        '#edit-checkout',
-        'button#edit-checkout',
-        'button:has-text("Checkout")'
-      ];
-      
-      const checkoutClicked = await reliableClick(page, checkoutSelectors, plan_id, supabase, "Checkout");
-      if (checkoutClicked) {
-        try {
-          await page.waitForURL(/\/checkout\/.*\/installments/, { timeout: 30000 });
-          // Human-like delay after checkout navigation
-          await humanizedDelay(2000, 4000);
-        } catch (error) {
-          await supabase.from("plan_logs").insert({ 
-            plan_id, 
-            msg: `Worker: Failed to navigate to installments page: ${error.message}` 
-          });
-        }
-      }
-    }
-    
-    // Step 5: Installments Page (/checkout/*/installments) - Select payment method and continue
-    currentUrl = page.url();
-    await supabase.from("plan_logs").insert({ 
-      plan_id, 
-      msg: `Worker: Current URL: ${currentUrl}` 
-    });
-    
-    if (currentUrl.match(/\/checkout\/.*\/installments/)) {
-      // Human-like scroll and delay on installments page
-      await humanizedScroll(page, plan_id, supabase);
-      await humanizedDelay(1000, 2000);
-      
-      // Ensure saved card is selected (default to first radio if none) 
-      try {
-        const savedCardRadio = await scrollUntilVisible(page, 'input[type="radio"]', 15);
-        const isChecked = await savedCardRadio.isChecked();
-        if (!isChecked) {
-          // Human-like mouse movement before clicking radio
-          await humanizedMouseMove(page, savedCardRadio);
-          await humanizedDelay(100, 300);
-          await savedCardRadio.click();
-        }
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: "Worker: Payment method selected with human-like behavior" 
-        });
-      } catch (error) {
-        // No radio buttons found - continue with default selection
-        await supabase.from("plan_logs").insert({ 
-          plan_id, 
-          msg: "Worker: No payment method radio buttons found, continuing with defaults" 
-        });
-      }
-      
-      const continueSelectors = [
-        '#edit-actions-next',
-        'button#edit-actions-next',
-        'button:has-text("Continue to Review")'
-      ];
-      
-      const continueClicked = await reliableClick(page, continueSelectors, plan_id, supabase, "Continue to Review");
-      if (continueClicked) {
-        try {
-          await page.waitForURL(/\/checkout\/.*\/review/, { timeout: 30000 });
-          // Human-like delay after navigation to review
-          await humanizedDelay(2000, 4000);
-        } catch (error) {
-          await supabase.from("plan_logs").insert({ 
-            plan_id, 
-            msg: `Worker: Failed to navigate to review page: ${error.message}` 
-          });
-        }
-      }
-    }
-    
-    // Step 6: Review Page (/checkout/*/review) - Complete purchase
-    currentUrl = page.url();
-    await supabase.from("plan_logs").insert({ 
-      plan_id, 
-      msg: `Worker: Current URL: ${currentUrl}` 
-    });
-    
-    if (currentUrl.match(/\/checkout\/.*\/review/)) {
-      // Human-like scroll and delay on review page
-      await humanizedScroll(page, plan_id, supabase);
-      await humanizedDelay(1500, 3000);
-      
-      // Fill CVV if available and field exists
-      if (credentials.cvv) {
-        const cvvSelectors = [
-          'input[name*="cvv"]', 'input[id*="cvv"]', 'input[name*="security"]',
-          'input[id*="security"]', 'input[placeholder*="CVV"]', 'input[name*="cvc"]'
-        ];
-        
-        let cvvFilled = false;
-        for (const selector of cvvSelectors) {
-          try {
-            const cvvField = await scrollUntilVisible(page, selector, 15);
-            
-            // Human-like CVV typing with per-character delays
-            await humanizedType(cvvField, String(credentials.cvv));
-            
-            await supabase.from("plan_logs").insert({ 
-              plan_id, 
-              msg: "Worker: CVV entered with human-like typing" 
-            });
-            cvvFilled = true;
-            break;
-          } catch (error) {
-            // Continue to next selector
-            console.log(`CVV selector ${selector} failed: ${error.message}`);
-          }
-        }
-        
-        if (!cvvFilled) {
-          await supabase.from("plan_logs").insert({ 
-            plan_id, 
-            msg: "Worker: CVV field not found, continuing without CVV" 
-          });
-        }
-      }
-      
-      // Human-like delay before final payment
-      await humanizedDelay(1000, 2000);
-      
-      const paySelectors = [
-        'button:has-text("Pay and complete purchase")'
-      ];
-      
-      const payClicked = await reliableClick(page, paySelectors, plan_id, supabase, "Pay and complete purchase");
-      if (payClicked) {
-        // Wait for completion and detect success
-        try {
-          await Promise.race([
-            page.waitForURL(/\/checkout\/.*\/complete/, { timeout: 30000 }),
-            page.waitForSelector('text=/Thank you|Registration complete|successfully registered/i', { timeout: 30000 })
-          ]);
-          
-          const finalUrl = page.url();
-          const finalContent = await page.content().catch(() => '');
-          
-          await supabase.from("plan_logs").insert({ 
-            plan_id, 
-            msg: `Worker: After payment - URL: ${finalUrl}` 
-          });
-          
-          // Check for success indicators
-          const hasSuccessUrl = finalUrl.match(/\/checkout\/.*\/complete/) || 
-                               finalUrl.includes('/complete') || 
-                               finalUrl.includes('/thank-you') || 
-                               finalUrl.includes('/success');
-          
-          const hasSuccessText = /(Thank you|Registration complete|successfully registered)/i.test(finalContent);
-          
-          if (hasSuccessUrl || hasSuccessText) {
-            await supabase.from("plan_logs").insert({ 
-              plan_id, 
-              msg: "Worker: Signup confirmed" 
-            });
-            
-            // Update plan status to completed - only executeSignup decides final success/failure
-            await supabase
-              .from('plans')
-              .update({ 
-                status: 'completed',
-                completed_at: new Date().toISOString()
-              })
-              .eq('id', plan_id);
-            
-            return { 
-              success: true, 
-              requiresAction: false,
-              details: { message: 'Signup completed successfully' }
-            };
-          } else {
-            // Success not detected
-            await supabase.from("plan_logs").insert({ 
-              plan_id, 
-              msg: "Worker: Signup may not have completed, manual check required" 
-            });
-            
-            // Update plan status to action_required
-            await supabase
-              .from('plans')
-              .update({ status: 'action_required' })
-              .eq('id', plan_id);
-            
-            return { 
-              success: true, 
-              requiresAction: true,
-              details: { message: 'Signup may not have completed, manual check required' }
-            };
-          }
-        } catch (error) {
-          await supabase.from("plan_logs").insert({ 
-            plan_id, 
-            msg: `Worker: Payment confirmation timeout: ${error.message}` 
-          });
-          
-          // Update plan status to action_required
-          await supabase
-            .from('plans')
-            .update({ status: 'action_required' })
-            .eq('id', plan_id);
-          
-          return { 
-            success: true, 
-            requiresAction: true,
-            details: { message: 'Payment confirmation timeout, manual check required' }
-          };
-        }
-      }
-    }
-    
-    // If we reach here without completing, mark as action required
-    await supabase.from("plan_logs").insert({ 
-      plan_id, 
-      msg: "Worker: Signup may not have completed, manual check required" 
-    });
-    
-    await supabase
-      .from('plans')
-      .update({ status: 'action_required' })
-      .eq('id', plan_id);
-    
-    return { 
-      success: true, 
-      requiresAction: true,
-      details: { message: 'Signup flow incomplete, manual check required' }
-    };
-    
-  } catch (error) {
-    await supabase.from("plan_logs").insert({ 
-      plan_id, 
-      msg: `Worker: Signup execution error: ${error.message}` 
-    });
-    
-    return { 
-      success: false, 
-      error: `Signup execution failed: ${error.message}`,
-      code: 'SIGNUP_EXECUTION_ERROR'
-    };
-  }
-}
-
-// Hold-open mode: keep browser positioned on target page until open_time
-async function holdOpenOnTargetPage(page, plan, supabase, openTime) {
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const jitter = (a,b) => a + Math.random()*(b-a);
-  
-  try {
-    // Navigate to registration/events page
-    const base = plan.base_url ? new URL(plan.base_url).origin :
+    const base = plan.base_url || 
       `https://${(plan.org||'').toLowerCase().replace(/[^a-z0-9]/g,'')}.skiclubpro.team`;
     
     const registrationUrl = `${base}/registration`;
     await page.goto(registrationUrl, { waitUntil: 'networkidle' });
     
     await supabase.from('plan_logs').insert({ 
-      plan_id: plan.id, 
-      msg: `Worker: Holding on target row until open (${openTime.toISOString()})` 
+      plan_id, 
+      msg: `Worker: Advanced hold-open mode until ${openTime.toISOString()}` 
     });
 
-    // Try to locate target program/row
+    // Advanced target location with sophisticated interaction
     const targetText = `${plan.preferred_class_name||''} ${plan.preferred||''}`.trim();
     let targetElement = null;
     
@@ -2416,22 +1871,25 @@ async function holdOpenOnTargetPage(page, plan, supabase, openTime) {
         targetElement = page.locator(`text=${targetText}`).first();
         if (await targetElement.count()) {
           await targetElement.scrollIntoViewIfNeeded();
+          await advancedSimulateMouseMovement(page, targetElement);
           await supabase.from('plan_logs').insert({ 
-            plan_id: plan.id, 
-            msg: 'Worker: Located target program row' 
+            plan_id, 
+            msg: 'Worker: Target program located and positioned' 
           });
         }
       } catch (e) {
         await supabase.from('plan_logs').insert({ 
-          plan_id: plan.id, 
-          msg: `Worker: Could not locate target row: ${e.message}` 
+          plan_id, 
+          msg: `Worker: Target location error: ${e.message}` 
         });
       }
     }
 
-    // Hold open with periodic movement until open time
+    // Advanced hold-open with realistic behavior patterns
     let lastLogTime = Date.now();
     const LOG_INTERVAL = 60 * 1000; // Log every minute
+    let lastMajorActivity = Date.now();
+    const MAJOR_ACTIVITY_INTERVAL = 5 * 60 * 1000; // Major activity every 5 minutes
     
     while (new Date() < openTime) {
       const now = Date.now();
@@ -2441,8 +1899,8 @@ async function holdOpenOnTargetPage(page, plan, supabase, openTime) {
       if (now - lastLogTime >= LOG_INTERVAL) {
         const minutesRemaining = Math.ceil(timeUntilOpen / (1000 * 60));
         await supabase.from('plan_logs').insert({ 
-          plan_id: plan.id, 
-          msg: `Worker: Holding open (${minutesRemaining}m remaining)` 
+          plan_id, 
+          msg: `Worker: Advanced hold-open (${minutesRemaining}m remaining)` 
         });
         lastLogTime = now;
       }
@@ -2450,43 +1908,423 @@ async function holdOpenOnTargetPage(page, plan, supabase, openTime) {
       // Stop holding 30 seconds before open time
       if (timeUntilOpen <= 30 * 1000) {
         await supabase.from('plan_logs').insert({ 
-          plan_id: plan.id, 
-          msg: 'Worker: Hold-open complete - ready for execution' 
+          plan_id, 
+          msg: 'Worker: ✅ Advanced hold-open complete - ready for execution' 
         });
         break;
       }
       
-      // Small scroll every 30-60 seconds
-      const scrollAmount = Math.random() > 0.5 ? 50 : -50;
-      await page.mouse.wheel(0, scrollAmount);
+      // Major activity every 5 minutes (page refresh, navigation)
+      if (now - lastMajorActivity >= MAJOR_ACTIVITY_INTERVAL) {
+        await advancedMajorActivity(page, plan, supabase);
+        lastMajorActivity = now;
+      } else {
+        // Regular micro-activities
+        await advancedHoldOpenMicroActivity(page, targetElement);
+      }
       
-      // Micro mouse moves
-      const currentPos = await page.mouse.position || { x: 200, y: 300 };
-      const newX = currentPos.x + jitter(-20, 20);
-      const newY = currentPos.y + jitter(-20, 20);
-      await page.mouse.move(newX, newY, { steps: 3 });
-      
-      // Wait 30-60 seconds before next movement
-      await sleep(jitter(30000, 60000));
+      // Randomized wait between activities
+      await new Promise(resolve => setTimeout(resolve, getWeightedRandomDelay(45000, 90000)));
     }
-    
-    // At this point, we're very close to open time
-    // The regular scheduler will call /run-plan which will find we're already logged in
-    await supabase.from('plan_logs').insert({ 
-      plan_id: plan.id, 
-      msg: 'Worker: Hold-open mode complete - browser positioned and ready' 
-    });
     
   } catch (error) {
     await supabase.from('plan_logs').insert({ 
-      plan_id: plan.id, 
-      msg: `Worker: Hold-open error: ${error.message}` 
+      plan_id, 
+      msg: `Worker: Advanced hold-open error: ${error.message}` 
     });
+  }
+}
+
+// Advanced major activity during hold-open
+async function advancedMajorActivity(page, plan, supabase) {
+  const activities = [
+    async () => {
+      // Refresh page and relocate target
+      await page.reload({ waitUntil: 'networkidle' });
+      await advancedHumanizedDelay(getWeightedRandomDelay(3000, 6000));
+    },
+    async () => {
+      // Navigate away and return
+      const baseUrl = new URL(page.url()).origin;
+      await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+      await advancedHumanizedDelay(getWeightedRandomDelay(5000, 10000));
+      await page.goBack();
+      await advancedHumanizedDelay(getWeightedRandomDelay(3000, 6000));
+    },
+    async () => {
+      // Extended exploration
+      await advancedContentExploration(page, plan, supabase);
+    }
+  ];
+  
+  const activity = activities[Math.floor(Math.random() * activities.length)];
+  await activity();
+}
+
+// Advanced micro-activity during hold-open
+async function advancedHoldOpenMicroActivity(page, targetElement) {
+  const activities = [
+    async () => {
+      // Sophisticated scrolling
+      const scrollDirection = Math.random() > 0.7 ? -1 : 1;
+      const scrollAmount = getWeightedRandomDelay(30, 80) * scrollDirection;
+      await page.mouse.wheel(0, scrollAmount);
+    },
+    async () => {
+      // Advanced mouse movement
+      if (targetElement && Math.random() < 0.4) {
+        await advancedSimulateMouseMovement(page, targetElement);
+      } else {
+        await advancedSimulateMouseMovement(page);
+      }
+    },
+    async () => {
+      // Keyboard activity simulation
+      const keys = ['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp'];
+      const key = keys[Math.floor(Math.random() * keys.length)];
+      if (Math.random() < 0.3) {
+        await page.keyboard.press(key);
+      }
+    }
+  ];
+  
+  const activity = activities[Math.floor(Math.random() * activities.length)];
+  await activity();
+}
+
+// ===== EXISTING SIGNUP EXECUTION FUNCTIONS =====
+
+async function executeSignup(page, plan, credentials, nordicColorGroup, nordicRental, volunteer, allowNoCvv, supabase) {
+  const plan_id = plan.id;
+  
+  try {
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: "Worker: Starting signup execution with advanced anti-bot measures"
+    });
+
+    // Navigate to registration page
+    const baseUrl = plan.base_url || `https://${(plan.org||'').toLowerCase().replace(/[^a-z0-9]/g,'')}.skiclubpro.team`;
+    const registrationUrl = `${baseUrl}/registration`;
+    
+    await page.goto(registrationUrl, { waitUntil: 'domcontentloaded' });
+    await advancedHumanizedDelay(getWeightedRandomDelay(2000, 4000));
+
+    // Look for the target program
+    const targetText = `${plan.preferred_class_name||''} ${plan.preferred||''}`.trim();
+    
+    if (targetText) {
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: Looking for target program: "${targetText}"`
+      });
+
+      // Try to find and click register button for target program
+      const registerButtons = await page.locator(REGISTER_SELECTORS.join(', ')).all();
+      
+      for (const button of registerButtons) {
+        try {
+          const buttonText = await button.textContent();
+          const nearbyText = await button.locator('xpath=../..').textContent();
+          
+          if (nearbyText && nearbyText.includes(targetText)) {
+            await supabase.from('plan_logs').insert({
+              plan_id,
+              msg: `Worker: Found target program, clicking register button`
+            });
+            
+            await advancedSimulateMouseMovement(page, button);
+            await advancedHumanizedDelay(getWeightedRandomDelay(1000, 2000));
+            await button.click();
+            
+            // Wait for form to load
+            await advancedHumanizedDelay(getWeightedRandomDelay(3000, 5000));
+            
+            // Fill out registration form
+            const formResult = await fillRegistrationForm(page, plan, credentials, nordicColorGroup, nordicRental, volunteer, allowNoCvv, supabase);
+            
+            return formResult;
+          }
+        } catch (e) {
+          // Continue to next button
+        }
+      }
+      
+      return {
+        success: false,
+        message: `Target program "${targetText}" not found or not available for registration`
+      };
+    }
+    
+    return {
+      success: false,
+      message: "No target program specified"
+    };
+
+  } catch (error) {
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: Signup execution error: ${error.message}`
+    });
+    
+    return {
+      success: false,
+      message: `Signup execution failed: ${error.message}`
+    };
+  }
+}
+
+async function fillRegistrationForm(page, plan, credentials, nordicColorGroup, nordicRental, volunteer, allowNoCvv, supabase) {
+  const plan_id = plan.id;
+  
+  try {
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: "Worker: Filling registration form with human-like behavior"
+    });
+
+    // Advanced form field detection and filling
+    const formFields = {
+      'input[name*="first_name"], input[id*="first"], input[placeholder*="first" i]': plan.child_name?.split(' ')[0] || '',
+      'input[name*="last_name"], input[id*="last"], input[placeholder*="last" i]': plan.child_name?.split(' ').slice(1).join(' ') || '',
+      'input[name*="email"], input[type="email"]': credentials.email,
+      'input[name*="phone"], input[type="tel"]': plan.phone || '',
+      'select[name*="grade"], select[id*="grade"]': plan.grade || '',
+      'textarea[name*="emergency"], textarea[id*="emergency"]': plan.emergency_contact || ''
+    };
+
+    for (const [selector, value] of Object.entries(formFields)) {
+      if (value) {
+        try {
+          const field = page.locator(selector).first();
+          if (await field.isVisible()) {
+            await advancedSimulateMouseMovement(page, field);
+            await field.click();
+            await advancedHumanizedDelay(getWeightedRandomDelay(500, 1500));
+            
+            if (selector.includes('select')) {
+              await field.selectOption({ label: value });
+            } else {
+              await field.clear();
+              await advancedHumanizedType(page, field, value);
+            }
+            
+            await advancedHumanizedDelay(getWeightedRandomDelay(500, 1000));
+          }
+        } catch (e) {
+          // Continue with next field
+        }
+      }
+    }
+
+    // Handle special options (Nordic rental, color group, volunteer)
+    if (nordicRental !== null) {
+      await handleNordicRental(page, nordicRental, supabase, plan_id);
+    }
+    
+    if (nordicColorGroup !== null) {
+      await handleNordicColorGroup(page, nordicColorGroup, supabase, plan_id);
+    }
+    
+    if (volunteer !== null) {
+      await handleVolunteerOption(page, volunteer, supabase, plan_id);
+    }
+
+    // Handle payment information
+    if (credentials.cvv || allowNoCvv) {
+      await handlePaymentInfo(page, credentials, allowNoCvv, supabase, plan_id);
+    }
+
+    // Submit form
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: "Worker: Submitting registration form"
+    });
+
+    const submitButton = page.locator('input[type="submit"], button[type="submit"], button:has-text("Submit"), button:has-text("Register")').first();
+    
+    if (await submitButton.isVisible()) {
+      await advancedSimulateMouseMovement(page, submitButton);
+      await advancedHumanizedDelay(getWeightedRandomDelay(1000, 3000));
+      await submitButton.click();
+      
+      // Wait for submission result
+      await advancedHumanizedDelay(getWeightedRandomDelay(5000, 8000));
+      
+      // Check for success or errors
+      const currentUrl = page.url();
+      const content = await page.content();
+      
+      if (currentUrl.includes('success') || content.includes('successfully registered') || content.includes('registration complete')) {
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: "Worker: ✅ Registration completed successfully"
+        });
+        
+        return { success: true, message: "Registration completed successfully" };
+      } else if (content.includes('error') || content.includes('failed') || content.includes('invalid')) {
+        const errorMsg = "Registration failed - please check form data";
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Registration failed: ${errorMsg}`
+        });
+        
+        return { success: false, message: errorMsg };
+      } else {
+        // Ambiguous result - may require manual verification
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: "Worker: Registration submitted - manual verification may be required"
+        });
+        
+        return { 
+          success: false, 
+          requiresAction: true, 
+          message: "Registration submitted but requires manual verification" 
+        };
+      }
+    } else {
+      return { success: false, message: "Submit button not found" };
+    }
+
+  } catch (error) {
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: Form filling error: ${error.message}`
+    });
+    
+    return { success: false, message: `Form filling failed: ${error.message}` };
+  }
+}
+
+async function handleNordicRental(page, nordicRental, supabase, plan_id) {
+  try {
+    const rentalSelectors = [
+      'input[name*="rental"], input[id*="rental"]',
+      'select[name*="rental"], select[id*="rental"]',
+      'input[value*="rental" i]'
+    ];
+    
+    for (const selector of rentalSelectors) {
+      const element = page.locator(selector).first();
+      if (await element.isVisible()) {
+        if (selector.includes('select')) {
+          await element.selectOption({ label: nordicRental });
+        } else if (selector.includes('input[type="checkbox"]') || selector.includes('input[type="radio"]')) {
+          if (nordicRental.toLowerCase().includes('yes') || nordicRental.toLowerCase().includes('true')) {
+            await element.check();
+          }
+        }
+        break;
+      }
+    }
+  } catch (e) {
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: Nordic rental handling error: ${e.message}`
+    });
+  }
+}
+
+async function handleNordicColorGroup(page, nordicColorGroup, supabase, plan_id) {
+  try {
+    const colorSelectors = [
+      'select[name*="color"], select[id*="color"]',
+      'select[name*="group"], select[id*="group"]',
+      'input[name*="color"], input[id*="color"]'
+    ];
+    
+    for (const selector of colorSelectors) {
+      const element = page.locator(selector).first();
+      if (await element.isVisible()) {
+        if (selector.includes('select')) {
+          await element.selectOption({ label: nordicColorGroup });
+        } else {
+          await element.fill(nordicColorGroup);
+        }
+        break;
+      }
+    }
+  } catch (e) {
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: Nordic color group handling error: ${e.message}`
+    });
+  }
+}
+
+async function handleVolunteerOption(page, volunteer, supabase, plan_id) {
+  try {
+    const volunteerSelectors = [
+      'input[name*="volunteer"], input[id*="volunteer"]',
+      'select[name*="volunteer"], select[id*="volunteer"]',
+      'input[value*="volunteer" i]'
+    ];
+    
+    for (const selector of volunteerSelectors) {
+      const element = page.locator(selector).first();
+      if (await element.isVisible()) {
+        if (selector.includes('select')) {
+          await element.selectOption({ label: volunteer });
+        } else if (selector.includes('input[type="checkbox"]') || selector.includes('input[type="radio"]')) {
+          if (volunteer.toLowerCase().includes('yes') || volunteer.toLowerCase().includes('true')) {
+            await element.check();
+          }
+        }
+        break;
+      }
+    }
+  } catch (e) {
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: Volunteer option handling error: ${e.message}`
+    });
+  }
+}
+
+async function handlePaymentInfo(page, credentials, allowNoCvv, supabase, plan_id) {
+  try {
+    // Look for CVV field
+    const cvvSelectors = [
+      'input[name*="cvv"], input[id*="cvv"]',
+      'input[name*="security"], input[id*="security"]',
+      'input[placeholder*="cvv" i], input[placeholder*="security" i]'
+    ];
+    
+    for (const selector of cvvSelectors) {
+      const cvvField = page.locator(selector).first();
+      if (await cvvField.isVisible()) {
+        if (credentials.cvv) {
+          await advancedSimulateMouseMovement(page, cvvField);
+          await cvvField.click();
+          await advancedHumanizedDelay(getWeightedRandomDelay(500, 1000));
+          await advancedHumanizedType(page, cvvField, credentials.cvv);
+          
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: "Worker: CVV entered"
+          });
+        } else if (!allowNoCvv) {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: "Worker: CVV required but not provided"
+          });
+          throw new Error("CVV required but not provided");
+        }
+        break;
+      }
+    }
+  } catch (e) {
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: Payment info handling error: ${e.message}`
+    });
+    throw e;
   }
 }
 
 // Start server
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`✅ Worker listening on 0.0.0.0:${PORT}`);
+  console.log(`✅ Worker listening on 0.0.0.0:${PORT} with enhanced infrastructure and advanced anti-bot measures`);
 });
