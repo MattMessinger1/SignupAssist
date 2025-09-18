@@ -2,7 +2,7 @@ console.log("🚀 Worker starting up...");
 import express from "express";
 import { createClient } from "@supabase/supabase-js";
 import { chromium } from "playwright-core";
-import { scrollUntilVisible } from "../supabase/functions/_shared/playwright-helpers.js";
+import { scrollUntilVisible } from "../supabase/functions/_shared/playwright-helpers.ts";
 
 // ===== INFRASTRUCTURE: PROCESS ERROR HANDLERS =====
 // Prevent silent crashes that cause 502 errors
