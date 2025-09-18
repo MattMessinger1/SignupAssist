@@ -4,9 +4,10 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, ExternalLink, DollarSign, Calendar, Target, Clock, X } from "lucide-react";
+import { ArrowLeft, ExternalLink, DollarSign, Calendar, Target, Clock, X, Edit } from "lucide-react";
 import Header from "@/components/Header";
 import LiveLog from "@/components/LiveLog";
+import EditPlanModal from "@/components/EditPlanModal";
 import { useToast } from "@/hooks/use-toast";
 import { runPlan } from "@/lib/api";
 
@@ -29,6 +30,7 @@ export default function PlanDetail() {
   const { planId } = useParams<{ planId: string }>();
   const [plan, setPlan] = useState<Plan | null>(null);
   const [loading, setLoading] = useState(true);
+  const [editingPlan, setEditingPlan] = useState<Plan | null>(null);
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -287,6 +289,15 @@ export default function PlanDetail() {
                   {plan.status === 'scheduled' && (
                     <>
                       <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setEditingPlan(plan)}
+                        className="ml-2"
+                      >
+                        <Edit className="h-4 w-4 mr-1" />
+                        Edit Plan
+                      </Button>
+                      <Button
                         variant="destructive"
                         size="sm"
                         onClick={cancelPlan}
@@ -415,6 +426,15 @@ export default function PlanDetail() {
             <LiveLog planId={plan.id} />
           </CardContent>
         </Card>
+
+        {editingPlan && (
+          <EditPlanModal
+            plan={editingPlan}
+            open={!!editingPlan}
+            onClose={() => setEditingPlan(null)}
+            onSuccess={loadPlan}
+          />
+        )}
       </div>
     </div>
   );

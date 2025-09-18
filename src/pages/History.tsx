@@ -4,8 +4,9 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Clock, Calendar, Target, DollarSign, X } from "lucide-react";
+import { Clock, Calendar, Target, DollarSign, X, Edit } from "lucide-react";
 import Header from "@/components/Header";
+import EditPlanModal from "@/components/EditPlanModal";
 import { useToast } from "@/hooks/use-toast";
 
 interface Plan {
@@ -17,11 +18,16 @@ interface Plan {
   status: string;
   paid: boolean;
   created_at: string;
+  base_url: string;
+  child_name: string;
+  phone?: string;
+  extras?: any;
 }
 
 export default function History() {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [loading, setLoading] = useState(true);
+  const [editingPlan, setEditingPlan] = useState<Plan | null>(null);
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -39,7 +45,7 @@ export default function History() {
 
       const { data, error } = await supabase
         .from('plans')
-        .select('id, org, preferred, alternate, open_time, status, paid, created_at')
+        .select('*')
         .eq('user_id', user.id)
         .order('created_at', { ascending: false });
 
@@ -210,15 +216,27 @@ export default function History() {
                         </Badge>
                       )}
                       {plan.status === 'scheduled' && (
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          onClick={(e) => cancelPlan(plan.id, e)}
-                          className="ml-2"
-                        >
-                          <X className="h-4 w-4 mr-1" />
-                          Cancel
-                        </Button>
+                        <div className="flex gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingPlan(plan);
+                            }}
+                          >
+                            <Edit className="h-4 w-4 mr-1" />
+                            Edit
+                          </Button>
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            onClick={(e) => cancelPlan(plan.id, e)}
+                          >
+                            <X className="h-4 w-4 mr-1" />
+                            Cancel
+                          </Button>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -250,6 +268,15 @@ export default function History() {
               </Card>
             ))}
           </div>
+        )}
+
+        {editingPlan && (
+          <EditPlanModal
+            plan={editingPlan}
+            open={!!editingPlan}
+            onClose={() => setEditingPlan(null)}
+            onSuccess={loadPlans}
+          />
         )}
       </div>
     </div>
