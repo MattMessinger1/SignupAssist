@@ -449,18 +449,34 @@ app.post("/run-plan", async (req, res) => {
         const subdomain = (plan.org || "").toLowerCase().replace(/[^a-z0-9]/g, "");
         normalizedBaseUrl = `https://${subdomain}.skiclubpro.team`;
       }
+
+      // Restore session state before attempting login
+      await restoreSessionState(page, plan, supabase);
       
-      const loginUrl = `${normalizedBaseUrl}/user/login`;
-      console.log(`Worker: Normalized login URL = ${loginUrl}`);
+      // Navigate to base origin and check if already logged in
+      await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Checking login status..." });
+      await page.goto(normalizedBaseUrl, { waitUntil: 'domcontentloaded' });
       
-      // Perform login with Playwright
-      await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Navigating to login: ${loginUrl}` });
-      const loginResult = await loginWithPlaywright(page, loginUrl, credentials.email, credentials.password);
-      if (!loginResult.success) {
-        await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Login failed: ${loginResult.error}` });
-        return res.status(400).json({ ok:false, code:"LOGIN_FAILED", msg: loginResult.error });
+      const content = (await page.content()).toLowerCase();
+      const url = page.url();
+      const loggedIn = url.includes('dashboard') || content.includes('logout') || content.includes('sign out');
+      
+      if (loggedIn) {
+        await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Already logged in (restored session)' });
+      } else {
+        // Proceed with existing login flow
+        const loginUrl = `${normalizedBaseUrl}/user/login`;
+        console.log(`Worker: Normalized login URL = ${loginUrl}`);
+        
+        // Perform login with Playwright
+        await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Navigating to login: ${loginUrl}` });
+        const loginResult = await loginWithPlaywright(page, loginUrl, credentials.email, credentials.password);
+        if (!loginResult.success) {
+          await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Login failed: ${loginResult.error}` });
+          return res.status(400).json({ ok:false, code:"LOGIN_FAILED", msg: loginResult.error });
+        }
+        await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Login successful" });
       }
-      await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Login successful" });
 
       //// ===== PAYMENT READINESS GATE =====
       await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Checking payment readiness…' });
