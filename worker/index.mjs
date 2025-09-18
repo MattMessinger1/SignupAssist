@@ -2090,10 +2090,43 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
         
         // Deterministic waits
         await page.waitForLoadState("networkidle", { timeout: 15000 });
-        await page.waitForSelector(".views-row, tr", { timeout: 15000 });
+        
+        // Try multiple selector patterns for rows
+        const rowSelectors = [".views-row", "tr", ".row", ".program-row", ".event-row", "tbody tr"];
+        let foundRows = false;
+        
+        for (const selector of rowSelectors) {
+          try {
+            await page.waitForSelector(selector, { timeout: 5000 });
+            foundRows = true;
+            await supabase.from('plan_logs').insert({
+              plan_id,
+              msg: `Worker: Found rows using selector: ${selector}`
+            });
+            break;
+          } catch (e) {
+            continue;
+          }
+        }
+        
+        if (!foundRows) {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: No standard row selectors found on ${regUrl}, proceeding anyway`
+          });
+        }
         
         // Get first 10 row texts for logging
-        const rows = await page.locator('.views-row, tr').all();
+        let rows = [];
+        for (const selector of rowSelectors) {
+          try {
+            rows = await page.locator(selector).all();
+            if (rows.length > 0) break;
+          } catch (e) {
+            continue;
+          }
+        }
+        
         const rowTexts = [];
         for (let i = 0; i < Math.min(10, rows.length); i++) {
           try {
@@ -2114,9 +2147,22 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
         let selectorUsed = null;
         
         try {
-          targetRow = page.locator(`text=${targetText}`).first().locator("xpath=ancestor::tr[1]");
-          if (!(await targetRow.isVisible())) {
-            targetRow = page.locator(`text=${targetText}`).first().locator("xpath=ancestor::.views-row[1]");
+          // Try multiple ancestor patterns for different row types
+          const ancestorPatterns = ["tr[1]", ".views-row[1]", ".row[1]", ".program-row[1]", ".event-row[1]"];
+          
+          for (const pattern of ancestorPatterns) {
+            try {
+              targetRow = page.locator(`text=${targetText}`).first().locator(`xpath=ancestor::${pattern}`);
+              if (await targetRow.isVisible()) {
+                await supabase.from('plan_logs').insert({
+                  plan_id,
+                  msg: `Worker: Found target row using ancestor pattern: ${pattern}`
+                });
+                break;
+              }
+            } catch (e) {
+              continue;
+            }
           }
         } catch (e) {
           // Try partial match fallback
