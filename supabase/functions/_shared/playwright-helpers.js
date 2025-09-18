@@ -8,7 +8,7 @@
  * @returns The visible element
  * @throws Error if element not found or not visible after maxScrolls
  */
-export async function scrollUntilVisible(page: any, selector: string, maxScrolls = 20) {
+export async function scrollUntilVisible(page, selector, maxScrolls = 20) {
   for (let i = 0; i < maxScrolls; i++) {
     const element = page.locator(selector).first();
     if (await element.count()) {
