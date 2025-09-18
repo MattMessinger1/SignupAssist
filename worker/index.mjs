@@ -2012,6 +2012,238 @@ async function advancedHoldOpenMicroActivity(page, targetElement) {
   await activity();
 }
 
+// ===== BLACKHAWK PROGRAM DISCOVERY =====
+
+async function discoverBlackhawkRegistration(page, plan, supabase) {
+  const plan_id = plan.id;
+  
+  try {
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: "Worker: Starting Blackhawk program discovery"
+    });
+
+    const baseUrl = plan.base_url || `https://${(plan.org||'').toLowerCase().replace(/[^a-z0-9]/g,'')}.skiclubpro.team`;
+    const registrationPages = [`${baseUrl}/registration`, `${baseUrl}/registration/events`];
+    
+    // Build target text from plan details
+    let targetText = '';
+    if (plan.preferred_class_name && plan.preferred) {
+      targetText = `${plan.preferred_class_name} ${plan.preferred}`;
+    } else if (plan.preferred_class_name) {
+      targetText = plan.preferred_class_name;
+    } else if (plan.preferred) {
+      targetText = plan.preferred;
+    }
+    
+    // Deduplicate accidental repeats (e.g. "Wednesday Wednesday")
+    if (targetText) {
+      const words = targetText.split(/\s+/);
+      const uniqueWords = words.filter((word, index) => 
+        words.indexOf(word.toLowerCase()) === words.findIndex(w => w.toLowerCase() === word.toLowerCase())
+      );
+      targetText = uniqueWords.join(' ');
+    }
+    
+    // Fallback to default
+    if (!targetText) {
+      targetText = "Nordic Kids Wednesday";
+    }
+    
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: Target text constructed: "${targetText}"`
+    });
+
+    // Try each registration page
+    for (const regUrl of registrationPages) {
+      try {
+        await page.goto(regUrl, { waitUntil: 'networkidle', timeout: 15000 });
+        
+        // Deterministic waits
+        await page.waitForLoadState("networkidle", { timeout: 15000 });
+        await page.waitForSelector(".views-row, tr", { timeout: 15000 });
+        
+        // Get first 10 row texts for logging
+        const rows = await page.locator('.views-row, tr').all();
+        const rowTexts = [];
+        for (let i = 0; i < Math.min(10, rows.length); i++) {
+          try {
+            const text = await rows[i].innerText();
+            rowTexts.push(`Row ${i+1}: ${text.substring(0, 100)}...`);
+          } catch (e) {
+            rowTexts.push(`Row ${i+1}: Error reading`);
+          }
+        }
+        
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Found ${rows.length} rows on ${regUrl}:\n${rowTexts.join('\n')}`
+        });
+        
+        // Scoped row search - exact match first
+        let targetRow = null;
+        let selectorUsed = null;
+        
+        try {
+          targetRow = page.locator(`text=${targetText}`).first().locator("xpath=ancestor::tr[1]");
+          if (!(await targetRow.isVisible())) {
+            targetRow = page.locator(`text=${targetText}`).first().locator("xpath=ancestor::.views-row[1]");
+          }
+        } catch (e) {
+          // Try partial match fallback
+        }
+        
+        // Try to click register button within the target row
+        if (targetRow) {
+          try {
+            for (const selector of REGISTER_SELECTORS) {
+              try {
+                const button = targetRow.locator(selector).first();
+                if (await button.isVisible()) {
+                  await button.scrollIntoViewIfNeeded();
+                  await page.waitForTimeout(1000);
+                  await button.click();
+                  selectorUsed = selector;
+                  
+                  await supabase.from('plan_logs').insert({
+                    plan_id,
+                    msg: `Worker: Clicked exact match using selector: ${selector}`
+                  });
+                  break;
+                }
+              } catch (e) {
+                continue;
+              }
+            }
+          } catch (e) {
+            // Continue to fallbacks
+          }
+        }
+        
+        // Fallback 1: Partial match with "Nordic Kids"
+        if (!selectorUsed) {
+          try {
+            const partialRow = page.locator('text=/Nordic Kids/i').first().locator("xpath=ancestor::tr[1]");
+            if (await partialRow.isVisible()) {
+              for (const selector of REGISTER_SELECTORS) {
+                try {
+                  const button = partialRow.locator(selector).first();
+                  if (await button.isVisible()) {
+                    await button.scrollIntoViewIfNeeded();
+                    await page.waitForTimeout(1000);
+                    await button.click();
+                    selectorUsed = selector;
+                    
+                    await supabase.from('plan_logs').insert({
+                      plan_id,
+                      msg: `Worker: Clicked partial match (Nordic Kids) using selector: ${selector}`
+                    });
+                    break;
+                  }
+                } catch (e) {
+                  continue;
+                }
+              }
+            }
+          } catch (e) {
+            // Continue to global fallback
+          }
+        }
+        
+        // Fallback 2: Global click attempt
+        if (!selectorUsed) {
+          for (const selector of REGISTER_SELECTORS) {
+            try {
+              const button = page.locator(selector).first();
+              if (await button.isVisible()) {
+                await button.scrollIntoViewIfNeeded();
+                await page.waitForTimeout(1000);
+                await button.click();
+                selectorUsed = selector;
+                
+                await supabase.from('plan_logs').insert({
+                  plan_id,
+                  msg: `Worker: Clicked global fallback using selector: ${selector}`
+                });
+                break;
+              }
+            } catch (e) {
+              continue;
+            }
+          }
+        }
+        
+        // Check if click was successful
+        if (selectorUsed) {
+          // Wait for URL to change to /registration/*/start
+          try {
+            await page.waitForURL(/\/registration\/.*\/start/, { timeout: 10000 });
+            const startUrl = page.url();
+            
+            await supabase.from('plan_logs').insert({
+              plan_id,
+              msg: `Worker: Successfully navigated to registration start: ${startUrl}`
+            });
+            
+            return { success: true, startUrl: startUrl };
+            
+          } catch (e) {
+            // Check if we're on a registration form page
+            await page.waitForLoadState('networkidle', { timeout: 5000 });
+            const currentUrl = page.url();
+            
+            if (currentUrl.includes('registration') && !currentUrl.includes('/events')) {
+              return { success: true, startUrl: currentUrl };
+            }
+          }
+        }
+        
+      } catch (pageError) {
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Error on page ${regUrl}: ${pageError.message}`
+        });
+      }
+    }
+    
+    // If we get here, all attempts failed
+    const lastRows = await page.locator('.views-row, tr').all();
+    const lastRowTexts = [];
+    for (let i = 0; i < Math.min(5, lastRows.length); i++) {
+      try {
+        const text = await lastRows[i].innerText();
+        lastRowTexts.push(text.substring(0, 100));
+      } catch (e) {
+        lastRowTexts.push("Error reading row");
+      }
+    }
+    
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `BLACKHAWK_DISCOVERY_FAILED - Last 5 rows:\n${lastRowTexts.join('\n')}`
+    });
+    
+    return { 
+      success: false, 
+      error: `Target program "${targetText}" not found after trying all registration pages`, 
+      code: "BLACKHAWK_DISCOVERY_FAILED" 
+    };
+    
+  } catch (error) {
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `BLACKHAWK_DISCOVERY_FAILED - Error: ${error.message}`
+    });
+    
+    return { 
+      success: false, 
+      error: error.message, 
+      code: "BLACKHAWK_DISCOVERY_FAILED" 
+    };
+  }
+}
+
 // ===== EXISTING SIGNUP EXECUTION FUNCTIONS =====
 
 async function executeSignup(page, plan, credentials, nordicColorGroup, nordicRental, volunteer, allowNoCvv, supabase) {
