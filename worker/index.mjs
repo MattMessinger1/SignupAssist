@@ -2,6 +2,7 @@ console.log("🚀 Worker starting up...");
 import express from "express";
 import { createClient } from "@supabase/supabase-js";
 import { chromium } from "playwright-core";
+import { scrollUntilVisible } from "../supabase/functions/_shared/playwright-helpers.js";
 
 // ===== INFRASTRUCTURE: PROCESS ERROR HANDLERS =====
 // Prevent silent crashes that cause 502 errors
@@ -2099,18 +2100,32 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
           try {
             for (const selector of REGISTER_SELECTORS) {
               try {
+                // Check if button exists in target row
                 const button = targetRow.locator(selector).first();
-                if (await button.isVisible()) {
-                  await button.scrollIntoViewIfNeeded();
-                  await page.waitForTimeout(1000);
-                  await button.click();
-                  selectorUsed = selector;
-                  
+                if (await button.count() > 0) {
+                  // Log scroll attempt
                   await supabase.from('plan_logs').insert({
                     plan_id,
-                    msg: `Worker: Clicked exact match using selector: ${selector}`
+                    msg: `Worker: Trying to scroll into view for selector ${selector}`
                   });
-                  break;
+                  
+                  // Use helper to scroll until visible and click
+                  try {
+                    const visibleButton = await scrollUntilVisible(page, selector);
+                    await visibleButton.click();
+                    selectorUsed = selector;
+                    
+                    await supabase.from('plan_logs').insert({
+                      plan_id,
+                      msg: `Worker: Clicked exact match using selector: ${selector}`
+                    });
+                    break;
+                  } catch (scrollError) {
+                    await supabase.from('plan_logs').insert({
+                      plan_id,
+                      msg: `Worker: Failed to scroll ${selector}: ${scrollError.message}`
+                    });
+                  }
                 }
               } catch (e) {
                 continue;
@@ -2129,17 +2144,30 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
               for (const selector of REGISTER_SELECTORS) {
                 try {
                   const button = partialRow.locator(selector).first();
-                  if (await button.isVisible()) {
-                    await button.scrollIntoViewIfNeeded();
-                    await page.waitForTimeout(1000);
-                    await button.click();
-                    selectorUsed = selector;
-                    
+                  if (await button.count() > 0) {
+                    // Log scroll attempt
                     await supabase.from('plan_logs').insert({
                       plan_id,
-                      msg: `Worker: Clicked partial match (Nordic Kids) using selector: ${selector}`
+                      msg: `Worker: Trying to scroll into view for selector ${selector} (partial match)`
                     });
-                    break;
+                    
+                    // Use helper to scroll until visible and click
+                    try {
+                      const visibleButton = await scrollUntilVisible(page, selector);
+                      await visibleButton.click();
+                      selectorUsed = selector;
+                      
+                      await supabase.from('plan_logs').insert({
+                        plan_id,
+                        msg: `Worker: Clicked partial match (Nordic Kids) using selector: ${selector}`
+                      });
+                      break;
+                    } catch (scrollError) {
+                      await supabase.from('plan_logs').insert({
+                        plan_id,
+                        msg: `Worker: Failed to scroll ${selector}: ${scrollError.message}`
+                      });
+                    }
                   }
                 } catch (e) {
                   continue;
@@ -2155,11 +2183,16 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
         if (!selectorUsed) {
           for (const selector of REGISTER_SELECTORS) {
             try {
-              const button = page.locator(selector).first();
-              if (await button.isVisible()) {
-                await button.scrollIntoViewIfNeeded();
-                await page.waitForTimeout(1000);
-                await button.click();
+              // Log scroll attempt
+              await supabase.from('plan_logs').insert({
+                plan_id,
+                msg: `Worker: Trying to scroll into view for selector ${selector} (global fallback)`
+              });
+              
+              // Use helper to scroll until visible and click
+              try {
+                const visibleButton = await scrollUntilVisible(page, selector);
+                await visibleButton.click();
                 selectorUsed = selector;
                 
                 await supabase.from('plan_logs').insert({
@@ -2167,9 +2200,17 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
                   msg: `Worker: Clicked global fallback using selector: ${selector}`
                 });
                 break;
+              } catch (scrollError) {
+                await supabase.from('plan_logs').insert({
+                  plan_id,
+                  msg: `Worker: Failed to scroll ${selector}: ${scrollError.message}`
+                });
               }
             } catch (e) {
               continue;
+            }
+          }
+        }
             }
           }
         }
