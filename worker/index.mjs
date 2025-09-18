@@ -2071,26 +2071,42 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
     if (targetText) {
       searchPatterns.push(targetText); // Exact match
       
-      // Add variations (e.g., "Wednesday Nordic Kids" -> ["Nordic Kids Wednesday", "Nordic Kids", "Wednesday"])
+      // Add variations - handle both "Wednesday Nordic Kids" and "Nordic Kids Wednesday"
       const words = targetText.toLowerCase().split(/\s+/);
-      if (words.includes('nordic') && words.includes('kids')) {
+      if (words.includes('nordic') && words.includes('kids') && words.includes('wednesday')) {
         searchPatterns.push('Nordic Kids Wednesday');
         searchPatterns.push('Wednesday Nordic Kids');  
         searchPatterns.push('Nordic Kids');
+        searchPatterns.push('Wednesday Nordic');
+      } else if (words.includes('nordic')) {
+        searchPatterns.push('Nordic');
+        if (words.includes('kids')) searchPatterns.push('Nordic Kids');
+        if (words.includes('wednesday')) searchPatterns.push('Nordic Wednesday');
+      } else if (words.includes('kids')) {
+        searchPatterns.push('Kids');
+        if (words.includes('wednesday')) searchPatterns.push('Kids Wednesday');
       }
+      
       if (words.includes('wednesday')) {
         searchPatterns.push('Wednesday');
       }
+      
+      // Add individual significant words as fallbacks
+      const significantWords = words.filter(w => w.length > 3 && !['class', 'lesson', 'program'].includes(w));
+      searchPatterns.push(...significantWords);
     }
     
-    // Fallback to default
+    // Fallback to default Nordic patterns
     if (searchPatterns.length === 0) {
-      searchPatterns.push("Nordic Kids Wednesday", "Wednesday Nordic Kids", "Nordic Kids");
+      searchPatterns.push("Nordic Kids Wednesday", "Wednesday Nordic Kids", "Nordic Kids", "Nordic", "Wednesday");
     }
+    
+    // Remove duplicates and ensure we have good patterns
+    const uniquePatterns = [...new Set(searchPatterns)].filter(p => p && p.length > 0);
     
     await supabase.from('plan_logs').insert({
       plan_id,
-      msg: `Worker: Target search patterns: [${searchPatterns.map(p => `"${p}"`).join(', ')}]`
+      msg: `Worker: Target search patterns: [${uniquePatterns.map(p => `"${p}"`).join(', ')}]`
     });
 
     // Try each registration page
@@ -2146,19 +2162,107 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
         // Deterministic waits
         await page.waitForLoadState("networkidle", { timeout: 15000 });
         
-        // Try multiple selector patterns for rows (including program-specific ones)
-        const rowSelectors = [".views-row", "tr", ".row", ".program-row", ".event-row", "tbody tr", ".program", ".class", ".lesson"];
-        let foundRows = false;
-        
-        for (const selector of rowSelectors) {
-          try {
-            await page.waitForSelector(selector, { timeout: 5000 });
-            foundRows = true;
+        // COMPREHENSIVE DEBUG: Capture page content for analysis
+        try {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: === DEBUGGING PAGE CONTENT ON ${regUrl} ===`
+          });
+          
+          // Check for Register buttons
+          const allRegisterButtons = await page.locator('button:has-text("Register"), a:has-text("Register"), input[value*="Register" i], [value*="Register" i]').all();
+          const registerButtonTexts = [];
+          for (let i = 0; i < Math.min(10, allRegisterButtons.length); i++) {
+            try {
+              const buttonText = await allRegisterButtons[i].innerText();
+              const isVisible = await allRegisterButtons[i].isVisible();
+              registerButtonTexts.push(`Button ${i+1}: "${buttonText}" (visible: ${isVisible})`);
+            } catch (e) {
+              registerButtonTexts.push(`Button ${i+1}: Error reading`);
+            }
+          }
+          
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: Found ${allRegisterButtons.length} Register buttons:\n${registerButtonTexts.join('\n')}`
+          });
+          
+          // Check for Nordic/Kids/Wednesday content anywhere on page
+          const pageContent = await page.locator('body').textContent();
+          const relevantMatches = [];
+          const searchTerms = ['nordic', 'kids', 'wednesday', 'register', 'program', 'class', 'lesson'];
+          
+          for (const term of searchTerms) {
+            const regex = new RegExp(term, 'gi');
+            const matches = pageContent.match(regex);
+            if (matches) {
+              relevantMatches.push(`"${term}": ${matches.length} matches`);
+            }
+          }
+          
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: Content analysis: ${relevantMatches.join(', ')}`
+          });
+          
+          // Look for specific program text patterns
+          const programPatterns = [/nordic\s+kids/gi, /kids\s+nordic/gi, /wednesday\s+nordic/gi, /nordic\s+wednesday/gi];
+          const foundPatterns = [];
+          
+          for (const pattern of programPatterns) {
+            const matches = pageContent.match(pattern);
+            if (matches) {
+              foundPatterns.push(`${pattern.source}: ${matches.length} matches`);
+            }
+          }
+          
+          if (foundPatterns.length > 0) {
             await supabase.from('plan_logs').insert({
               plan_id,
-              msg: `Worker: Found rows using selector: ${selector}`
+              msg: `Worker: Program pattern matches: ${foundPatterns.join(', ')}`
             });
-            break;
+          }
+          
+        } catch (debugError) {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: Debug content analysis failed: ${debugError.message}`
+          });
+        }
+        
+        // Enhanced row discovery - try comprehensive selectors for program cards/containers
+        const rowSelectors = [
+          // Card-based layouts (most modern ski club sites)
+          ".views-row", ".card", ".program-card", ".event-card", ".registration-card",
+          // Table-based layouts
+          "tr", "tbody tr", ".table-row",
+          // Div-based layouts
+          ".row", ".program-row", ".event-row", ".program", ".class", ".lesson",
+          // Bootstrap/generic containers
+          ".container-fluid > div", ".program-container", ".event-container",
+          // Fallback: any div with Register button
+          "div:has(button:has-text('Register'))", "div:has(a:has-text('Register'))"
+        ];
+        
+        let foundRows = false;
+        let bestSelector = null;
+        let maxRows = 0;
+        
+        // Find the selector that gives us the most rows (likely the program containers)
+        for (const selector of rowSelectors) {
+          try {
+            const count = await page.locator(selector).count();
+            if (count > 0) {
+              foundRows = true;
+              if (count > maxRows) {
+                maxRows = count;
+                bestSelector = selector;
+              }
+              await supabase.from('plan_logs').insert({
+                plan_id,
+                msg: `Worker: Found ${count} elements with selector: ${selector}`
+              });
+            }
           } catch (e) {
             continue;
           }
@@ -2167,49 +2271,83 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
         if (!foundRows) {
           await supabase.from('plan_logs').insert({
             plan_id,
-            msg: `Worker: No standard row selectors found, checking page content`
+            msg: `Worker: No program containers found with standard selectors`
           });
           
-          // Log page content to understand what we're looking at
+          // Log page structure for debugging
           const pageText = await page.locator('body').textContent();
-          const shortText = pageText?.substring(0, 500) || 'No content';
+          const shortText = pageText?.substring(0, 1000) || 'No content';
           await supabase.from('plan_logs').insert({
             plan_id,
-            msg: `Worker: Page content preview: "${shortText}..."`
+            msg: `Worker: Page content for debugging: "${shortText}..."`
           });
+          
+          // Try to find any content with Register buttons as fallback
+          const registerElements = await page.locator('*:has(button:has-text("Register")), *:has(a:has-text("Register"))').all();
+          if (registerElements.length > 0) {
+            bestSelector = '*:has(button:has-text("Register")), *:has(a:has-text("Register"))';
+            maxRows = registerElements.length;
+            foundRows = true;
+            await supabase.from('plan_logs').insert({
+              plan_id,
+              msg: `Worker: Found ${registerElements.length} elements containing Register buttons`
+            });
+          }
         }
         
-        // Get first 10 row texts for logging
+        // Get program container texts for analysis
         let rows = [];
-        for (const selector of rowSelectors) {
+        if (bestSelector) {
           try {
-            rows = await page.locator(selector).all();
-            if (rows.length > 0) break;
+            rows = await page.locator(bestSelector).all();
+            await supabase.from('plan_logs').insert({
+              plan_id,
+              msg: `Worker: Using best selector "${bestSelector}" with ${rows.length} elements`
+            });
           } catch (e) {
-            continue;
+            await supabase.from('plan_logs').insert({
+              plan_id,
+              msg: `Worker: Error using best selector: ${e.message}`
+            });
           }
         }
         
         const rowTexts = [];
-        for (let i = 0; i < Math.min(10, rows.length); i++) {
+        const allRowTexts = []; // Keep all for debugging
+        
+        for (let i = 0; i < Math.min(15, rows.length); i++) {
           try {
             const text = await rows[i].innerText();
-            // Only include rows that might be programs (filter out login/navigation stuff)
+            const shortText = text.substring(0, 200);
+            allRowTexts.push(`Row ${i+1}: ${shortText}...`);
+            
+            // Less aggressive filtering - only exclude obvious navigation/login elements
             const textLower = text.toLowerCase();
-            if (!textLower.includes('log in') && !textLower.includes('password') && !textLower.includes('email address')) {
-              rowTexts.push(`Row ${i+1}: ${text.substring(0, 100)}...`);
+            const isNavigation = textLower.includes('log in') && textLower.includes('password') && textLower.includes('email address') && textLower.length < 100;
+            const isProgramRelated = textLower.includes('nordic') || textLower.includes('kids') || textLower.includes('wednesday') || 
+                                     textLower.includes('register') || textLower.includes('class') || textLower.includes('lesson') ||
+                                     textLower.includes('program') || textLower.includes('ski');
+            
+            if (!isNavigation || isProgramRelated) {
+              rowTexts.push(`Row ${i+1}: ${shortText}...`);
             }
           } catch (e) {
+            allRowTexts.push(`Row ${i+1}: Error reading`);
             rowTexts.push(`Row ${i+1}: Error reading`);
           }
         }
         
         await supabase.from('plan_logs').insert({
           plan_id,
-          msg: `Worker: Found ${rows.length} rows on ${regUrl}. Program rows: ${rowTexts.length > 0 ? `\n${rowTexts.join('\n')}` : '(none found)'}`
+          msg: `Worker: Found ${rows.length} total elements. All rows:\n${allRowTexts.join('\n')}`
         });
         
-        // Enhanced scoped row search - try each pattern
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Filtered program rows (${rowTexts.length}):\n${rowTexts.join('\n')}`
+        });
+        
+        // Enhanced scoped row search with more flexible matching
         let targetRow = null;
         let selectorUsed = null;
         let matchedPattern = null;
@@ -2221,39 +2359,125 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
           });
           
           try {
-            // Try multiple strategies to find the program
-            const strategies = [
-              // Strategy 1: Exact text match with different ancestor patterns
-              { type: 'exact', locator: `text="${pattern}"`, ancestors: ["tr[1]", ".views-row[1]", ".row[1]", ".program-row[1]", "div[1]"] },
-              // Strategy 2: Case-insensitive text match
-              { type: 'case-insensitive', locator: `text=/${pattern}/i`, ancestors: ["tr[1]", ".views-row[1]", ".row[1]", ".program-row[1]", "div[1]"] },
-              // Strategy 3: Partial text match
-              { type: 'partial', locator: `text=/${pattern.split(' ')[0]}/i`, ancestors: ["tr[1]", ".views-row[1]", ".row[1]", ".program-row[1]", "div[1]"] }
+            // Strategy 1: Direct text search in all rows
+            let foundInRow = false;
+            for (let i = 0; i < rows.length && !foundInRow; i++) {
+              try {
+                const rowText = await rows[i].innerText();
+                const rowTextLower = rowText.toLowerCase();
+                const patternLower = pattern.toLowerCase();
+                
+                // Check for exact match, partial match, or word matches
+                const hasExactMatch = rowTextLower.includes(patternLower);
+                const words = patternLower.split(/\s+/);
+                const hasAllWords = words.every(word => rowTextLower.includes(word));
+                const hasMostWords = words.filter(word => rowTextLower.includes(word)).length >= Math.ceil(words.length * 0.6);
+                
+                if (hasExactMatch || hasAllWords || (words.length > 2 && hasMostWords)) {
+                  targetRow = rows[i];
+                  matchedPattern = pattern;
+                  foundInRow = true;
+                  
+                  await supabase.from('plan_logs').insert({
+                    plan_id,
+                    msg: `Worker: Found target program in row ${i+1}: "${rowText.substring(0, 150)}..." - matched "${pattern}"`
+                  });
+                  break;
+                }
+              } catch (e) {
+                continue;
+              }
+            }
+            
+            if (foundInRow) break;
+            
+            // Strategy 2: CSS selector approach with text matching
+            const textSelectors = [
+              `text="${pattern}"`,
+              `text=/${pattern}/i`,
+              `text=/${pattern.split(' ')[0]}/i`
             ];
             
-            for (const strategy of strategies) {
-              for (const ancestor of strategy.ancestors) {
-                try {
-                  targetRow = page.locator(strategy.locator).first().locator(`xpath=ancestor::${ancestor}`);
-                  if (await targetRow.isVisible()) {
-                    await supabase.from('plan_logs').insert({
-                      plan_id,
-                      msg: `Worker: Found target row using ${strategy.type} match "${pattern}" with ancestor: ${ancestor}`
-                    });
-                    matchedPattern = pattern;
-                    break;
+            for (const textSelector of textSelectors) {
+              try {
+                const element = page.locator(textSelector).first();
+                if (await element.count() > 0) {
+                  // Find the containing row/card
+                  const ancestors = ["tr", ".views-row", ".card", ".row", ".program-card", ".event-card", "div"];
+                  for (const ancestor of ancestors) {
+                    try {
+                      const container = element.locator(`xpath=ancestor::${ancestor}[1]`);
+                      if (await container.count() > 0) {
+                        targetRow = container;
+                        matchedPattern = pattern;
+                        
+                        await supabase.from('plan_logs').insert({
+                          plan_id,
+                          msg: `Worker: Found target program using CSS selector "${textSelector}" with ancestor: ${ancestor}`
+                        });
+                        break;
+                      }
+                    } catch (e) {
+                      continue;
+                    }
                   }
-                } catch (e) {
-                  continue;
+                  
+                  if (targetRow) break;
                 }
+              } catch (e) {
+                continue;
               }
-              if (targetRow && matchedPattern) break;
             }
             
             if (targetRow && matchedPattern) break;
             
           } catch (e) {
-            continue;
+            await supabase.from('plan_logs').insert({
+              plan_id,
+              msg: `Worker: Error searching for pattern "${pattern}": ${e.message}`
+            });
+          }
+        }
+        
+        // Additional fallback: Look for partial word matches
+        if (!targetRow && searchPatterns.length > 0) {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: Trying partial word matching as fallback`
+          });
+          
+          for (let i = 0; i < rows.length; i++) {
+            try {
+              const rowText = await rows[i].innerText();
+              const rowTextLower = rowText.toLowerCase();
+              
+              // Look for key words from any pattern
+              const allWords = searchPatterns.flatMap(p => p.toLowerCase().split(/\s+/));
+              const uniqueWords = [...new Set(allWords)].filter(w => w.length > 2); // Only meaningful words
+              
+              let matchCount = 0;
+              const foundWords = [];
+              for (const word of uniqueWords) {
+                if (rowTextLower.includes(word)) {
+                  matchCount++;
+                  foundWords.push(word);
+                }
+              }
+              
+              // If we find at least 2 key words, consider it a match
+              if (matchCount >= 2) {
+                targetRow = rows[i];
+                matchedPattern = foundWords.join(' ');
+                
+                await supabase.from('plan_logs').insert({
+                  plan_id,
+                  msg: `Worker: Found target program using partial word matching in row ${i+1}. Matched words: [${foundWords.join(', ')}]. Row: "${rowText.substring(0, 150)}..."`
+                });
+                break;
+              }
+            } catch (e) {
+              continue;
+            }
           }
         }
         
@@ -2434,13 +2658,66 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
       }
     }
     
-    // If we get here, all attempts failed
-    const lastRows = await page.locator('.views-row, tr').all();
+    // If we get here, all attempts failed - try one final comprehensive fallback
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: All program discovery attempts failed. Trying final comprehensive Register button search.`
+    });
+    
+    try {
+      // Get all Register buttons on the current page and try clicking them systematically
+      const finalRegisterButtons = await page.locator('button:has-text("Register"), a:has-text("Register"), input[value*="Register" i], [class*="register" i], [id*="register" i]').all();
+      
+      for (let i = 0; i < finalRegisterButtons.length; i++) {
+        try {
+          const button = finalRegisterButtons[i];
+          const isVisible = await button.isVisible();
+          
+          if (isVisible) {
+            const buttonText = await button.innerText().catch(() => 'unknown');
+            const buttonHtml = await button.innerHTML().catch(() => 'unknown');
+            
+            await supabase.from('plan_logs').insert({
+              plan_id,
+              msg: `Worker: Attempting to click Register button ${i+1}: "${buttonText}" (HTML: ${buttonHtml.substring(0, 100)})`
+            });
+            
+            await button.scrollIntoViewIfNeeded();
+            await button.click();
+            
+            // Wait to see if click was successful
+            await page.waitForLoadState('networkidle', { timeout: 8000 });
+            const newUrl = page.url();
+            
+            if (newUrl.includes('registration') && !newUrl.includes('/events') && newUrl !== regUrl) {
+              await supabase.from('plan_logs').insert({
+                plan_id,
+                msg: `Worker: Final fallback successful! Clicked Register button ${i+1}, now at: ${newUrl}`
+              });
+              return { success: true, startUrl: newUrl };
+            }
+          }
+        } catch (buttonError) {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: Error with Register button ${i+1}: ${buttonError.message}`
+          });
+        }
+      }
+    } catch (finalError) {
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: Final fallback failed: ${finalError.message}`
+      });
+    }
+    
+    // Absolute final attempt: log what we can see for manual debugging
+    const lastRows = await page.locator('.views-row, tr, .card, .row, div').all();
     const lastRowTexts = [];
     for (let i = 0; i < Math.min(5, lastRows.length); i++) {
       try {
         const text = await lastRows[i].innerText();
-        lastRowTexts.push(text.substring(0, 100));
+        lastRowTexts.push(text.substring(0, 200));
       } catch (e) {
         lastRowTexts.push("Error reading row");
       }
@@ -2448,6 +2725,8 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
     
     await supabase.from('plan_logs').insert({
       plan_id,
+      msg: `BLACKHAWK_DISCOVERY_FAILED - Last 5 elements:\n${lastRowTexts.join('\n---\n')}`
+    });
       msg: `BLACKHAWK_DISCOVERY_FAILED - Last 5 rows:\n${lastRowTexts.join('\n')}`
     });
     
