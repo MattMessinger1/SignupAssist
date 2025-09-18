@@ -603,7 +603,7 @@ async function executeRunPlanBackground(plan_id, supabase) {
         dlog("Connected Playwright to session:", session.id);
 
         // ===== ADVANCED SESSION SEEDING WITH TIMING =====
-        await advancedSeedBrowserSession(page, plan, plan_id, supabase);
+        await advancedSeedBrowserSession(page, plan, supabase);
 
       } catch (e) {
         console.error("Playwright connect error:", e);
