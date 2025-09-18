@@ -10,6 +10,7 @@ app.use(express.json());
 const CAPTCHA_AUTOSOLVE_ENABLED = false; // NEVER call a CAPTCHA solver - SMS + verify link only
 const PER_USER_WEEKLY_LIMIT = 3; // Maximum plans per user per 7 days  
 const SMS_IMMEDIATE_ON_ACTION_REQUIRED = true; // Send SMS immediately when action required
+const HOLD_OPEN_ENABLED = process.env.HOLD_OPEN_ENABLED === 'true'; // Keep browser open on target page until open_time
 
 // ===== SHARED REGISTER SELECTORS =====
 const REGISTER_SELECTORS = [
@@ -730,6 +731,38 @@ app.post("/seed-plan", async (req, res) => {
             plan_id, 
             msg: "Worker: Session seeding completed with warnings" 
           });
+        }
+
+        // Optional HOLD_OPEN mode for maximum speed
+        if (HOLD_OPEN_ENABLED && plan.open_time) {
+          const openTime = new Date(plan.open_time);
+          const now = new Date();
+          
+          // Only hold open if we have time remaining (at least 2 minutes)
+          const timeRemaining = openTime.getTime() - now.getTime();
+          if (timeRemaining > 2 * 60 * 1000) {
+            await supabase.from("plan_logs").insert({ 
+              plan_id, 
+              msg: "Worker: Entering HOLD_OPEN mode - navigating to target page" 
+            });
+            
+            await holdOpenOnTargetPage(page, plan, supabase, openTime);
+            
+            // After holding open, respond
+            res.json({ 
+              ok: true, 
+              msg: 'Session held open until execution time',
+              sessionId: session.id,
+              plan_id,
+              heldOpen: true
+            });
+            return;
+          } else {
+            await supabase.from("plan_logs").insert({ 
+              plan_id, 
+              msg: "Worker: HOLD_OPEN skipped - insufficient time remaining" 
+            });
+          }
         }
 
         res.json({ 
@@ -2395,6 +2428,102 @@ async function executeSignup(page, plan, credentials, supabase) {
       error: `Signup execution failed: ${error.message}`,
       code: 'SIGNUP_EXECUTION_ERROR'
     };
+  }
+}
+
+// Hold-open mode: keep browser positioned on target page until open_time
+async function holdOpenOnTargetPage(page, plan, supabase, openTime) {
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const jitter = (a,b) => a + Math.random()*(b-a);
+  
+  try {
+    // Navigate to registration/events page
+    const base = plan.base_url ? new URL(plan.base_url).origin :
+      `https://${(plan.org||'').toLowerCase().replace(/[^a-z0-9]/g,'')}.skiclubpro.team`;
+    
+    const registrationUrl = `${base}/registration`;
+    await page.goto(registrationUrl, { waitUntil: 'networkidle' });
+    
+    await supabase.from('plan_logs').insert({ 
+      plan_id: plan.id, 
+      msg: `Worker: Holding on target row until open (${openTime.toISOString()})` 
+    });
+
+    // Try to locate target program/row
+    const targetText = `${plan.preferred_class_name||''} ${plan.preferred||''}`.trim();
+    let targetElement = null;
+    
+    if (targetText) {
+      try {
+        targetElement = page.locator(`text=${targetText}`).first();
+        if (await targetElement.count()) {
+          await targetElement.scrollIntoViewIfNeeded();
+          await supabase.from('plan_logs').insert({ 
+            plan_id: plan.id, 
+            msg: 'Worker: Located target program row' 
+          });
+        }
+      } catch (e) {
+        await supabase.from('plan_logs').insert({ 
+          plan_id: plan.id, 
+          msg: `Worker: Could not locate target row: ${e.message}` 
+        });
+      }
+    }
+
+    // Hold open with periodic movement until open time
+    let lastLogTime = Date.now();
+    const LOG_INTERVAL = 60 * 1000; // Log every minute
+    
+    while (new Date() < openTime) {
+      const now = Date.now();
+      const timeUntilOpen = openTime.getTime() - now;
+      
+      // Log status every minute
+      if (now - lastLogTime >= LOG_INTERVAL) {
+        const minutesRemaining = Math.ceil(timeUntilOpen / (1000 * 60));
+        await supabase.from('plan_logs').insert({ 
+          plan_id: plan.id, 
+          msg: `Worker: Holding open (${minutesRemaining}m remaining)` 
+        });
+        lastLogTime = now;
+      }
+      
+      // Stop holding 30 seconds before open time
+      if (timeUntilOpen <= 30 * 1000) {
+        await supabase.from('plan_logs').insert({ 
+          plan_id: plan.id, 
+          msg: 'Worker: Hold-open complete - ready for execution' 
+        });
+        break;
+      }
+      
+      // Small scroll every 30-60 seconds
+      const scrollAmount = Math.random() > 0.5 ? 50 : -50;
+      await page.mouse.wheel(0, scrollAmount);
+      
+      // Micro mouse moves
+      const currentPos = await page.mouse.position || { x: 200, y: 300 };
+      const newX = currentPos.x + jitter(-20, 20);
+      const newY = currentPos.y + jitter(-20, 20);
+      await page.mouse.move(newX, newY, { steps: 3 });
+      
+      // Wait 30-60 seconds before next movement
+      await sleep(jitter(30000, 60000));
+    }
+    
+    // At this point, we're very close to open time
+    // The regular scheduler will call /run-plan which will find we're already logged in
+    await supabase.from('plan_logs').insert({ 
+      plan_id: plan.id, 
+      msg: 'Worker: Hold-open mode complete - browser positioned and ready' 
+    });
+    
+  } catch (error) {
+    await supabase.from('plan_logs').insert({ 
+      plan_id: plan.id, 
+      msg: `Worker: Hold-open error: ${error.message}` 
+    });
   }
 }
 
