@@ -2211,9 +2211,6 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
             }
           }
         }
-            }
-          }
-        }
         
         // Check if click was successful
         if (selectorUsed) {
