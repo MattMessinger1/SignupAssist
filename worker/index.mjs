@@ -602,6 +602,13 @@ async function executeRunPlanBackground(plan_id, supabase) {
         await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Playwright connected with enhanced anti-bot profile" });
         dlog("Connected Playwright to session:", session.id);
 
+        // Debug logging before function call
+        console.log("DEBUG: About to call advancedSeedBrowserSession");
+        console.log("DEBUG: page exists:", !!page);
+        console.log("DEBUG: plan exists:", !!plan);
+        console.log("DEBUG: supabase exists:", !!supabase);
+        console.log("DEBUG: supabase.from type:", typeof supabase?.from);
+
         // ===== ADVANCED SESSION SEEDING WITH TIMING =====
         await advancedSeedBrowserSession(page, plan, supabase);
 
