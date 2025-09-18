@@ -194,6 +194,36 @@ export type Database = {
           },
         ]
       }
+      session_states: {
+        Row: {
+          cookies: Json
+          created_at: string
+          expires_at: string | null
+          id: string
+          plan_id: string
+          storage: Json
+          user_id: string
+        }
+        Insert: {
+          cookies: Json
+          created_at?: string
+          expires_at?: string | null
+          id?: string
+          plan_id: string
+          storage: Json
+          user_id: string
+        }
+        Update: {
+          cookies?: Json
+          created_at?: string
+          expires_at?: string | null
+          id?: string
+          plan_id?: string
+          storage?: Json
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
