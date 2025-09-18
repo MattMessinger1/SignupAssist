@@ -47,7 +47,7 @@ serve(async (req) => {
     const { data: plansToExecute, error: fetchError } = await supabase
       .from('plans')
       .select('*')
-      .eq('status', 'scheduled') // Only get scheduled plans (not cancelled, executed, etc.)
+      .in('status', ['scheduled', 'seeded']) // Include both scheduled AND seeded plans
       .gte('open_time', lateWindow.toISOString()) // Not more than 5 minutes late
       .lte('open_time', earlyExecutionTime.toISOString()); // Execute up to 10 minutes early
 
