@@ -359,57 +359,119 @@ function dlog(...args) {
 async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
   const extras = plan.extras || {};
 
+  await supabase.from('plan_logs').insert({ 
+    plan_id, 
+    msg: `Worker: Handling Blackhawk options with extras: ${JSON.stringify(extras)}` 
+  });
+
   // --- Color Group ---
   if (extras.nordicColorGroup) {
-    const color = extras.nordicColorGroup.toLowerCase();
-    const colorSel = page.locator('select').filter({ has: page.locator('label:has-text("Color")') }).first();
-    if (await colorSel.count()) {
-      const options = await colorSel.locator('option').allTextContents();
-      const matchIdx = options.findIndex(t => t.toLowerCase().includes(color));
-      if (matchIdx >= 0) {
-        await colorSel.selectOption({ index: matchIdx });
-        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Color group set to "${options[matchIdx]}"` });
-      } else {
-        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Color group "${extras.nordicColorGroup}" not found, defaulting` });
-        await colorSel.selectOption({ index: 1 }).catch(()=>{});
+    const wanted = extras.nordicColorGroup.toLowerCase();
+    
+    // Try multiple selector patterns for color group
+    const colorSelectors = [
+      'select:has(label:has-text("Color"))',
+      'select[name*="color" i]',
+      'label:has-text("Color") + select',
+      'label:has-text("Color Group") + select'
+    ];
+    
+    for (const selector of colorSelectors) {
+      const sel = page.locator(selector).first();
+      if (await sel.count()) {
+        const options = await sel.locator('option').allTextContents();
+        const idx = options.findIndex(t => t.toLowerCase().includes(wanted));
+        if (idx >= 0) {
+          await sel.selectOption({ index: idx });
+          await supabase.from('plan_logs').insert({ 
+            plan_id, 
+            msg: `Worker: Color group set to "${options[idx]}" using selector: ${selector}` 
+          });
+          break;
+        }
       }
     }
   }
 
   // --- Rental ---
   if (extras.nordicRental) {
-    const rental = extras.nordicRental.toLowerCase();
-    const rentalSel = page.locator('select').filter({ has: page.locator('label:has-text("Rental")') }).first();
-    if (await rentalSel.count()) {
-      const options = await rentalSel.locator('option').allTextContents();
-      const matchIdx = options.findIndex(t => t.toLowerCase().includes(rental));
-      if (matchIdx >= 0) {
-        await rentalSel.selectOption({ index: matchIdx });
-        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Rental set to "${options[matchIdx]}"` });
-      } else {
-        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Rental "${extras.nordicRental}" not found, defaulting` });
-        await rentalSel.selectOption({ index: 1 }).catch(()=>{});
+    const wanted = extras.nordicRental.toLowerCase();
+    
+    // Try multiple selector patterns for rental
+    const rentalSelectors = [
+      'select:has(label:has-text("Rental"))',
+      'select[name*="rental" i]',
+      'label:has-text("Rental") + select',
+      'label:has-text("Equipment") + select'
+    ];
+    
+    for (const selector of rentalSelectors) {
+      const sel = page.locator(selector).first();
+      if (await sel.count()) {
+        const options = await sel.locator('option').allTextContents();
+        const idx = options.findIndex(t => t.toLowerCase().includes(wanted));
+        if (idx >= 0) {
+          await sel.selectOption({ index: idx });
+          await supabase.from('plan_logs').insert({ 
+            plan_id, 
+            msg: `Worker: Rental set to "${options[idx]}" using selector: ${selector}` 
+          });
+          break;
+        }
       }
     }
   }
 
   // --- Volunteer ---
   if (extras.volunteer) {
-    if (extras.volunteer.toLowerCase() === 'no') {
-      // uncheck all
-      const cbs = page.locator('input[type="checkbox"]').filter({ hasText: /volunteer/i });
-      const n = await cbs.count();
-      for (let i = 0; i < n; i++) {
-        const el = cbs.nth(i);
-        if (await el.isChecked()) await el.uncheck().catch(()=>{});
+    const wanted = extras.volunteer.toLowerCase();
+    
+    if (wanted === 'no') {
+      // Uncheck all volunteer checkboxes
+      const checkboxes = page.locator('input[type="checkbox"]').filter({ hasText: /volunteer/i });
+      const count = await checkboxes.count();
+      for (let i = 0; i < count; i++) {
+        const cb = checkboxes.nth(i);
+        if (await cb.isChecked()) {
+          await cb.uncheck().catch(() => {});
+        }
       }
-      await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Volunteer set to No' });
+      await supabase.from('plan_logs').insert({ 
+        plan_id, 
+        msg: 'Worker: All volunteer checkboxes unchecked' 
+      });
     } else {
-      const volunteer = extras.volunteer.toLowerCase();
-      const cb = page.locator('input[type="checkbox"]').filter({ hasText: new RegExp(volunteer, 'i') }).first();
+      // Try to find and select specific volunteer option
+      const volunteerSelectors = [
+        'select:has(label:has-text("Volunteer"))',
+        'select[name*="volunteer" i]',
+        'label:has-text("Volunteer") + select'
+      ];
+      
+      for (const selector of volunteerSelectors) {
+        const sel = page.locator(selector).first();
+        if (await sel.count()) {
+          const options = await sel.locator('option').allTextContents();
+          const idx = options.findIndex(t => t.toLowerCase().includes(wanted));
+          if (idx >= 0) {
+            await sel.selectOption({ index: idx });
+            await supabase.from('plan_logs').insert({ 
+              plan_id, 
+              msg: `Worker: Volunteer set to "${options[idx]}" using selector: ${selector}` 
+            });
+            break;
+          }
+        }
+      }
+      
+      // Also try checkboxes
+      const cb = page.locator('input[type="checkbox"]').filter({ hasText: new RegExp(wanted, 'i') }).first();
       if (await cb.count()) {
-        await cb.check().catch(()=>{});
-        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Volunteer set to "${extras.volunteer}"` });
+        await cb.check().catch(() => {});
+        await supabase.from('plan_logs').insert({ 
+          plan_id, 
+          msg: `Worker: Volunteer checkbox "${wanted}" checked` 
+        });
       }
     }
   }
@@ -2603,7 +2665,7 @@ async function discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv
         }
 
         if (/\/registration\/\d+\/options/.test(url)) {
-          await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Options — using plan extras for field values' });
+          await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Options — filling from plan extras' });
 
           // Use plan extras to fill options
           await handleBlackhawkOptions(page, plan, supabase, plan_id);
@@ -2638,9 +2700,8 @@ async function discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv
             }
           }
 
-          // Sanitize donations/optional ONLY in MAIN content
-          await suppressDonationsAndPickFree(page.locator('main'), supabase, plan_id, 'Options');
-
+          // Skip donation sanitization for Blackhawk - plan extras handle all fields
+          
           // Click Next and verify we moved to Cart or Checkout
           const res = await clickNextAndWaitForChange(page, [/\/cart(\?|$)/, /\/checkout\/\d+/]);
           if (!res.changed) {
