@@ -50,6 +50,10 @@ export default function History() {
         .order('created_at', { ascending: false });
 
       if (error) throw error;
+      console.log('Loaded plans:', data);
+      data?.forEach(plan => {
+        console.log(`Plan ${plan.id}: status=${plan.status}, should show edit: ${plan.status !== 'executing' && plan.status !== 'running'}`);
+      });
       setPlans(data || []);
     } catch (error) {
       console.error('Error loading plans:', error);
@@ -216,7 +220,11 @@ export default function History() {
                         </Badge>
                       )}
                       {/* Edit button available for most statuses */}
-                      {plan.status !== 'executing' && plan.status !== 'running' && (
+                      {(() => {
+                        const shouldShowEdit = plan.status !== 'executing' && plan.status !== 'running';
+                        console.log(`Plan ${plan.id} edit button: status=${plan.status}, shouldShow=${shouldShowEdit}`);
+                        return shouldShowEdit;
+                      })() && (
                         <Button
                           variant="outline"
                           size="sm"
