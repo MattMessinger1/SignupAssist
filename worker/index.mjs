@@ -2342,17 +2342,9 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
     console.error("Discovery error:", error);
     return await logDiscoveryFailure(page, plan_id, error.message, 'BLACKHAWK_DISCOVERY_FAILED', supabase);
   }
+}
+
 // ===== EXISTING SIGNUP EXECUTION FUNCTIONS =====
-      
-      if (NAME.test(txt)) { 
-        bestRow = row; 
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: Found matching program row at index ${i}: "${txt.substring(0, 200)}"`
-        });
-        break; 
-      }
-    }
     
     // If not found, scroll down and retry with same targeted approach
     if (!bestRow) {
