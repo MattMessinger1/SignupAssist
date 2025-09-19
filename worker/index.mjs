@@ -2071,7 +2071,17 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
         
         // Enhanced waits as specified
         await page.waitForLoadState("networkidle", { timeout: 15000 });
-        await page.waitForSelector(".views-row, tr", { timeout: 15000 });
+        
+        // Check if we need to navigate to Programs menu
+        const programsLink = page.locator('text=Programs, a:has-text("Programs"), nav a:contains("Programs")').first();
+        if (await programsLink.count() > 0) {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: Found Programs link, clicking to navigate to registration page`
+          });
+          await programsLink.click();
+          await page.waitForLoadState("networkidle", { timeout: 15000 });
+        }
         
         const currentUrl = page.url();
         const pageTitle = await page.title();
@@ -2102,7 +2112,6 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
               if (await link.isVisible()) {
                 await link.click();
                 await page.waitForLoadState("networkidle", { timeout: 15000 });
-                await page.waitForSelector(".views-row, tr", { timeout: 15000 });
                 await supabase.from('plan_logs').insert({
                   plan_id,
                   msg: `Worker: Clicked ${linkSelector}, now at ${page.url()}`
@@ -2115,8 +2124,14 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
           }
         }
         
-        // Find all program containers using comprehensive selectors
-        const containers = await page.locator('.views-row, tr, article, .card').all();
+        // Find all program containers using flexible selectors based on screenshots
+        const containers = await page.locator('div, article, section, .card, .program, .class, .event, [class*="program"], [class*="class"], [class*="event"]').all();
+        
+        // If no containers found with generic selectors, try looking for text-based containers
+        if (containers.length === 0) {
+          const textContainers = await page.locator('*').filter({ hasText: /nordic|kids|wednesday/i }).all();
+          containers.push(...textContainers);
+        }
         
         if (containers.length === 0) {
           await supabase.from('plan_logs').insert({
@@ -2193,11 +2208,33 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
         });
         
         if (!bestMatch || bestScore === 0) {
+          // Fallback: Try direct text-based search for exact program name
           await supabase.from('plan_logs').insert({
             plan_id,
-            msg: `Worker: No matching programs found on ${regUrl} (best score: ${bestScore})`
+            msg: `Worker: Container analysis failed, trying direct text search for "Nordic Kids Wednesday"`
           });
-          continue;
+          
+          const directMatch = page.locator('*').filter({ hasText: 'Nordic Kids Wednesday' }).first();
+          if (await directMatch.count() > 0) {
+            await supabase.from('plan_logs').insert({
+              plan_id,
+              msg: `Worker: Found direct text match for "Nordic Kids Wednesday"`
+            });
+            bestMatch = { 
+              container: directMatch, 
+              index: 0, 
+              text: await directMatch.innerText(), 
+              score: 10, 
+              matches: ['direct-match'] 
+            };
+            bestScore = 10;
+          } else {
+            await supabase.from('plan_logs').insert({
+              plan_id,
+              msg: `Worker: No matching programs found on ${regUrl} (best score: ${bestScore})`
+            });
+            continue;
+          }
         }
         
         // Log the best match
