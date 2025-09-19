@@ -2702,44 +2702,15 @@ async function discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv
 
         if (/\/registration\/\d+\/options/.test(url)) {
           await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Options — filling from plan extras' });
-
-          // Use plan extras to fill options
+          
+          // Use plan extras to fill options  
           const optionsResult = await handleBlackhawkOptions(page, plan, supabase, plan_id);
           if (optionsResult && optionsResult.requiresAction) {
             return optionsResult;
           }
 
-          // Handle any remaining required fields that weren't covered by plan extras
-          const req = page.locator('select[required], select.js-form-required');
-          const n = await req.count();
-          for (let i = 0; i < n; i++) {
-            const sel = req.nth(i);
-            
-            // Check if this select is still unset (placeholder)
-            const currentValue = await sel.locator('option:checked').innerText().catch(()=> '');
-            if (isPlaceholderText(currentValue)) {
-              // Read all option texts
-              const options = await sel.locator('option').allTextContents().catch(()=>[]);
-              // Find first non-placeholder index
-              let idx = options.findIndex(t => !isPlaceholderText(t));
-              // If still none, try index 1 (common first valid choice), else give up
-              if (idx < 0 && options.length > 1) idx = 1;
-
-              if (idx >= 0) {
-                await sel.selectOption({ index: idx }).catch(()=>{});
-                await supabase.from('plan_logs').insert({
-                  plan_id, msg: `Worker: Fallback - Required select set to "${(options[idx]||'[unknown]').toString().slice(0,60)}"`
-                });
-              } else {
-                await supabase.from('plan_logs').insert({
-                  plan_id, msg: 'Worker: Required select had no valid choices (stopping for assist)'
-                });
-                return { success:true, requiresAction:true, details:{ message:'Options page needs a selection the bot cannot choose' } };
-              }
-            }
-          }
-
-          // Skip donation sanitization for Blackhawk - plan extras handle all fields
+          // Short-circuit: skip generic fallback if we ran plan-driven handler
+          await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Skipping generic required-select fallback (plan extras used)' });
           
           // Click Next and verify we moved to Cart or Checkout
           const res = await clickNextAndWaitForChange(page, [/\/cart(\?|$)/, /\/checkout\/\d+/, /\/(complete|success|confirmation|thank-you|registered)/]);
