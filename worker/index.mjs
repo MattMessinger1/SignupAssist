@@ -2272,16 +2272,34 @@ async function selectNoThanksOrZero(scope) {
   }
 }
 
-// One call to sanitize a page section
+// One call to sanitize a page section - scoped to main content only
 async function suppressDonationsAndPickFree(scope, supabase, plan_id, where) {
+  let changesMade = false;
   try {
+    // Count changes to avoid unnecessary updates
+    const numsBefore = await scope.locator('input[type="number"], input[type="text"][inputmode="numeric"], input[pattern*="\\d"]').count();
     await setNumericInputToZero(scope);
+    
+    const cbsBefore = await scope.locator('input[type="checkbox"]:checked').count();
     await uncheckDonationCheckboxes(scope);
+    
+    const selectsBefore = await scope.locator('select').count();
     await selectNoThanksOrZero(scope);
-    await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Donation/optional fields sanitized on ${where}` });
+    
+    // Log exactly what we changed
+    const changes = [];
+    if (numsBefore > 0) changes.push(`set ${numsBefore} numeric fields to 0`);
+    if (cbsBefore > 0) changes.push(`unchecked ${cbsBefore} donation checkboxes`);
+    if (selectsBefore > 0) changes.push(`selected no-cost options in ${selectsBefore} selects`);
+    
+    if (changes.length > 0) {
+      changesMade = true;
+      await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Donation/optional fields sanitized on ${where}: ${changes.join(', ')}` });
+    }
   } catch (e) {
     await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Donation sanitize error on ${where}: ${e.message}` });
   }
+  return changesMade;
 }
 
 async function logDiscoveryFailure(page, plan_id, error, code, supabase) {
@@ -2446,8 +2464,11 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
       // === Start (participant) ===
       await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Start page — selecting participant' });
       
-      // Sanitize any donation widgets on start page
-      await suppressDonationsAndPickFree(page, supabase, plan_id, 'Start page widgets');
+      // Sanitize any donation widgets on start page (main content only)
+      const mainContent = page.locator('main, #main, .main-content, .content').first();
+      if (await mainContent.count()) {
+        await suppressDonationsAndPickFree(mainContent, supabase, plan_id, 'Start page widgets');
+      }
       
       const child = (plan.child_name || '').trim();
       const participantOk = await selectParticipant(page, child);
@@ -2463,8 +2484,11 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
       if (/\/registration\/\d+\/options/.test(page.url())) {
         await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Options page — filling required fields' });
 
-        // Sanitize donations and optional fields first
-        await suppressDonationsAndPickFree(page, supabase, plan_id, 'Options');
+        // Sanitize donations and optional fields first (main content only)
+        const mainContent = page.locator('main, #main, .main-content, .content').first();
+        if (await mainContent.count()) {
+          await suppressDonationsAndPickFree(mainContent, supabase, plan_id, 'Options');
+        }
 
         // Rentals example from screenshots (Parent Tot). Default: "We have our own skis"
         const rentalsPref = (plan?.extras?.rentals || 'We have our own skis').toLowerCase();
@@ -2484,33 +2508,40 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
 
       // === Cart ===
       if (/\/cart(\?|$)/.test(page.url())) {
-        await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Cart — cleaning donations and checking out' });
+        await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Cart — remove donations then Checkout' });
         
-        // Remove donation line items before checkout
+        // Donation cleanup limited to MAIN CONTENT only
+        const mainContent = page.locator('main, #main, .main-content, .content').first();
+        const changesMade = await suppressDonationsAndPickFree(mainContent, supabase, plan_id, 'Cart');
+        
+        // Remove donation line items from cart table
+        let removedItems = false;
         try {
-          // Look for donation rows by label keywords
-          const rows = page.locator('table tbody tr');
+          const rows = mainContent.locator('table tbody tr');
           const n = await rows.count();
           for (let i = 0; i < n; i++) {
             const row = rows.nth(i);
             const txt = ((await row.innerText().catch(()=>'')) || '').toLowerCase();
             if (looksLikeDonationLabel(txt)) {
-              // common pattern: a remove checkbox or link in row
               const removeCb = row.locator('input[type="checkbox"][name*="remove"], input[type="checkbox"][name*="delete"]').first();
               const removeBtn = row.locator('a:has-text("Remove"), button:has-text("Remove"), input[type="submit"][value*="Remove"]').first();
-              if (await removeCb.count()) await removeCb.check().catch(()=>{});
-              if (await removeBtn.count()) await removeBtn.click().catch(()=>{});
+              if (await removeCb.count()) { await removeCb.check().catch(()=>{}); removedItems = true; }
+              if (await removeBtn.count()) { await removeBtn.click().catch(()=>{}); removedItems = true; }
             }
           }
-          const update = page.locator('button:has-text("Update cart"), input[type="submit"][value*="Update"]').first();
-          if (await update.count()) { await update.click(); await page.waitForLoadState('networkidle'); }
-          await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Cart cleaned of donations' });
+          
+          // Only update cart if we actually removed items
+          if (removedItems) {
+            const update = page.locator('button:has-text("Update cart"), input[type="submit"][value*="Update"]').first();
+            if (await update.count()) { 
+              await update.click(); 
+              await page.waitForLoadState('networkidle'); 
+              await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Cart updated after removing donation items' });
+            }
+          }
         } catch(e) {
           await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Cart donation cleanup error: ${e.message}` });
         }
-
-        // Sanitize any remaining donation widgets
-        await suppressDonationsAndPickFree(page, supabase, plan_id, 'Cart widgets');
         
         const checkoutBtn = page.locator('#edit-checkout, button#edit-checkout, button:has-text("Checkout")').first();
         if (await checkoutBtn.count()) {
@@ -2520,55 +2551,51 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
         }
       }
 
-      // === Checkout (payment method) ===
-      if (/\/checkout\/\d+\/(installments|payment)/.test(page.url()) || /\/checkout\/\d+($|\?)/.test(page.url())) {
-        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: On Checkout — selecting saved payment method` });
+      // === Checkout (saved payment) ===
+      if (/\/checkout\/\d+/.test(page.url())) {
+        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: On Checkout` });
 
-        // Sanitize any donation widgets on checkout page
-        await suppressDonationsAndPickFree(page, supabase, plan_id, 'Checkout widgets');
+        // Sanitize any donation widgets on checkout page (main content only)
+        const mainContent = page.locator('main, #main, .main-content, .content').first();
+        if (await mainContent.count()) {
+          await suppressDonationsAndPickFree(mainContent, supabase, plan_id, 'Checkout widgets');
+        }
 
-        // Prefer saved payment; avoid raw card entry unless allow_no_cvv true
-        const savedRadio = page.locator('input[type="radio"][name*="payment"][value*="saved"], input[type="radio"][name*="payment-method"]').first();
-        if (await savedRadio.count()) {
-          await savedRadio.check().catch(()=>{});
+        // Prefer saved payment radio (avoid full-PAN forms unless allow_no_cvv)
+        const saved = page.locator('input[type="radio"][name*="payment"][value*="saved"], input[type="radio"][name*="payment-method"]').first();
+        if (await saved.count()) { 
+          await saved.check().catch(()=>{}); 
         } else {
-          // If only "Credit card" (PAN form) is present and allow_no_cvv is false → bail
           const hasCardForm = await page.locator('input[name*="cardnumber"], iframe[src*="card"], input[autocomplete="cc-number"]').count();
           if (hasCardForm && !allowNoCvv) {
-            await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Checkout requires full card entry — action required' });
-            return { success:true, requiresAction:true, details:{ message:'Payment requires card entry' } };
-          }
-          // Fallback to any radio option
-          const anyRadio = page.locator('input[type="radio"]').first();
-          if (await anyRadio.count()) {
-            await anyRadio.check().catch(()=>{});
+            await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Full card form present — action required' });
+            return { success:true, requiresAction:true, details:{ message:'Payment requires manual card entry' } };
           }
         }
 
-        const cont = page.locator('button:has-text("Continue to Review"), #edit-actions-next, button#edit-actions-next').first();
-        if (await cont.count()) {
-          await cont.scrollIntoViewIfNeeded().catch(()=>{});
-          await cont.click();
-          await page.waitForLoadState('networkidle');
+        // Continue to Review
+        const next = page.locator('button:has-text("Continue to Review"), #edit-actions-next').first();
+        if (await next.count()) { 
+          await next.scrollIntoViewIfNeeded().catch(()=>{}); 
+          await next.click(); 
+          await page.waitForLoadState('networkidle'); 
         }
       }
 
-      // === Review ===
+      // === Review → Pay ===
       if (/\/checkout\/\d+\/review/.test(page.url())) {
         await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Review — Pay and complete' });
         const pay = page.locator('button:has-text("Pay and complete purchase"), #edit-actions-next').first();
-        if (await pay.count()) {
-          await pay.scrollIntoViewIfNeeded().catch(()=>{});
-          await pay.click();
-          await page.waitForLoadState('networkidle');
+        if (await pay.count()) { 
+          await pay.scrollIntoViewIfNeeded().catch(()=>{}); 
+          await pay.click(); 
+          await page.waitForLoadState('networkidle'); 
         }
       }
 
-      // === Post-payment success detection ===
-      const urlAfter = page.url();
-      const bodyAfter = (await page.locator('body').innerText().catch(()=>'')) || '';
-
-      // Log any inline messages in case we didn't hit success
+      // === Success detection ===
+      const url = page.url();
+      const body = (await page.locator('body').innerText().catch(()=>'')) || '';
       const msgSel = '.messages--error, .messages--warning, .alert-danger, .alert-warning, [role="alert"]';
       const postMsg = await page.locator(msgSel).innerText().catch(()=>'');
 
@@ -2576,12 +2603,12 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
         await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Post-submit messages: ${postMsg.slice(0,400)}` });
       }
 
-      if (sawSuccess(urlAfter, bodyAfter)) {
+      if (/\/checkout\/.+\/complete/.test(url) || /(thank you|registration complete|successfully registered)/i.test(body)) {
         await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Signup confirmed — success detected' });
         return { success:true, requiresAction:false, details:{ message:'Signup completed' } };
       }
 
-      // If we got here, we didn't see confirmation. Leave session, ask for assist.
+      // If we reach here, still not confirmed:
       await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Could not confirm success — action required' });
       return { success:true, requiresAction:true, details:{ message:'Submitted, needs quick manual confirm' } };
     } catch (e) {
@@ -2631,34 +2658,24 @@ async function executeSignup(page, plan, credentials, nordicColorGroup, nordicRe
     
     const discoveryResult = await discoverBlackhawkRegistration(page, plan, credentials, supabase);
     
-    if (discoveryResult.success) {
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Worker: Program discovery successful, proceeding to fill form at: ${discoveryResult.startUrl}`
-      });
-      
-      // Wait for registration form to load
-      await page.waitForLoadState('networkidle');
-      
-      // Fill out registration form
-      const formResult = await fillRegistrationForm(page, plan, credentials, nordicColorGroup, nordicRental, volunteer, allowNoCvv, supabase);
-      return formResult;
-      
-    } else {
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Worker: Program discovery failed: ${discoveryResult.error}`
-      });
-      
-      // Set plan status to action_required to keep session alive  
-      await supabase.from('plans').update({ status: 'action_required' }).eq('id', plan_id);
-      
-      return {
-        success: false,
-        requiresAction: true,
-        message: `Program discovery failed: ${discoveryResult.error}. Session kept alive for manual assistance.`
-      };
+    // One-run guarantee: return the discovery result immediately
+    // No legacy form filling should run after adapter-based discovery
+    if (discoveryResult.success !== undefined) {
+      // Discovery completed with definitive result
+      return discoveryResult;
     }
+    
+    // This should never happen with proper discovery implementation
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: CRITICAL - Discovery returned undefined result, failing safely`
+    });
+    
+    return {
+      success: false,
+      requiresAction: true,
+      message: 'Discovery system error - manual assistance required'
+    };
 
   } catch (error) {
     await supabase.from('plan_logs').insert({
