@@ -190,6 +190,17 @@ export default function History() {
           <h1 className="text-3xl font-bold">Plan History</h1>
         </div>
 
+        {/* DEBUG INFO */}
+        <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded">
+          <h3 className="font-bold">Debug Info:</h3>
+          <p>Total plans: {plans.length}</p>
+          {plans.map(plan => (
+            <div key={plan.id} className="text-sm">
+              Plan: {plan.org} | Status: {plan.status} | Should show edit: {plan.status !== 'executing' && plan.status !== 'running' ? 'YES' : 'NO'}
+            </div>
+          ))}
+        </div>
+
         {plans.length === 0 ? (
           <Card>
             <CardContent className="text-center py-12">
@@ -219,27 +230,25 @@ export default function History() {
                           {plan.paid ? "Paid" : "Unpaid"}
                         </Badge>
                       )}
-                      {/* Edit button available for most statuses */}
-                      {(() => {
-                        const shouldShow = plan.status !== 'executing' && plan.status !== 'running';
-                        console.log(`Plan ${plan.org}: status="${plan.status}", shouldShowEdit=${shouldShow}`);
-                        return shouldShow;
-                      })() && (
+                      {/* Edit button - simplified logic */}
+                      {plan.status !== 'executing' && plan.status !== 'running' && (
                         <Button
-                          variant="outline"
+                          variant="outline" 
                           size="sm"
                           onClick={(e) => {
                             e.stopPropagation();
+                            console.log('Edit button clicked for plan:', plan.org);
                             setEditingPlan(plan);
                           }}
+                          className="bg-white hover:bg-gray-50"
                         >
                           <Edit className="h-4 w-4 mr-1" />
                           Edit
                         </Button>
                       )}
                       {/* Debug indicator */}
-                      <span className="text-xs text-muted-foreground">
-                        Status: {plan.status}
+                      <span className="text-xs bg-red-100 px-2 py-1 rounded">
+                        Status: {plan.status} | Edit: {plan.status !== 'executing' && plan.status !== 'running' ? 'YES' : 'NO'}
                       </span>
                       {/* Cancel button only for scheduled plans */}
                       {plan.status === 'scheduled' && (
