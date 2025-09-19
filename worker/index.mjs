@@ -2761,45 +2761,6 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
     return await logDiscoveryFailure(page, plan_id, error.message, 'BLACKHAWK_DISCOVERY_FAILED', supabase);
   }
 }
-      'a.btn.btn-secondary.btn-sm:has-text("Register")',
-      'a[href*="/registration/"][href$="/start"]',
-      'button:has-text("Register")' // fallback if implemented as button
-    ].join(', ');
-
-    const rowRegister = bestRow.locator(ROW_REGISTER_SEL).first();
-    if (!(await rowRegister.count())) {
-      await supabase.from('plan_logs').insert({ 
-        plan_id, 
-        msg: 'Worker: Register button not present inside matched row' 
-      });
-      return await logDiscoveryFailure(page, plan_id, 'Register not found in row', 'BLACKHAWK_DISCOVERY_FAILED', supabase);
-    }
-
-    await supabase.from('plan_logs').insert({
-      plan_id,
-      msg: `Worker: Found row-scoped Register button, clicking...`
-    });
-
-    // Ensure it's visible and click
-    await (await scrollUntilVisible(page, ROW_REGISTER_SEL)).click();
-
-    // Must navigate to /registration/<id>/start
-    await page.waitForURL(/\/registration\/\d+\/start/, { timeout: 15000 });
-    await supabase.from('plan_logs').insert({ 
-      plan_id, 
-      msg: `Worker: Navigated to start page ${page.url()}` 
-    });
-
-    return { success: true, startUrl: page.url() };
-    } catch (error) {
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Worker: Program discovery failed: ${error.message}`
-      });
-      
-      return await logDiscoveryFailure(page, plan_id, error.message, "BLACKHAWK_DISCOVERY_FAILED", supabase);
-    }
-  }
 
 // ===== EXISTING SIGNUP EXECUTION FUNCTIONS =====
 
