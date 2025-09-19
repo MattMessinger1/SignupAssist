@@ -87,53 +87,53 @@ async function ensureAuthenticated(page, baseUrl, email, password, supabase, pla
 }
 
 async function openProgramsFromSidebar(page, baseUrl, supabase, plan_id) {
-  // Make sure the sidebar is visible (desktop-like viewport)
   try { await page.setViewportSize({ width: 1280, height: 900 }); } catch {}
 
-  // If there's a hamburger or collapsible, open it
+  // Expand sidebar/hamburger/collapsible Register section if needed
   const toggles = [
     'button[aria-label*="menu" i]',
     '.navbar-toggle, .menu-toggle, .offcanvas-toggle',
     '#block-register .collapsible-block-action, [data-once*="collapsiblock"] .collapsible-block-action'
   ];
   for (const sel of toggles) {
-    const btn = page.locator(sel).first();
-    if (await btn.count()) { try { await btn.click(); await page.waitForTimeout(300); } catch {} }
+    const t = page.locator(sel).first();
+    if (await t.count()) { await t.click().catch(()=>{}); await page.waitForTimeout(250); }
   }
 
-  // Robust locators for Programs link
+  // Click "Programs" (DOM matches your screenshot: a.nav-link--registration[href="/registration"])
   const candidates = [
     'nav a.nav-link--registration:has-text("Programs")',
     'a[href="/registration"]:has-text("Programs")',
-    'a:has-text("Programs")',
     '#block-register a[href="/registration"]',
     'nav[aria-label*="register" i] a:has-text("Programs")'
   ];
-
+  let clicked = false;
   for (const sel of candidates) {
     const link = page.locator(sel).first();
     if (await link.count()) {
       await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Clicking Programs via ${sel}` });
-      await link.scrollIntoViewIfNeeded().catch(() => {});
-      await link.click({ timeout: 5000 }).catch(() => {});
-      await page.waitForLoadState('networkidle');
+      await link.scrollIntoViewIfNeeded().catch(()=>{});
+      await link.click().catch(()=>{});
+      clicked = true;
       break;
     }
   }
 
-  // If we didn't land on /registration, go directly (but only after auth)
-  if (!/\/registration(\/events)?$/.test(page.url())) {
-    await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Programs link not found; navigating to /registration' });
+  // Land on /registration; if not, navigate directly (auth is verified)
+  if (!clicked || !/\/registration$/.test(page.url())) {
     await page.goto(`${baseUrl}/registration`, { waitUntil: 'networkidle' });
   }
 
-  // If redirected to login anyway, re-auth and retry once
+  // If redirected to login anyway, re-auth once and retry /registration
   if (page.url().includes('/user/login')) {
-    await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Redirected to login when opening /registration; re-authenticating' });
-    // Note: email and password will be passed from the calling function
-    await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Need credentials for re-authentication - caller should handle' });
-    throw new Error('LOGIN_REDIRECT_DETECTED');
+    await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Redirected to login from /registration; re-authenticating' });
+    // NOTE: pass creds at callsite
+    throw new Error('REAUTH_AND_RETRY_REGISTRATION');
   }
+
+  // Assert the Programs list is present
+  await page.waitForLoadState("networkidle");
+  await page.waitForSelector('table, .views-row, .view, section', { timeout: 15000 });
 }
 
 console.log("🛡️ Setting up error handlers...");
@@ -806,17 +806,12 @@ async function executeRunPlanBackground(plan_id, supabase) {
       // Open Programs from sidebar (or direct) to reach the list
       try {
         await openProgramsFromSidebar(page, normalizedBaseUrl, supabase, plan_id);
-      } catch (error) {
-        if (error.message === 'LOGIN_REDIRECT_DETECTED') {
-          await supabase.from('plan_logs').insert({
-            plan_id,
-            msg: 'Worker: Login redirect detected during Programs navigation, re-authenticating...'
-          });
-          
+      } catch (e) {
+        if (String(e).includes('REAUTH_AND_RETRY_REGISTRATION')) {
           await ensureAuthenticated(page, normalizedBaseUrl, credentials.email, credentials.password, supabase, plan_id);
-          await openProgramsFromSidebar(page, normalizedBaseUrl, supabase, plan_id);
-        } else {
-          throw error;
+          await page.goto(`${normalizedBaseUrl}/registration`, { waitUntil: 'networkidle' });
+        } else { 
+          throw e; 
         }
       }
 
@@ -2417,7 +2412,7 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
         try {
           await openProgramsFromSidebar(page, baseUrl, supabase, plan_id);
         } catch (navError) {
-          if (navError.message === 'LOGIN_REDIRECT_DETECTED') {
+          if (String(navError).includes('REAUTH_AND_RETRY_REGISTRATION')) {
             await supabase.from('plan_logs').insert({
               plan_id,
               msg: `Worker: GUARD - Second login redirect during navigation retry`
