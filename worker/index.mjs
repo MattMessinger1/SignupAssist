@@ -2251,7 +2251,6 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
     }
 
     // Target only main Programs table rows, avoiding cart/header containers
-    const NAME = /nordic kids wednesday/i;
     
     // Focus on main content table rows, excluding cart, header, and navigation containers
     const mainProgramRows = page.locator('main tbody tr, .main-content tbody tr, .content tbody tr, .view-content tbody tr').filter({
@@ -2275,94 +2274,23 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
       rowCount = await rows.count();
     }
     
-    let bestRow = null;
-    
-    await supabase.from('plan_logs').insert({
-      plan_id,
-      msg: `Worker: Scanning ${rowCount} main Programs table rows for "Nordic Kids Wednesday"`
-    });
-    
+    const NAME = /nordic kids wednesday/i;
+
+    let targetRow = null;
     for (let i = 0; i < rowCount; i++) {
       const row = rows.nth(i);
-      const txt = ((await row.innerText().catch(()=>'')) || '').toLowerCase();
-      
-      // Skip obvious non-program rows (navigation, headers, cart items)
-      if (/skip to main content|account\s+dashboard|register\s+memberships\s+programs\s+events|shopping.?cart|cart.?total|checkout|quantity|remove.?item/i.test(txt)) {
-        continue;
-      }
-      
-      // Skip rows that don't contain program-like content
-      if (!txt.includes('nordic') && !txt.includes('program') && !txt.includes('class') && !txt.includes('lesson')) {
-        continue;
-      }
-      
-      if (NAME.test(txt)) { 
-        bestRow = row; 
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: Found matching program row at index ${i}: "${txt.substring(0, 200)}"`
-        });
-        break; 
-      }
-    }
-    
-    // If not found, scroll down and retry with same targeted approach
-    if (!bestRow) {
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Worker: Program row not found on initial scan, scrolling to find more content`
-      });
-      
-      for (let s = 0; s < 10 && !bestRow; s++) {
-        await page.mouse.wheel(0, 800);
-        await page.waitForTimeout(120);
-        
-        // Re-query with same targeted selectors after scroll
-        const scrollMainRows = page.locator('main tbody tr, .main-content tbody tr, .content tbody tr, .view-content tbody tr').filter({
-          has: page.locator('td')
-        });
-        const scrollFallbackRows = page.locator('tbody tr').filter({
-          hasNot: page.locator('.cart, .shopping-cart, .header, .navigation, .nav, .menu, .breadcrumb')
-        });
-        
-        let scrollRows = scrollMainRows;
-        let scrollCount = await scrollRows.count();
-        
-        if (scrollCount === 0) {
-          scrollRows = scrollFallbackRows;
-          scrollCount = await scrollRows.count();
-        }
-        
-        for (let i = 0; i < scrollCount; i++) {
-          const row = scrollRows.nth(i);
-          const txt = ((await row.innerText().catch(()=>'')) || '').toLowerCase();
-          
-          // Same filtering as above
-          if (/skip to main content|account\s+dashboard|register\s+memberships\s+programs\s+events|shopping.?cart|cart.?total|checkout|quantity|remove.?item/i.test(txt)) {
-            continue;
-          }
-          
-          if (!txt.includes('nordic') && !txt.includes('program') && !txt.includes('class') && !txt.includes('lesson')) {
-            continue;
-          }
-          
-          if (NAME.test(txt)) { 
-            bestRow = row; 
-            await supabase.from('plan_logs').insert({
-              plan_id,
-              msg: `Worker: Found matching program row after scroll ${s+1} at index ${i}: "${txt.substring(0, 200)}"`
-            });
-            break; 
-          }
-        }
-      }
+      const text = ((await row.innerText().catch(()=>'')) || '').toLowerCase();
+      // Explicitly skip rows that look like chrome (paranoia)
+      if (/skip to main content|account\s+dashboard|memberships|programs|events|view search filters/i.test(text)) continue;
+
+      if (NAME.test(text)) { targetRow = row; break; }
     }
 
-    if (!bestRow) {
-      const sample = await page.locator('tbody tr').allTextContents().catch(()=>[]);
-      await supabase.from('plan_logs').insert({ 
-        plan_id, 
-        msg: `Worker: No program row matched "Nordic Kids Wednesday". Samples: ${JSON.stringify(sample?.slice(0,10) || [])}` 
+    if (!targetRow) {
+      const sample = await rows.allTextContents().catch(()=>[]);
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: No table row matched "Nordic Kids Wednesday". Samples: ${JSON.stringify((sample||[]).slice(0,8))}`
       });
       return { success:false, error:'No matching program rows', code:'BLACKHAWK_DISCOVERY_FAILED' };
     }
@@ -2374,7 +2302,7 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
       'button:has-text("Register")' // fallback if implemented as button
     ].join(', ');
 
-    const rowRegister = bestRow.locator(ROW_REGISTER_SEL).first();
+    const rowRegister = targetRow.locator(ROW_REGISTER_SEL).first();
     if (!(await rowRegister.count())) {
       await supabase.from('plan_logs').insert({ 
         plan_id, 
