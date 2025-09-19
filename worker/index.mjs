@@ -2122,13 +2122,56 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
       msg: `Worker: Looking for Programs navigation link in sidebar`
     });
 
+    // First, let's debug what's actually in the sidebar
+    try {
+      const sidebarContent = await page.locator('.sidebar, nav, .navigation, .menu').first().innerHTML();
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: Sidebar HTML content: ${sidebarContent.substring(0, 500)}...`
+      });
+    } catch (e) {
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: Could not get sidebar content: ${e.message}`
+      });
+    }
+
+    // Check if REGISTER section needs to be expanded
+    try {
+      const registerSection = page.locator(':has-text("REGISTER")').first();
+      if (await registerSection.count() > 0) {
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Found REGISTER section, checking if expandable...`
+        });
+        
+        const expandButton = registerSection.locator('button, .toggle, .expand, [aria-expanded]').first();
+        if (await expandButton.count() > 0) {
+          const isExpanded = await expandButton.getAttribute('aria-expanded');
+          if (isExpanded === 'false') {
+            await supabase.from('plan_logs').insert({
+              plan_id,
+              msg: `Worker: Expanding REGISTER section...`
+            });
+            await expandButton.click();
+            await page.waitForTimeout(1000);
+          }
+        }
+      }
+    } catch (e) {
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: Error handling REGISTER section: ${e.message}`
+      });
+    }
+
     // Try specific selectors based on actual DOM structure
     const programsSelectors = [
-      'a.nav-link--registration:has-text("Programs")',
+      'a:has-text("Programs")',
       'a[href="/registration"]:has-text("Programs")',
+      'a.nav-link--registration:has-text("Programs")',
       'a[href="/registration"]',
       'nav a.nav-link--registration',
-      'a:has-text("Programs")',
       'nav a:has-text("Programs")', 
       'a[href*="registration"]'
     ];
@@ -2137,10 +2180,22 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
     for (const selector of programsSelectors) {
       try {
         const programsLink = page.locator(selector).first();
-        if (await programsLink.count() > 0) {
+        const count = await programsLink.count();
+        
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Selector "${selector}" found ${count} elements`
+        });
+        
+        if (count > 0) {
+          // Log the actual element details
+          const href = await programsLink.getAttribute('href');
+          const text = await programsLink.textContent();
+          const classes = await programsLink.getAttribute('class');
+          
           await supabase.from('plan_logs').insert({
             plan_id,
-            msg: `Worker: Found Programs link with selector: ${selector}, checking visibility...`
+            msg: `Worker: Element details - href: "${href}", text: "${text}", classes: "${classes}"`
           });
           
           // Ensure element is visible and scrolled into view
