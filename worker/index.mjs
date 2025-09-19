@@ -2122,28 +2122,47 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
       msg: `Worker: Looking for Programs navigation link in sidebar`
     });
 
-    // Try multiple selectors for the Programs link
+    // Try specific selectors based on actual DOM structure
     const programsSelectors = [
+      'a.nav-link--registration:has-text("Programs")',
+      'a[href="/registration"]:has-text("Programs")',
+      'a[href="/registration"]',
+      'nav a.nav-link--registration',
       'a:has-text("Programs")',
       'nav a:has-text("Programs")', 
-      'a[href*="registration"]',
-      'a[href*="programs"]',
-      '.menu a:has-text("Programs")',
-      '.sidebar a:has-text("Programs")'
+      'a[href*="registration"]'
     ];
 
     let programsClicked = false;
     for (const selector of programsSelectors) {
-      const programsLink = page.locator(selector).first();
-      if (await programsLink.count() > 0 && await programsLink.isVisible()) {
+      try {
+        const programsLink = page.locator(selector).first();
+        if (await programsLink.count() > 0) {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: Found Programs link with selector: ${selector}, checking visibility...`
+          });
+          
+          // Ensure element is visible and scrolled into view
+          await programsLink.scrollIntoViewIfNeeded();
+          await programsLink.waitFor({ state: "visible", timeout: 5000 });
+          
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: Clicking Programs link...`
+          });
+          
+          await programsLink.click();
+          await page.waitForLoadState("networkidle", { timeout: 15000 });
+          programsClicked = true;
+          break;
+        }
+      } catch (e) {
         await supabase.from('plan_logs').insert({
           plan_id,
-          msg: `Worker: Found Programs link with selector: ${selector}`
+          msg: `Worker: Selector ${selector} failed: ${e.message}`
         });
-        await programsLink.click();
-        await page.waitForLoadState("networkidle", { timeout: 15000 });
-        programsClicked = true;
-        break;
+        // Continue with next selector
       }
     }
 
