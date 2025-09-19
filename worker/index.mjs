@@ -2452,14 +2452,6 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
         code: "BLACKHAWK_DISCOVERY_FAILED" 
       };
     }
-      msg: `BLACKHAWK_DISCOVERY_FAILED - Error: ${error.message}`
-    });
-    
-    return { 
-      success: false, 
-      error: error.message, 
-      code: "BLACKHAWK_DISCOVERY_FAILED" 
-    };
   }
 }
 
