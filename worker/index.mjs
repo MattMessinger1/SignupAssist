@@ -798,46 +798,15 @@ async function executeRunPlanBackground(plan_id, supabase) {
       // Restore session state before attempting login
       await restoreSessionState(page, plan, supabase);
       
-      // Navigate to base origin and check if already logged in
-      await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Checking login status..." });
-      await page.goto(normalizedBaseUrl, { waitUntil: 'networkidle' });
-      
-      const content = (await page.content()).toLowerCase();
-      const url = page.url();
-      const loggedIn = url.includes('dashboard') || content.includes('logout') || content.includes('sign out');
-      
-      if (loggedIn) {
-        await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Already logged in (restored session)' });
-        
-        // Navigate to dashboard to ensure proper authentication state
-        const dashboardUrl = `${normalizedBaseUrl}/user/dashboard`;
-        await page.goto(dashboardUrl, { waitUntil: 'networkidle', timeout: 15000 });
-        await supabase.from('plan_logs').insert({ 
-          plan_id, 
-          msg: 'Worker: Navigated to authenticated dashboard to confirm session' 
-        });
-      } else {
-        // Proceed with existing login flow
-        const loginUrl = `${normalizedBaseUrl}/user/login`;
-        console.log(`Worker: Normalized login URL = ${loginUrl}`);
-        
-        // Perform login with enhanced Playwright
-        await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Navigating to login: ${loginUrl}` });
-        const loginResult = await advancedLoginWithPlaywright(page, loginUrl, credentials.email, credentials.password, supabase, plan_id);
-        if (!loginResult.success) {
-          await supabase.from("plan_logs").insert({
-            plan_id,
-            msg: `Worker: Login failed: ${loginResult.error}`
-          });
-          
-          await supabase
-            .from('plans')
-            .update({ status: 'failed' })
-            .eq('id', plan_id);
-          
-          return;
-        }
-      }
+      // Use new robust authentication helper
+      await ensureAuthenticated(page, normalizedBaseUrl, credentials.email, credentials.password, supabase, plan_id);
+
+      // Open Programs from sidebar (or direct) to reach the list
+      await openProgramsFromSidebar(page, normalizedBaseUrl, supabase, plan_id);
+
+      // Now wait for listing to be ready
+      await page.waitForSelector('.views-row, table, .row, .program, .event', { timeout: 15000 });
+      await page.waitForLoadState('networkidle');
 
       // Continue with signup execution...
       const signupResult = await executeSignup(page, plan, credentials, nordicColorGroup, nordicRental, volunteer, allowNoCvv, supabase);
@@ -2166,7 +2135,7 @@ async function advancedHoldOpenMicroActivity(page, targetElement) {
 
 // ===== BLACKHAWK PROGRAM DISCOVERY =====
 
-async function discoverBlackhawkRegistration(page, plan, supabase) {
+async function discoverBlackhawkRegistration(page, plan, credentials, supabase) {
   const plan_id = plan.id;
   
   try {
@@ -2401,6 +2370,50 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
       plan_id,
       msg: `Worker: Ready for program discovery on ${finalUrl}, page title: "${finalTitle}"`
     });
+    
+    // GUARD: Check if redirected to login at any time during discovery
+    if (page.url().includes('/user/login')) {
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: GUARD - Redirected to login during discovery, re-authenticating...`
+      });
+      
+      // Log current page URL and take screenshot for debugging
+      try {
+        const screenshot = await page.screenshot({ type: 'png' });
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: DEBUG - Login redirect at URL: ${page.url()}, screenshot captured`
+        });
+      } catch (e) {
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: DEBUG - Login redirect at URL: ${page.url()}, screenshot failed: ${e.message}`
+        });
+      }
+      
+      // Re-authenticate using the helper
+      try {
+        // Re-authenticate using the helper with actual credentials
+        await ensureAuthenticated(page, baseUrl, credentials.email, credentials.password, supabase, plan_id);
+        
+        // After re-auth, try to get back to registration page
+        await openProgramsFromSidebar(page, baseUrl, supabase, plan_id);
+        await page.waitForLoadState('networkidle');
+        
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: GUARD - Re-authentication successful, resuming discovery...`
+        });
+        
+      } catch (authError) {
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: GUARD - Re-authentication failed: ${authError.message}`
+        });
+        throw new Error('Session authentication failed during discovery - action required');
+      }
+    }
     
     // Check if we're still on a login page
     const hasLoginForm = await page.locator('input[type="password"], input[name="password"], #edit-pass').count() > 0;
@@ -2723,7 +2736,7 @@ async function executeSignup(page, plan, credentials, nordicColorGroup, nordicRe
       msg: "Worker: Using Blackhawk discovery function for program registration"
     });
     
-    const discoveryResult = await discoverBlackhawkRegistration(page, plan, supabase);
+    const discoveryResult = await discoverBlackhawkRegistration(page, plan, credentials, supabase);
     
     if (discoveryResult.success) {
       await supabase.from('plan_logs').insert({
