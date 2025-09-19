@@ -2299,11 +2299,20 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
       }
     }
 
-    // Step 2: Look for and click the Programs navigation link
-    await supabase.from('plan_logs').insert({
-      plan_id,
-      msg: `Worker: Looking for Programs navigation link in sidebar`
-    });
+    // Early escape: If already on /registration, skip sidebar navigation entirely
+    const onPrograms = /\/registration$/.test(page.url());
+    if (onPrograms) {
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: 'Worker: Already on /registration — skipping sidebar and proceeding to list parsing'
+      });
+      // Jump directly to the list-parsing block (no sidebar expansion here!)
+    } else {
+      // Step 2: Look for and click the Programs navigation link
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: Looking for Programs navigation link in sidebar`
+      });
 
     // Wait for and debug sidebar content with multiple strategies
     let sidebarFound = false;
@@ -2548,6 +2557,7 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
     if (finalLoginFormCheck) {
       throw new Error('Unable to access registration page - redirected to login');
     }
+    } // End of conditional sidebar navigation block
     
     // A) Optional search filter to reduce noise
     const search = page.locator('input[type="search"], input[name*="search"], input[placeholder*="search" i]').first();
