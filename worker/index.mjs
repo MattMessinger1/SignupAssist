@@ -2547,8 +2547,12 @@ async function discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv
             if (!val || /none|select|choose/i.test(val)) {
               const options = await sel.locator('option').allTextContents().catch(()=> []);
               const idx = options.findIndex(t => t && !/^\s*(-\s*none\s*-|select|choose)/i.test(t));
-              if (idx > 0) await sel.selectOption({ index: idx }).catch(()=>{});
-              await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Required select set to "${options[idx] || 'first non-empty'}"` });
+              if (idx >= 0) {
+                await sel.selectOption({ index: idx }).catch(()=>{});
+                await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Required select set to "${options[idx]}" (index ${idx})` });
+              } else {
+                await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: No valid option found for required select` });
+              }
             }
           }
 
