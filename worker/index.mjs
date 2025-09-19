@@ -2702,49 +2702,18 @@ async function discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv
 
         if (/\/registration\/\d+\/options/.test(url)) {
           await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Options — filling from plan extras' });
-          
-          // Use plan extras to fill options  
-          const optionsResult = await handleBlackhawkOptions(page, plan, supabase, plan_id);
-          if (optionsResult && optionsResult.requiresAction) {
-            return optionsResult;
-          }
 
-          // Short-circuit: skip generic fallback if we ran plan-driven handler
+          await handleBlackhawkOptions(page, plan, supabase, plan_id);
+
+          // Short-circuit: DO NOT run generic required-select filler here
           await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Skipping generic required-select fallback (plan extras used)' });
-          
-          // Click Next and verify we moved to Cart or Checkout
-          const res = await clickNextAndWaitForChange(page, [/\/cart(\?|$)/, /\/checkout\/\d+/, /\/(complete|success|confirmation|thank-you|registered)/]);
+
+          // Advance by clicking Next
+          const res = await clickNextAndWaitForChange(page, [/\/cart(\?|$)/, /\/checkout\/\d+/]);
           if (!res.changed) {
-            // Log any inline validation messages so we know exactly why it stuck
             await logMessages(page, supabase, plan_id, 'Options post-Next');
-
-            // Extra: capture which selects are still placeholders
-            const unresolved = [];
-            for (let i = 0; i < n; i++) {
-              const sel = req.nth(i);
-              const valueText = await sel.locator('option:checked').innerText().catch(()=> '');
-              if (isPlaceholderText(valueText)) unresolved.push(valueText || '(empty)');
-            }
-            if (unresolved.length) {
-              await supabase.from('plan_logs').insert({
-                plan_id, msg: `Worker: Still placeholder selections: ${JSON.stringify(unresolved)}`
-              });
-            }
-
             return { success:true, requiresAction:true, details:{ message:`Stuck on Options (${res.reason})` } };
           }
-          
-          // Check if we landed directly on a completion page (free programs might skip cart)
-          const currentUrl = page.url();
-          if (/\/(complete|success|confirmation|thank-you|registered)/.test(currentUrl)) {
-            await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Landed on completion page directly from Options (likely free program)' });
-            
-            if (await page.locator('*:has-text("Registration complete"), *:has-text("Successfully registered"), *:has-text("Thank you"), *:has-text("confirmed")').count()) {
-              await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Free program registration completed successfully' });
-              return { success: true, message: 'Free program registration completed from Options' };
-            }
-          }
-          
           continue;
         }
 
