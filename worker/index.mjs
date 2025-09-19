@@ -2601,27 +2601,37 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
       
       // Re-authenticate using the helper
       try {
-        // Re-authenticate using the helper with actual credentials
-        await ensureAuthenticated(page, baseUrl, credentials.email, credentials.password, supabase, plan_id);
-        
-        // After re-auth, try to get back to registration page
-        try {
-          await openProgramsFromSidebar(page, baseUrl, supabase, plan_id);
-        } catch (navError) {
-          if (String(navError).includes('REAUTH_AND_RETRY_REGISTRATION')) {
-            await supabase.from('plan_logs').insert({
-              plan_id,
-              msg: `Worker: GUARD - Second login redirect during navigation retry`
-            });
-            throw new Error('Persistent login issues - action required');
-          }
-          throw navError;
+        // Immediately call ensureAuthenticated with actual credentials
+        const authResult = await ensureAuthenticated(page, baseUrl, credentials.email, credentials.password, supabase, plan_id);
+        if (!authResult.success) {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: Authentication recovery failed: ${authResult.error}`
+          });
+          throw new Error(`Authentication recovery failed: ${authResult.error}`);
         }
-        await page.waitForLoadState('networkidle');
+        
+        // Navigate directly to /registration once (do not go back to dashboard)
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Authentication recovered, navigating directly to /registration`
+        });
+        
+        await page.goto(`${normalizedBaseUrl}/registration`, { waitUntil: 'networkidle' });
+        await page.waitForTimeout(2000);
+        
+        // Verify we're not still on login page
+        if (/\/user\/login/.test(page.url())) {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: Still on login page after auth recovery: ${page.url()}`
+          });
+          throw new Error('Unable to recover from login redirect');
+        }
         
         await supabase.from('plan_logs').insert({
           plan_id,
-          msg: `Worker: GUARD - Re-authentication successful, resuming discovery...`
+          msg: `Worker: GUARD - Re-authentication successful, now on ${page.url()}`
         });
         
       } catch (authError) {
