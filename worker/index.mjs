@@ -49,7 +49,89 @@ async function scrollUntilVisible(page, selector, maxScrolls = 20) {
     await page.mouse.wheel(0, 400);
     await page.waitForTimeout(200);
   }
-  throw new Error(`Element not visible for selector: ${selector}`);
+}
+
+async function ensureAuthenticated(page, baseUrl, email, password, supabase, plan_id) {
+  // Always perform a real login unless we can prove we're authenticated
+  await page.goto(`${baseUrl}/user/login`, { waitUntil: "networkidle" });
+
+  // If already logged in, /user/login may redirect or show "Logout"
+  const url = page.url();
+  const bodyText = (await page.locator('body').innerText().catch(() => '')) || '';
+
+  const looksLoggedIn = url.includes('/user/dashboard') ||
+                        /logout|sign out/i.test(bodyText);
+
+  if (!looksLoggedIn) {
+    // Perform login
+    await page.waitForSelector('#edit-name', { timeout: 15000 });
+    await page.fill('#edit-name', email);
+    await page.fill('#edit-pass', password);
+    await page.click('#edit-submit');
+    await page.waitForLoadState('networkidle');
+
+    // Verify by checking for dashboard or presence of an SESS cookie
+    const cookies = await page.context().cookies();
+    const hasDrupalSess = cookies.some(c => /S?SESS/i.test(c.name));
+    const postLoginUrl = page.url();
+    const postLoginText = (await page.locator('body').innerText().catch(() => '')) || '';
+
+    if (!hasDrupalSess && !postLoginUrl.includes('/user') && !/logout|sign out/i.test(postLoginText)) {
+      await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Login verification failed' });
+      throw new Error('LOGIN_VERIFICATION_FAILED');
+    }
+  }
+
+  await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Authenticated session verified' });
+}
+
+async function openProgramsFromSidebar(page, baseUrl, supabase, plan_id) {
+  // Make sure the sidebar is visible (desktop-like viewport)
+  try { await page.setViewportSize({ width: 1280, height: 900 }); } catch {}
+
+  // If there's a hamburger or collapsible, open it
+  const toggles = [
+    'button[aria-label*="menu" i]',
+    '.navbar-toggle, .menu-toggle, .offcanvas-toggle',
+    '#block-register .collapsible-block-action, [data-once*="collapsiblock"] .collapsible-block-action'
+  ];
+  for (const sel of toggles) {
+    const btn = page.locator(sel).first();
+    if (await btn.count()) { try { await btn.click(); await page.waitForTimeout(300); } catch {} }
+  }
+
+  // Robust locators for Programs link
+  const candidates = [
+    'nav a.nav-link--registration:has-text("Programs")',
+    'a[href="/registration"]:has-text("Programs")',
+    'a:has-text("Programs")',
+    '#block-register a[href="/registration"]',
+    'nav[aria-label*="register" i] a:has-text("Programs")'
+  ];
+
+  for (const sel of candidates) {
+    const link = page.locator(sel).first();
+    if (await link.count()) {
+      await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Clicking Programs via ${sel}` });
+      await link.scrollIntoViewIfNeeded().catch(() => {});
+      await link.click({ timeout: 5000 }).catch(() => {});
+      await page.waitForLoadState('networkidle');
+      break;
+    }
+  }
+
+  // If we didn't land on /registration, go directly (but only after auth)
+  if (!/\/registration(\/events)?$/.test(page.url())) {
+    await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Programs link not found; navigating to /registration' });
+    await page.goto(`${baseUrl}/registration`, { waitUntil: 'networkidle' });
+  }
+
+  // If redirected to login anyway, re-auth and retry once
+  if (page.url().includes('/user/login')) {
+    await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Redirected to login when opening /registration; re-authenticating' });
+    await ensureAuthenticated(page, baseUrl, email, password, supabase, plan_id);
+    await page.goto(`${baseUrl}/registration`, { waitUntil: 'networkidle' });
+  }
 }
 
 console.log("🛡️ Setting up error handlers...");
