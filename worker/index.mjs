@@ -46,9 +46,10 @@ async function scrollUntilVisible(page, selector, maxScrolls = 20) {
       }
     }
     // scroll down a bit and retry
-    await page.mouse.wheel(0, 400);
-    await page.waitForTimeout(200);
+    await page.mouse.wheel(0, 450);
+    await page.waitForTimeout(150);
   }
+  throw new Error(`Element not visible for selector: ${selector}`);
 }
 
 async function ensureAuthenticated(page, baseUrl, email, password, supabase, plan_id) {
@@ -129,8 +130,9 @@ async function openProgramsFromSidebar(page, baseUrl, supabase, plan_id) {
   // If redirected to login anyway, re-auth and retry once
   if (page.url().includes('/user/login')) {
     await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Redirected to login when opening /registration; re-authenticating' });
-    await ensureAuthenticated(page, baseUrl, email, password, supabase, plan_id);
-    await page.goto(`${baseUrl}/registration`, { waitUntil: 'networkidle' });
+    // Note: email and password will be passed from the calling function
+    await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Need credentials for re-authentication - caller should handle' });
+    throw new Error('LOGIN_REDIRECT_DETECTED');
   }
 }
 
@@ -802,7 +804,21 @@ async function executeRunPlanBackground(plan_id, supabase) {
       await ensureAuthenticated(page, normalizedBaseUrl, credentials.email, credentials.password, supabase, plan_id);
 
       // Open Programs from sidebar (or direct) to reach the list
-      await openProgramsFromSidebar(page, normalizedBaseUrl, supabase, plan_id);
+      try {
+        await openProgramsFromSidebar(page, normalizedBaseUrl, supabase, plan_id);
+      } catch (error) {
+        if (error.message === 'LOGIN_REDIRECT_DETECTED') {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: 'Worker: Login redirect detected during Programs navigation, re-authenticating...'
+          });
+          
+          await ensureAuthenticated(page, normalizedBaseUrl, credentials.email, credentials.password, supabase, plan_id);
+          await openProgramsFromSidebar(page, normalizedBaseUrl, supabase, plan_id);
+        } else {
+          throw error;
+        }
+      }
 
       // Now wait for listing to be ready
       await page.waitForSelector('.views-row, table, .row, .program, .event', { timeout: 15000 });
@@ -2398,7 +2414,18 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
         await ensureAuthenticated(page, baseUrl, credentials.email, credentials.password, supabase, plan_id);
         
         // After re-auth, try to get back to registration page
-        await openProgramsFromSidebar(page, baseUrl, supabase, plan_id);
+        try {
+          await openProgramsFromSidebar(page, baseUrl, supabase, plan_id);
+        } catch (navError) {
+          if (navError.message === 'LOGIN_REDIRECT_DETECTED') {
+            await supabase.from('plan_logs').insert({
+              plan_id,
+              msg: `Worker: GUARD - Second login redirect during navigation retry`
+            });
+            throw new Error('Persistent login issues - action required');
+          }
+          throw navError;
+        }
         await page.waitForLoadState('networkidle');
         
         await supabase.from('plan_logs').insert({
