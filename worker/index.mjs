@@ -33,21 +33,18 @@ if (missingStartupEnvVars.length > 0) {
  * @returns The visible element
  * @throws Error if element not found or not visible after maxScrolls
  */
-async function scrollUntilVisible(page, selector, maxScrolls = 20) {
+async function scrollUntilVisible(page, selector, maxScrolls = 24) {
   for (let i = 0; i < maxScrolls; i++) {
-    const element = page.locator(selector).first();
-    if (await element.count()) {
+    const el = page.locator(selector).first();
+    if (await el.count()) {
       try {
-        await element.scrollIntoViewIfNeeded();
-        await element.waitFor({ state: "visible", timeout: 2000 });
-        return element;
-      } catch {
-        // continue scrolling
-      }
+        await el.scrollIntoViewIfNeeded();
+        await el.waitFor({ state: "visible", timeout: 1500 });
+        return el;
+      } catch {}
     }
-    // scroll down a bit and retry
-    await page.mouse.wheel(0, 450);
-    await page.waitForTimeout(150);
+    await page.mouse.wheel(0, 550);
+    await page.waitForTimeout(120);
   }
   throw new Error(`Element not visible for selector: ${selector}`);
 }
