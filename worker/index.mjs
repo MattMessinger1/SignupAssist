@@ -2243,6 +2243,17 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
       throw new Error('Session authentication failed - redirected to login');
     }
 
+    // Precondition guard: Ensure we're on /registration page to avoid sidebar loops
+    const normalizedBaseUrl = baseUrl.replace(/\/$/, '');
+    if (!/\/registration$/.test(page.url())) {
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: Not on /registration page, navigating from ${page.url()} to ${normalizedBaseUrl}/registration`
+      });
+      await page.goto(`${normalizedBaseUrl}/registration`, { waitUntil: 'networkidle' });
+      await page.waitForTimeout(2000);
+    }
+
     // Step 2: Look for and click the Programs navigation link
     await supabase.from('plan_logs').insert({
       plan_id,
