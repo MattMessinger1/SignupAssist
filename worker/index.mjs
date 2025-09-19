@@ -2295,39 +2295,26 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
       return { success:false, error:'No matching program rows', code:'BLACKHAWK_DISCOVERY_FAILED' };
     }
 
-    // Click row-scoped Register button
-    const ROW_REGISTER_SEL = [
+    // The button is an anchor: <a class="btn btn-secondary btn-sm" href="/registration/<id>/start">Register</a>
+    const REG_IN_ROW = [
       'a.btn.btn-secondary.btn-sm:has-text("Register")',
-      'a[href*="/registration/"][href$="/start"]', 
-      'button:has-text("Register")' // fallback if implemented as button
+      'a[href*="/registration/"][href$="/start"]'
     ].join(', ');
 
-    const rowRegister = targetRow.locator(ROW_REGISTER_SEL).first();
-    if (!(await rowRegister.count())) {
-      await supabase.from('plan_logs').insert({ 
-        plan_id, 
-        msg: 'Worker: Register button not present inside matched program row' 
+    const regBtn = targetRow.locator(REG_IN_ROW).first();
+    if (!(await regBtn.count())) {
+      await supabase.from('plan_logs').insert({
+        plan_id, msg: 'Worker: Register not present in matched table row (maybe Sold Out?)'
       });
-      return { success:false, error:'Register not found in program row', code:'BLACKHAWK_DISCOVERY_FAILED' };
+      return { success:false, error:'Register not found in row', code:'BLACKHAWK_DISCOVERY_FAILED' };
     }
 
-    await supabase.from('plan_logs').insert({
-      plan_id,
-      msg: `Worker: Found row-scoped Register button, clicking...`
-    });
-
-    // Ensure it's visible and click
-    await rowRegister.scrollIntoViewIfNeeded().catch(()=>{});
-    await rowRegister.click();
-
-    // Must navigate to /registration/<id>/start
+    await regBtn.scrollIntoViewIfNeeded().catch(()=>{});
+    await regBtn.click();
     await page.waitForURL(/\/registration\/\d+\/start/, { timeout: 15000 });
-    await supabase.from('plan_logs').insert({ 
-      plan_id, 
-      msg: `Worker: Navigated to start page ${page.url()}` 
-    });
+    await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Start page opened: ${page.url()}` });
 
-    return { success: true, startUrl: page.url() };
+    return { success:true, startUrl: page.url() };
   
   } catch (error) {
     console.error("Discovery error:", error);
