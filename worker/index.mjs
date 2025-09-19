@@ -84,6 +84,15 @@ async function ensureAuthenticated(page, baseUrl, email, password, supabase, pla
 }
 
 async function openProgramsFromSidebar(page, baseUrl, supabase, plan_id) {
+  // Guardrail: Never re-open sidebar on /registration
+  if (/\/registration$/.test(page.url())) {
+    await supabase.from('plan_logs').insert({ 
+      plan_id, 
+      msg: 'Worker: Skipping sidebar expansion - already on /registration page' 
+    });
+    return;
+  }
+
   try { await page.setViewportSize({ width: 1280, height: 900 }); } catch {}
 
   // Expand sidebar/hamburger/collapsible Register section if needed
@@ -2151,50 +2160,54 @@ async function logDiscoveryFailure(page, plan_id, error, code, supabase) {
     // Log current URL
     await supabase.from('plan_logs').insert({
       plan_id,
-      msg: `DISCOVERY FAILURE - Current URL: ${currentUrl}`
+      msg: `DISCOVERY FAILURE - Current URL: ${currentUrl} | Error: ${error}`
     });
     
-    // Get first 10 row texts for debugging
-    const containers = await page.locator('.views-row, tr, article, .card, tbody tr').all();
-    const rowTexts = [];
-    
-    for (let i = 0; i < Math.min(10, containers.length); i++) {
-      try {
-        const text = await containers[i].innerText();
-        rowTexts.push(`Row ${i+1}: ${text.substring(0, 200).replace(/\n/g, ' ')}...`);
-      } catch (e) {
-        rowTexts.push(`Row ${i+1}: Error reading text`);
+    // Capture first 8 table rows specifically for debugging  
+    const tableRowsDebug = [];
+    try {
+      const tableRows = page.locator('tbody tr, table tr').filter({
+        has: page.locator('td, th')
+      });
+      const rowCount = await tableRows.count();
+      
+      for (let i = 0; i < Math.min(8, rowCount); i++) {
+        const rowText = await tableRows.nth(i).innerText().catch(() => '');
+        tableRowsDebug.push(`Row ${i+1}: ${rowText.substring(0, 200).replace(/\n/g, ' ')}`);
       }
+    } catch (e) {
+      tableRowsDebug.push(`Error capturing table rows: ${e.message}`);
     }
     
     await supabase.from('plan_logs').insert({
       plan_id,
-      msg: `DISCOVERY FAILURE - Row dump (${containers.length} total):\n${rowTexts.join('\n')}`
+      msg: `DISCOVERY FAILURE - First 8 table rows:\n${tableRowsDebug.join('\n')}`
     });
     
-    // Save screenshot
+    // Capture full-page screenshot
     try {
       const screenshot = await page.screenshot({ fullPage: true });
       const base64Screenshot = screenshot.toString('base64');
       await supabase.from('plan_logs').insert({
         plan_id,
-        msg: `DISCOVERY FAILURE - Screenshot saved (${base64Screenshot.length} bytes)`
+        msg: `DISCOVERY FAILURE - Screenshot: data:image/png;base64,${base64Screenshot}`
       });
     } catch (screenshotError) {
       await supabase.from('plan_logs').insert({
         plan_id,
-        msg: `DISCOVERY FAILURE - Could not capture screenshot: ${screenshotError.message}`
+        msg: `DISCOVERY FAILURE - Screenshot capture failed: ${screenshotError.message}`
       });
     }
     
   } catch (logError) {
     await supabase.from('plan_logs').insert({
       plan_id,
-      msg: `DISCOVERY FAILURE - Error during failure logging: ${logError.message}`
+      msg: `DISCOVERY FAILURE - Error during failure logging: ${logError.message} | Original Error: ${error}`
     });
   }
   
-  return { success: false, error, code };
+  return { success: false, error, code, url: currentUrl };
+}
 }
 
 async function discoverBlackhawkRegistration(page, plan, credentials, supabase) {
@@ -2209,13 +2222,23 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
     const baseUrl = plan.base_url || `https://${(plan.org||'').toLowerCase().replace(/[^a-z0-9]/g,'')}.skiclubpro.team`;
     const normalizedBaseUrl = baseUrl.replace(/\/$/, '');
     
-    // 1) Precondition: we are on /registration (Programs list)
+    // 1) Precondition: we are on /registration (Programs list)  
     if (!/\/registration$/.test(page.url())) {
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Worker: Not on /registration page, navigating from ${page.url()} to ${normalizedBaseUrl}/registration`
-      });
-      await page.goto(`${normalizedBaseUrl}/registration`, { waitUntil: 'networkidle' });
+      // Check for login redirect and handle immediately
+      if (/\/user\/login\?destination=/.test(page.url())) {
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Detected login redirect at ${page.url()}, authenticating and going to /registration`
+        });
+        await ensureAuthenticated(page, normalizedBaseUrl, credentials.email, credentials.password, supabase, plan_id);
+        await page.goto(`${normalizedBaseUrl}/registration`, { waitUntil: 'networkidle' });
+      } else {
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Not on /registration page, navigating from ${page.url()} to ${normalizedBaseUrl}/registration`
+        });
+        await page.goto(`${normalizedBaseUrl}/registration`, { waitUntil: 'networkidle' });
+      }
     }
     await page.waitForLoadState('networkidle');
     
