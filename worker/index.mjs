@@ -2178,19 +2178,19 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
       const textContainers = await page.locator('*').filter({ hasText: /nordic|kids|wednesday/i }).all();
       containers.push(...textContainers);
     }
-        
-        if (containers.length === 0) {
-          await supabase.from('plan_logs').insert({
-            plan_id,
-            msg: `Worker: No program containers found on ${regUrl}`
-          });
-          continue;
-        }
-        
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: Found ${containers.length} program containers to analyze`
-        });
+    
+    if (containers.length === 0) {
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: No program containers found on current page`
+      });
+      throw new Error('No program containers found on registration page');
+    }
+    
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: Found ${containers.length} program containers to analyze`
+    });
         
         // Score each container using fuzzy matching
         let bestMatch = null;
