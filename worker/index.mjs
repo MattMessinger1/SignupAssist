@@ -2201,6 +2201,89 @@ function sawSuccess(url, bodyText) {
          /(thank you|registration complete|successfully registered|order number)/i.test(bodyText);
 }
 
+function looksLikeDonationLabel(t='') {
+  const s = t.toLowerCase();
+  return /donat(e|ion)|tip|contribution|gift|support|fund/i.test(s);
+}
+
+function looksLikeOptionalLabel(t='') {
+  const s = t.toLowerCase();
+  return /optional|add[-\s]*on|addon|extra|upsell|volunteer/i.test(s);
+}
+
+async function setNumericInputToZero(scope) {
+  const nums = scope.locator('input[type="number"], input[type="text"][inputmode="numeric"], input[pattern*="\\d"]');
+  const n = await nums.count();
+  for (let i = 0; i < n; i++) {
+    const el = nums.nth(i);
+    const name = (await el.getAttribute('name')) || '';
+    const id   = (await el.getAttribute('id')) || '';
+    const label = await scope.locator(`label[for="${id}"]`).innerText().catch(()=>'');
+
+    if (looksLikeDonationLabel(name) || looksLikeDonationLabel(id) || looksLikeDonationLabel(label)) {
+      await el.fill('0');
+    }
+  }
+}
+
+async function uncheckDonationCheckboxes(scope) {
+  const cbs = scope.locator('input[type="checkbox"]');
+  const n = await cbs.count();
+  for (let i = 0; i < n; i++) {
+    const el = cbs.nth(i);
+    const id = (await el.getAttribute('id')) || '';
+    const name = (await el.getAttribute('name')) || '';
+    const label = await scope.locator(`label[for="${id}"]`).innerText().catch(()=>'');
+
+    if (looksLikeDonationLabel(name) || looksLikeDonationLabel(id) || looksLikeDonationLabel(label)) {
+      if (await el.isChecked()) await el.uncheck().catch(()=>{});
+    }
+  }
+}
+
+async function selectNoThanksOrZero(scope) {
+  // Handle select dropdowns with "No thanks/None/$0"
+  const selects = scope.locator('select');
+  const n = await selects.count();
+  for (let i = 0; i < n; i++) {
+    const sel = selects.nth(i);
+    const id = (await sel.getAttribute('id')) || '';
+    const name = (await sel.getAttribute('name')) || '';
+    const label = await scope.locator(`label[for="${id}"]`).innerText().catch(()=>'');
+
+    const opts = sel.locator('option');
+    const texts = await opts.allTextContents().catch(()=>[]);
+    const lower = texts.map(t => t.toLowerCase());
+
+    // For donation-like selects, force $0 / none
+    if (looksLikeDonationLabel(name) || looksLikeDonationLabel(id) || looksLikeDonationLabel(label)) {
+      let idx = lower.findIndex(t => /\$?\s*0(\.00)?|none|no thanks|not now|skip/i.test(t));
+      if (idx < 0 && texts.length) idx = 0; // last resort
+      if (idx >= 0) await sel.selectOption({ index: idx }).catch(()=>{});
+      continue;
+    }
+
+    // For optional/upsell selects, prefer a non-charging choice
+    if (looksLikeOptionalLabel(label) || looksLikeOptionalLabel(name)) {
+      let idx = lower.findIndex(t => /\$?\s*0(\.00)?|none|no thanks|not required/i.test(t));
+      if (idx < 0 && texts.length) idx = 0;
+      if (idx >= 0) await sel.selectOption({ index: idx }).catch(()=>{});
+    }
+  }
+}
+
+// One call to sanitize a page section
+async function suppressDonationsAndPickFree(scope, supabase, plan_id, where) {
+  try {
+    await setNumericInputToZero(scope);
+    await uncheckDonationCheckboxes(scope);
+    await selectNoThanksOrZero(scope);
+    await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Donation/optional fields sanitized on ${where}` });
+  } catch (e) {
+    await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Donation sanitize error on ${where}: ${e.message}` });
+  }
+}
+
 async function logDiscoveryFailure(page, plan_id, error, code, supabase) {
   try {
     const currentUrl = page.url();
@@ -2362,6 +2445,10 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
       
       // === Start (participant) ===
       await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Start page — selecting participant' });
+      
+      // Sanitize any donation widgets on start page
+      await suppressDonationsAndPickFree(page, supabase, plan_id, 'Start page widgets');
+      
       const child = (plan.child_name || '').trim();
       const participantOk = await selectParticipant(page, child);
       if (!participantOk) {
@@ -2375,6 +2462,9 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
       // === Options (if present) ===
       if (/\/registration\/\d+\/options/.test(page.url())) {
         await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Options page — filling required fields' });
+
+        // Sanitize donations and optional fields first
+        await suppressDonationsAndPickFree(page, supabase, plan_id, 'Options');
 
         // Rentals example from screenshots (Parent Tot). Default: "We have our own skis"
         const rentalsPref = (plan?.extras?.rentals || 'We have our own skis').toLowerCase();
@@ -2394,7 +2484,34 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
 
       // === Cart ===
       if (/\/cart(\?|$)/.test(page.url())) {
-        await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Cart — clicking Checkout' });
+        await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Cart — cleaning donations and checking out' });
+        
+        // Remove donation line items before checkout
+        try {
+          // Look for donation rows by label keywords
+          const rows = page.locator('table tbody tr');
+          const n = await rows.count();
+          for (let i = 0; i < n; i++) {
+            const row = rows.nth(i);
+            const txt = ((await row.innerText().catch(()=>'')) || '').toLowerCase();
+            if (looksLikeDonationLabel(txt)) {
+              // common pattern: a remove checkbox or link in row
+              const removeCb = row.locator('input[type="checkbox"][name*="remove"], input[type="checkbox"][name*="delete"]').first();
+              const removeBtn = row.locator('a:has-text("Remove"), button:has-text("Remove"), input[type="submit"][value*="Remove"]').first();
+              if (await removeCb.count()) await removeCb.check().catch(()=>{});
+              if (await removeBtn.count()) await removeBtn.click().catch(()=>{});
+            }
+          }
+          const update = page.locator('button:has-text("Update cart"), input[type="submit"][value*="Update"]').first();
+          if (await update.count()) { await update.click(); await page.waitForLoadState('networkidle'); }
+          await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Cart cleaned of donations' });
+        } catch(e) {
+          await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Cart donation cleanup error: ${e.message}` });
+        }
+
+        // Sanitize any remaining donation widgets
+        await suppressDonationsAndPickFree(page, supabase, plan_id, 'Cart widgets');
+        
         const checkoutBtn = page.locator('#edit-checkout, button#edit-checkout, button:has-text("Checkout")').first();
         if (await checkoutBtn.count()) {
           await checkoutBtn.scrollIntoViewIfNeeded().catch(()=>{});
@@ -2407,11 +2524,25 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
       if (/\/checkout\/\d+\/(installments|payment)/.test(page.url()) || /\/checkout\/\d+($|\?)/.test(page.url())) {
         await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: On Checkout — selecting saved payment method` });
 
-        // Prefer an existing saved card radio (e.g., "Visa ending in 7774")
-        const saved = page.locator('input[type="radio"][name*="payment"][value*="saved"], input[type="radio"][name*="payment-method"]').first();
-        const anyRadio = saved.count() ? saved : page.locator('input[type="radio"]').first();
-        if (await anyRadio.count()) {
-          await anyRadio.check().catch(()=>{});
+        // Sanitize any donation widgets on checkout page
+        await suppressDonationsAndPickFree(page, supabase, plan_id, 'Checkout widgets');
+
+        // Prefer saved payment; avoid raw card entry unless allow_no_cvv true
+        const savedRadio = page.locator('input[type="radio"][name*="payment"][value*="saved"], input[type="radio"][name*="payment-method"]').first();
+        if (await savedRadio.count()) {
+          await savedRadio.check().catch(()=>{});
+        } else {
+          // If only "Credit card" (PAN form) is present and allow_no_cvv is false → bail
+          const hasCardForm = await page.locator('input[name*="cardnumber"], iframe[src*="card"], input[autocomplete="cc-number"]').count();
+          if (hasCardForm && !allowNoCvv) {
+            await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Checkout requires full card entry — action required' });
+            return { success:true, requiresAction:true, details:{ message:'Payment requires card entry' } };
+          }
+          // Fallback to any radio option
+          const anyRadio = page.locator('input[type="radio"]').first();
+          if (await anyRadio.count()) {
+            await anyRadio.check().catch(()=>{});
+          }
         }
 
         const cont = page.locator('button:has-text("Continue to Review"), #edit-actions-next, button#edit-actions-next').first();
