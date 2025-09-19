@@ -2105,7 +2105,7 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
       msg: `Worker: Using fuzzy matchers - name: ${nameMatcher}, day: ${dayMatcher}, time: ${timeMatcher}`
     });
 
-    // Step 1: Ensure we're on the authenticated dashboard
+    // Step 1: Ensure we're on the authenticated dashboard and wait for dynamic content
     const currentUrl = page.url();
     if (!currentUrl.includes('dashboard')) {
       const dashboardUrl = `${baseUrl}/user/dashboard`;
@@ -2115,6 +2115,22 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
         msg: `Worker: Navigated to dashboard: ${dashboardUrl}`
       });
     }
+    
+    // Wait for dynamic content to load and verify authentication
+    await page.waitForTimeout(3000);
+    await page.waitForLoadState('domcontentloaded');
+    
+    // Check if we're actually authenticated by looking for auth indicators
+    const isAuthenticated = await page.locator('a[href*="logout"], .user-menu, .dashboard-content, [class*="authenticated"]').count() > 0;
+    const hasLoginForm = await page.locator('input[type="password"], input[name="password"], #edit-pass').count() > 0;
+    
+    if (hasLoginForm || !isAuthenticated) {
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: Authentication verification failed - login form present: ${hasLoginForm}, auth indicators: ${isAuthenticated}`
+      });
+      throw new Error('Session authentication failed - redirected to login');
+    }
 
     // Step 2: Look for and click the Programs navigation link
     await supabase.from('plan_logs').insert({
@@ -2122,47 +2138,80 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
       msg: `Worker: Looking for Programs navigation link in sidebar`
     });
 
-    // First, let's debug what's actually in the sidebar
-    try {
-      const sidebarContent = await page.locator('.sidebar, nav, .navigation, .menu').first().innerHTML();
+    // Wait for and debug sidebar content with multiple strategies
+    let sidebarFound = false;
+    const sidebarSelectors = ['.sidebar', 'nav', '.navigation', '.menu', '.main-menu', '#main-navigation', '[role="navigation"]'];
+    
+    for (const selector of sidebarSelectors) {
+      try {
+        await page.waitForSelector(selector, { timeout: 5000 });
+        const sidebarContent = await page.locator(selector).first().innerHTML();
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Found sidebar with selector "${selector}": ${sidebarContent.substring(0, 800)}...`
+        });
+        sidebarFound = true;
+        break;
+      } catch (e) {
+        // Continue to next selector
+      }
+    }
+    
+    if (!sidebarFound) {
+      // Try to get full page HTML to understand structure
+      const pageHTML = await page.content();
+      const bodyHTML = pageHTML.substring(pageHTML.indexOf('<body'), pageHTML.indexOf('</body>') + 7);
       await supabase.from('plan_logs').insert({
         plan_id,
-        msg: `Worker: Sidebar HTML content: ${sidebarContent.substring(0, 500)}...`
-      });
-    } catch (e) {
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Worker: Could not get sidebar content: ${e.message}`
+        msg: `Worker: No sidebar found. Page body structure: ${bodyHTML.substring(0, 1000)}...`
       });
     }
 
-    // Check if REGISTER section needs to be expanded
-    try {
-      const registerSection = page.locator(':has-text("REGISTER")').first();
-      if (await registerSection.count() > 0) {
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: Found REGISTER section, checking if expandable...`
-        });
+    // Enhanced section expansion with better detection
+    const expandableTexts = ['REGISTER', 'Registration', 'Programs', 'Sign Up', 'Enroll'];
+    
+    for (const text of expandableTexts) {
+      try {
+        const sections = await page.locator(`:has-text("${text}")`).all();
         
-        const expandButton = registerSection.locator('button, .toggle, .expand, [aria-expanded]').first();
-        if (await expandButton.count() > 0) {
-          const isExpanded = await expandButton.getAttribute('aria-expanded');
-          if (isExpanded === 'false') {
-            await supabase.from('plan_logs').insert({
-              plan_id,
-              msg: `Worker: Expanding REGISTER section...`
-            });
-            await expandButton.click();
-            await page.waitForTimeout(1000);
+        for (const section of sections) {
+          try {
+            // Look for expansion indicators
+            const expandButtons = [
+              section.locator('button, .toggle, .expand, [aria-expanded], .collapsed, .expandable'),
+              section.locator('..').locator('button, .toggle, .expand, [aria-expanded]'), // Parent level
+              section.locator('+ button, + .toggle') // Adjacent siblings
+            ];
+            
+            for (const buttonLocator of expandButtons) {
+              const buttons = await buttonLocator.all();
+              for (const button of buttons) {
+                const ariaExpanded = await button.getAttribute('aria-expanded');
+                const className = await button.getAttribute('class') || '';
+                
+                if (ariaExpanded === 'false' || className.includes('collapsed')) {
+                  await supabase.from('plan_logs').insert({
+                    plan_id,
+                    msg: `Worker: Expanding ${text} section (aria-expanded: ${ariaExpanded}, class: ${className})`
+                  });
+                  
+                  await button.scrollIntoViewIfNeeded();
+                  await button.click();
+                  await page.waitForTimeout(2000); // Wait for expansion animation
+                  break;
+                }
+              }
+            }
+          } catch (e) {
+            // Continue with next section
           }
         }
+      } catch (e) {
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Error handling ${text} section: ${e.message}`
+        });
       }
-    } catch (e) {
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Worker: Error handling REGISTER section: ${e.message}`
-      });
     }
 
     // Try specific selectors based on actual DOM structure
