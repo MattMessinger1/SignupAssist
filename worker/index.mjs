@@ -2241,6 +2241,13 @@ async function logMessages(page, supabase, plan_id, where) {
   }
 }
 
+function isPlaceholderText(s='') {
+  const t = s.trim().toLowerCase();
+  return t === '' ||
+         /^-?\s*(select|choose|none|--|—)\s*-?$/.test(t) ||
+         /^select (an|a)?\s*option/.test(t);
+}
+
 function isSuccess(url, bodyText) {
   return /\/checkout\/.+\/complete/.test(url) ||
          /(thank you|registration complete|successfully registered|order number)/i.test(bodyText);
@@ -2538,29 +2545,53 @@ async function discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv
         if (/\/registration\/\d+\/options/.test(url)) {
           await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Options — fill required & skip donations' });
 
-          // Ensure required selects are set to a non-placeholder choice
           const req = page.locator('select[required], select.js-form-required');
           const n = await req.count();
-          for (let i=0; i<n; i++){
+          for (let i = 0; i < n; i++) {
             const sel = req.nth(i);
-            const val = await sel.inputValue().catch(()=> '');
-            if (!val || /none|select|choose/i.test(val)) {
-              const options = await sel.locator('option').allTextContents().catch(()=> []);
-              const idx = options.findIndex(t => t && !/^\s*(-\s*none\s*-|select|choose)/i.test(t));
-              if (idx >= 0) {
-                await sel.selectOption({ index: idx }).catch(()=>{});
-                await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Required select set to "${options[idx]}" (index ${idx})` });
-              } else {
-                await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: No valid option found for required select` });
-              }
+
+            // Read all option texts
+            const options = await sel.locator('option').allTextContents().catch(()=>[]);
+            // Find first non-placeholder index
+            let idx = options.findIndex(t => !isPlaceholderText(t));
+            // If still none, try index 1 (common first valid choice), else give up
+            if (idx < 0 && options.length > 1) idx = 1;
+
+            if (idx >= 0) {
+              await sel.selectOption({ index: idx }).catch(()=>{});
+              await supabase.from('plan_logs').insert({
+                plan_id, msg: `Worker: Required select set to "${(options[idx]||'[unknown]').toString().slice(0,60)}"`
+              });
+            } else {
+              await supabase.from('plan_logs').insert({
+                plan_id, msg: 'Worker: Required select had no valid choices (stopping for assist)'
+              });
+              return { success:true, requiresAction:true, details:{ message:'Options page needs a selection the bot cannot choose' } };
             }
           }
 
+          // Sanitize donations/optional ONLY in MAIN content
           await suppressDonationsAndPickFree(page.locator('main'), supabase, plan_id, 'Options');
 
+          // Click Next and verify we moved to Cart or Checkout
           const res = await clickNextAndWaitForChange(page, [/\/cart(\?|$)/, /\/checkout\/\d+/]);
           if (!res.changed) {
+            // Log any inline validation messages so we know exactly why it stuck
             await logMessages(page, supabase, plan_id, 'Options post-Next');
+
+            // Extra: capture which selects are still placeholders
+            const unresolved = [];
+            for (let i = 0; i < n; i++) {
+              const sel = req.nth(i);
+              const valueText = await sel.locator('option:checked').innerText().catch(()=> '');
+              if (isPlaceholderText(valueText)) unresolved.push(valueText || '(empty)');
+            }
+            if (unresolved.length) {
+              await supabase.from('plan_logs').insert({
+                plan_id, msg: `Worker: Still placeholder selections: ${JSON.stringify(unresolved)}`
+              });
+            }
+
             return { success:true, requiresAction:true, details:{ message:`Stuck on Options (${res.reason})` } };
           }
           continue;
