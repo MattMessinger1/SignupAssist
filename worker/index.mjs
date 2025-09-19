@@ -2487,7 +2487,6 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
       };
     }
   }
-}
 
 // ===== EXISTING SIGNUP EXECUTION FUNCTIONS =====
 
