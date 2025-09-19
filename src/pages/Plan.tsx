@@ -626,12 +626,21 @@ export default function Plan() {
                           onValueChange={(value) => setFormData(prev => ({ ...prev, volunteer: value }))}
                         >
                           <SelectTrigger>
-                            <SelectValue placeholder="Select volunteer option" />
+                            <SelectValue placeholder="Select volunteer..." />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="yes">Yes, I can volunteer</SelectItem>
                             <SelectItem value="no">No, cannot volunteer</SelectItem>
-                            <SelectItem value="maybe">Maybe, contact me</SelectItem>
+                            <SelectItem value="instructor">Instructor</SelectItem>
+                            <SelectItem value="assistant instructor">Assistant Instructor</SelectItem>
+                            <SelectItem value="equipment management">Equipment management (wax, storage, repairs)</SelectItem>
+                            <SelectItem value="administrative assistance">Administrative assistance (bibs, flyers, data)</SelectItem>
+                            <SelectItem value="equipment hand out/return">Equipment hand out/return</SelectItem>
+                            <SelectItem value="hot chocolate leader">Hot Chocolate Leader</SelectItem>
+                            <SelectItem value="hot chocolate assistance">Hot Chocolate assistance</SelectItem>
+                            <SelectItem value="on-skis floater">On-skis Floater</SelectItem>
+                            <SelectItem value="grooming">Grooming</SelectItem>
+                            <SelectItem value="bib hand out/return">Bib hand out/return</SelectItem>
+                            <SelectItem value="cookie medal creator">Cookie Medal Creator (end of season)</SelectItem>
                           </SelectContent>
                         </Select>
                         <p className="text-xs text-blue-700">Defaults to first available option</p>
