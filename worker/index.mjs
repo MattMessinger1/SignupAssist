@@ -2756,7 +2756,7 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
     
     return { success:true, startUrl: page.url() };
   
-  } catch (error: any) {
+  } catch (error) {
     console.error("Discovery error:", error);
     return await logDiscoveryFailure(page, plan_id, error.message, 'BLACKHAWK_DISCOVERY_FAILED', supabase);
   }
