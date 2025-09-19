@@ -2208,7 +2208,6 @@ async function logDiscoveryFailure(page, plan_id, error, code, supabase) {
   
   return { success: false, error, code, url: currentUrl };
 }
-}
 
 async function discoverBlackhawkRegistration(page, plan, credentials, supabase) {
   const plan_id = plan.id;
