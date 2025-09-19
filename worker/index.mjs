@@ -2155,6 +2155,52 @@ async function advancedHoldOpenMicroActivity(page, targetElement) {
 // ===== BLACKHAWK PROGRAM DISCOVERY =====
 
 // Helper function for detailed failure logging
+async function selectParticipant(page, fullName) {
+  // Try native <select> first
+  const nativeSel = page.locator('select#edit-field-participant, select[name*="participant"]');
+  if (await nativeSel.count()) {
+    await nativeSel.first().selectOption({ label: fullName }).catch(async () => {
+      // fallback: select by value or partial
+      const options = await nativeSel.first().locator('option').allTextContents();
+      const best = options.find(t => t.toLowerCase().includes(fullName.toLowerCase()));
+      if (!best) throw new Error(`Participant "${fullName}" not found`);
+      await nativeSel.first().selectOption({ label: best });
+    });
+    return true;
+  }
+
+  // Chosen.js fallback (matches your screenshots)
+  const chosen = page.locator('.chosen-container-single .chosen-single');
+  if (await chosen.count()) {
+    await chosen.first().click();
+    const search = page.locator('.chosen-search input');
+    if (await search.count()) {
+      await search.fill(fullName);
+      // chosen drops results in .chosen-results li
+      const li = page.locator('.chosen-results li').filter({ hasText: new RegExp(fullName, 'i') }).first();
+      await li.click();
+      return true;
+    }
+  }
+  return false;
+}
+
+async function clickNext(page) {
+  const next = page.locator(
+    '#edit-submit, button#edit-submit, button:has-text("Next"), button:has-text("Continue"), input[type="submit"][value*="Next"], input[type="submit"][value*="Continue"]'
+  ).first();
+  if (!(await next.count())) return false;
+  await next.scrollIntoViewIfNeeded().catch(()=>{});
+  await next.click();
+  await page.waitForLoadState('networkidle');
+  return true;
+}
+
+function sawSuccess(url, bodyText) {
+  return /\/checkout\/.+\/complete/.test(url) ||
+         /(thank you|registration complete|successfully registered|order number)/i.test(bodyText);
+}
+
 async function logDiscoveryFailure(page, plan_id, error, code, supabase) {
   try {
     const currentUrl = page.url();
@@ -2311,7 +2357,102 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
       await adapter.clickRegisterInContainer(page, container);
       await page.waitForURL(/\/registration\/\d+\/start/, { timeout: 15000 });
       await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Start page opened: ${page.url()}` });
-      return { success:true, startUrl: page.url() };
+      
+      // === Complete registration flow after Start page ===
+      
+      // === Start (participant) ===
+      await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Start page — selecting participant' });
+      const child = (plan.child_name || '').trim();
+      const participantOk = await selectParticipant(page, child);
+      if (!participantOk) {
+        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Participant "${child}" not selectable` });
+        return { success:false, error:`Participant "${child}" not selectable`, code:'PARTICIPANT_NOT_FOUND' };
+      }
+
+      // Click Next to go to options
+      await clickNext(page);
+
+      // === Options (if present) ===
+      if (/\/registration\/\d+\/options/.test(page.url())) {
+        await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Options page — filling required fields' });
+
+        // Rentals example from screenshots (Parent Tot). Default: "We have our own skis"
+        const rentalsPref = (plan?.extras?.rentals || 'We have our own skis').toLowerCase();
+        const rentals = page.locator('select[name*="rental"], select[id*="rental"], select:has(+ label:has-text("ski"))');
+        if (await rentals.count()) {
+          // Try exact label match first, else pick first non-empty
+          const opts = rentals.first().locator('option');
+          const labels = await opts.allTextContents();
+          const exact = labels.find(t => t.trim().toLowerCase() === rentalsPref);
+          if (exact) await rentals.first().selectOption({ label: exact });
+          else if (labels.length > 1) await rentals.first().selectOption({ index: 1 });
+        }
+
+        // Next → Cart
+        await clickNext(page);
+      }
+
+      // === Cart ===
+      if (/\/cart(\?|$)/.test(page.url())) {
+        await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Cart — clicking Checkout' });
+        const checkoutBtn = page.locator('#edit-checkout, button#edit-checkout, button:has-text("Checkout")').first();
+        if (await checkoutBtn.count()) {
+          await checkoutBtn.scrollIntoViewIfNeeded().catch(()=>{});
+          await checkoutBtn.click();
+          await page.waitForLoadState('networkidle');
+        }
+      }
+
+      // === Checkout (payment method) ===
+      if (/\/checkout\/\d+\/(installments|payment)/.test(page.url()) || /\/checkout\/\d+($|\?)/.test(page.url())) {
+        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: On Checkout — selecting saved payment method` });
+
+        // Prefer an existing saved card radio (e.g., "Visa ending in 7774")
+        const saved = page.locator('input[type="radio"][name*="payment"][value*="saved"], input[type="radio"][name*="payment-method"]').first();
+        const anyRadio = saved.count() ? saved : page.locator('input[type="radio"]').first();
+        if (await anyRadio.count()) {
+          await anyRadio.check().catch(()=>{});
+        }
+
+        const cont = page.locator('button:has-text("Continue to Review"), #edit-actions-next, button#edit-actions-next').first();
+        if (await cont.count()) {
+          await cont.scrollIntoViewIfNeeded().catch(()=>{});
+          await cont.click();
+          await page.waitForLoadState('networkidle');
+        }
+      }
+
+      // === Review ===
+      if (/\/checkout\/\d+\/review/.test(page.url())) {
+        await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Review — Pay and complete' });
+        const pay = page.locator('button:has-text("Pay and complete purchase"), #edit-actions-next').first();
+        if (await pay.count()) {
+          await pay.scrollIntoViewIfNeeded().catch(()=>{});
+          await pay.click();
+          await page.waitForLoadState('networkidle');
+        }
+      }
+
+      // === Post-payment success detection ===
+      const urlAfter = page.url();
+      const bodyAfter = (await page.locator('body').innerText().catch(()=>'')) || '';
+
+      // Log any inline messages in case we didn't hit success
+      const msgSel = '.messages--error, .messages--warning, .alert-danger, .alert-warning, [role="alert"]';
+      const postMsg = await page.locator(msgSel).innerText().catch(()=>'');
+
+      if (postMsg?.trim()) {
+        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Post-submit messages: ${postMsg.slice(0,400)}` });
+      }
+
+      if (sawSuccess(urlAfter, bodyAfter)) {
+        await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Signup confirmed — success detected' });
+        return { success:true, requiresAction:false, details:{ message:'Signup completed' } };
+      }
+
+      // If we got here, we didn't see confirmation. Leave session, ask for assist.
+      await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Could not confirm success — action required' });
+      return { success:true, requiresAction:true, details:{ message:'Submitted, needs quick manual confirm' } };
     } catch (e) {
       await supabase.from('plan_logs').insert({
         plan_id, msg: `Worker: Register click failed: ${e.message}`
