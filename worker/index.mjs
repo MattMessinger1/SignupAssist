@@ -2207,452 +2207,36 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
     });
 
     const baseUrl = plan.base_url || `https://${(plan.org||'').toLowerCase().replace(/[^a-z0-9]/g,'')}.skiclubpro.team`;
-    
-    // Build fuzzy matchers based on plan details
-    const nameMatcher = /nordic/i;
-    const dayMatcher = /wednesday/i;  
-    const timeMatcher = /(16:30|4:30)/i;
-    
-    await supabase.from('plan_logs').insert({
-      plan_id,
-      msg: `Worker: Using fuzzy matchers - name: ${nameMatcher}, day: ${dayMatcher}, time: ${timeMatcher}`
-    });
-
-    // SAFETY: Skip dashboard navigation during discovery - assume we're already on the correct page
-    await supabase.from('plan_logs').insert({
-      plan_id,
-      msg: `Worker: Starting discovery on current page: ${page.url()}`
-    });
-    
-    // Wait for dynamic content to load and verify authentication
-    await page.waitForTimeout(3000);
-    await page.waitForLoadState('domcontentloaded');
-    
-    // Check if we're actually authenticated by looking for auth indicators
-    const isAuthenticated = await page.locator('a[href*="logout"], .user-menu, .dashboard-content, [class*="authenticated"]').count() > 0;
-    const hasLoginForm = await page.locator('input[type="password"], input[name="password"], #edit-pass').count() > 0;
-    
-    if (hasLoginForm || !isAuthenticated) {
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Worker: Authentication verification failed - login form present: ${hasLoginForm}, auth indicators: ${isAuthenticated}`
-      });
-      throw new Error('Session authentication failed - redirected to login');
-    }
-
-    // Precondition guard: Ensure we're on /registration page to avoid sidebar loops
     const normalizedBaseUrl = baseUrl.replace(/\/$/, '');
+    
+    // 1) Precondition: we are on /registration (Programs list)
     if (!/\/registration$/.test(page.url())) {
       await supabase.from('plan_logs').insert({
         plan_id,
         msg: `Worker: Not on /registration page, navigating from ${page.url()} to ${normalizedBaseUrl}/registration`
       });
       await page.goto(`${normalizedBaseUrl}/registration`, { waitUntil: 'networkidle' });
-      await page.waitForTimeout(2000);
     }
-
-    // Safety rails: Check for login redirects and handle authentication
-    let authRetryAttempted = false;
-    const currentUrl = page.url();
-    
-    if (/\/user\/login\?destination=/.test(currentUrl)) {
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Worker: Detected login redirect at ${currentUrl}, attempting authentication recovery`
-      });
-      
-      if (!authRetryAttempted) {
-        authRetryAttempted = true;
-        
-        // Re-authenticate using existing credentials
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: Calling ensureAuthenticated to recover session`
-        });
-        
-        const authResult = await ensureAuthenticated(page, baseUrl, credentials.email, credentials.password, supabase, plan_id);
-        if (!authResult.success) {
-          await supabase.from('plan_logs').insert({
-            plan_id,
-            msg: `Worker: Authentication recovery failed: ${authResult.error}`
-          });
-          return await logDiscoveryFailure(page, plan_id, `Authentication recovery failed: ${authResult.error}`, 'BLACKHAWK_DISCOVERY_FAILED', supabase);
-        }
-        
-        // Retry navigation to /registration once
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: Authentication recovered, retrying navigation to /registration`
-        });
-        
-        await page.goto(`${normalizedBaseUrl}/registration`, { waitUntil: 'networkidle' });
-        await page.waitForTimeout(2000);
-        
-        // Verify we're not still on login page
-        if (/\/user\/login/.test(page.url())) {
-          await supabase.from('plan_logs').insert({
-            plan_id,
-            msg: `Worker: Still on login page after auth recovery: ${page.url()}`
-          });
-          return await logDiscoveryFailure(page, plan_id, 'Unable to recover from login redirect', 'BLACKHAWK_DISCOVERY_FAILED', supabase);
-        }
-      }
-    }
-
-    // Early escape: If already on /registration, skip sidebar navigation entirely
-    const onPrograms = /\/registration$/.test(page.url());
-    if (onPrograms) {
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: 'Worker: Already on /registration — skipping sidebar and proceeding to list parsing'
-      });
-      
-      // Immediate row discovery and Register click
-      const NAME = /nordic kids wednesday/i;
-      const rows = page.locator('tbody tr, .views-row, article, .card');
-      let best = null;
-      const rowCount = await rows.count();
-      
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Worker: Scanning ${rowCount} rows for "Nordic Kids Wednesday"`
-      });
-      
-      for (let i = 0; i < rowCount; i++) {
-        const row = rows.nth(i);
-        const txt = ((await row.innerText().catch(()=>'')) || '').toLowerCase();
-        
-        // Skip navigation/header rows
-        if (/skip to main content|account\s+dashboard|register\s+memberships\s+programs\s+events/i.test(txt)) continue;
-        
-        if (NAME.test(txt)) { 
-          best = row; 
-          await supabase.from('plan_logs').insert({
-            plan_id,
-            msg: `Worker: Found matching row at index ${i}: "${txt.substring(0, 200)}"`
-          });
-          break; 
-        }
-      }
-      
-      if (!best) {
-        const sample = await page.locator('tbody tr, .views-row').allTextContents().catch(()=>[]);
-        await supabase.from('plan_logs').insert({ 
-          plan_id, 
-          msg: `Worker: No row matched "Nordic Kids Wednesday". Samples: ${JSON.stringify(sample?.slice(0,10) || [])}` 
-        });
-        return { success:false, error:'No matching program rows', code:'BLACKHAWK_DISCOVERY_FAILED' };
-      }
-
-      const regSel = 'a.btn.btn-secondary.btn-sm:has-text("Register"), a[href*="/registration/"][href$="/start"]';
-      const regBtn = best.locator(regSel).first();
-      if (!(await regBtn.count())) {
-        await supabase.from('plan_logs').insert({ 
-          plan_id, 
-          msg: 'Worker: Register not present in matched row' 
-        });
-        return { success:false, error:'Register not found in row', code:'BLACKHAWK_DISCOVERY_FAILED' };
-      }
-      
-      await regBtn.scrollIntoViewIfNeeded().catch(()=>{});
-      await regBtn.click();
-      await page.waitForURL(/\/registration\/\d+\/start/, { timeout: 15000 });
-      
-      await supabase.from('plan_logs').insert({ 
-        plan_id, 
-        msg: `Worker: Successfully navigated to registration start page: ${page.url()}` 
-      });
-      
-      return { success:true, startUrl: page.url() };
-      
-    } else {
-      // Step 2: Look for and click the Programs navigation link
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Worker: Looking for Programs navigation link in sidebar`
-      });
-
-    // Wait for and debug sidebar content with multiple strategies
-    let sidebarFound = false;
-    const sidebarSelectors = ['.sidebar', 'nav', '.navigation', '.menu', '.main-menu', '#main-navigation', '[role="navigation"]'];
-    
-    for (const selector of sidebarSelectors) {
-      try {
-        await page.waitForSelector(selector, { timeout: 5000 });
-        const sidebarContent = await page.locator(selector).first().innerHTML();
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: Found sidebar with selector "${selector}": ${sidebarContent.substring(0, 800)}...`
-        });
-        sidebarFound = true;
-        break;
-      } catch (e) {
-        // Continue to next selector
-      }
-    }
-    
-    if (!sidebarFound) {
-      // Try to get full page HTML to understand structure
-      const pageHTML = await page.content();
-      const bodyHTML = pageHTML.substring(pageHTML.indexOf('<body'), pageHTML.indexOf('</body>') + 7);
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Worker: No sidebar found. Page body structure: ${bodyHTML.substring(0, 1000)}...`
-      });
-    }
-
-      // First, try to click Programs anchor
-      const programs = page.locator('a.nav-link--registration[href="/registration"], a[href="/registration"]:has-text("Programs")').first();
-      if (await programs.count()) {
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: 'Worker: Found Programs anchor, attempting click'
-        });
-        await programs.scrollIntoViewIfNeeded().catch(()=>{});
-        await programs.click({ timeout: 5000 }).catch(()=>{});
-        await page.waitForLoadState('networkidle');
-      }
-      
-      // Direct fallback if not on registration page
-      if (!/\/registration$/.test(page.url())) {
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: Not on /registration after Programs click, using direct navigation from ${page.url()}`
-        });
-        await page.goto(`${baseUrl}/registration`, { waitUntil: 'networkidle' });
-      }
-
-      // Targeted REGISTER expansion helper
-      async function expandRegisterSection(page, supabase, plan_id) {
-        // Try the actual Register collapsible, not the profile image dropdown
-        const toggles = [
-          'button[aria-controls="collapse-register-content"]',
-          '#collapsiblock-wrapper-register .collapsible-block-action',
-          // fallback: the Register title then its associated toggle in the same block
-          'h2:has-text("Register") ~ .collapsible-block-action'
-        ];
-        for (const sel of toggles) {
-          const t = page.locator(sel).first();
-          if (await t.count()) {
-            await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Expanding REGISTER via ${sel}` });
-            await t.scrollIntoViewIfNeeded().catch(()=>{});
-            await t.click().catch(()=>{});
-            await page.waitForTimeout(250);
-            return;
-          }
-        }
-        await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: REGISTER toggle not found (skipping expansion)' });
-      }
-
-      // Check if we need to expand REGISTER section (only after Programs click attempts)
-      const stillNotOnRegistration = !/\/registration$/.test(page.url());
-      const programsAnchors = [
-        'a.nav-link--registration[href="/registration"]',
-        'a[href="/registration"]:has-text("Programs")'
-      ];
-      
-      let programsAnchorFound = false;
-      for (const anchor of programsAnchors) {
-        if (await page.locator(anchor).count() > 0) {
-          programsAnchorFound = true;
-          break;
-        }
-      }
-      
-      if (stillNotOnRegistration && !programsAnchorFound) {
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: 'Worker: Still not on /registration and no Programs anchor found - expanding REGISTER section'
-        });
-        await expandRegisterSection(page, supabase, plan_id);
-      } else {
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: Skipping REGISTER expansion (onRegistration: ${!stillNotOnRegistration}, programsFound: ${programsAnchorFound})`
-        });
-      }
-
-    // Try specific selectors based on actual DOM structure
-    const programsSelectors = [
-      'a:has-text("Programs")',
-      'a[href="/registration"]:has-text("Programs")',
-      'a.nav-link--registration:has-text("Programs")',
-      'a[href="/registration"]',
-      'nav a.nav-link--registration',
-      'nav a:has-text("Programs")', 
-      'a[href*="registration"]'
-    ];
-
-    let programsClicked = false;
-    for (const selector of programsSelectors) {
-      try {
-        const programsLink = page.locator(selector).first();
-        const count = await programsLink.count();
-        
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: Selector "${selector}" found ${count} elements`
-        });
-        
-        if (count > 0) {
-          // Log the actual element details
-          const href = await programsLink.getAttribute('href');
-          const text = await programsLink.textContent();
-          const classes = await programsLink.getAttribute('class');
-          
-          await supabase.from('plan_logs').insert({
-            plan_id,
-            msg: `Worker: Element details - href: "${href}", text: "${text}", classes: "${classes}"`
-          });
-          
-          // Ensure element is visible and scrolled into view
-          await programsLink.scrollIntoViewIfNeeded();
-          await programsLink.waitFor({ state: "visible", timeout: 5000 });
-          
-          await supabase.from('plan_logs').insert({
-            plan_id,
-            msg: `Worker: Clicking Programs link...`
-          });
-          
-          await programsLink.click();
-          await page.waitForLoadState("networkidle", { timeout: 15000 });
-          programsClicked = true;
-          break;
-        }
-      } catch (e) {
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: Selector ${selector} failed: ${e.message}`
-        });
-        // Continue with next selector
-      }
-    }
-
-    if (!programsClicked) {
-      // Fallback: try to navigate to registration pages directly as before
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Worker: Programs link not found, trying direct navigation to registration pages`
-      });
-      
-      const registrationPages = [`${baseUrl}/registration`, `${baseUrl}/registration/events`];
-      for (const regUrl of registrationPages) {
-        try {
-          await page.goto(regUrl, { waitUntil: 'networkidle', timeout: 15000 });
-          await page.waitForLoadState("networkidle", { timeout: 15000 });
-          
-          const currentUrl = page.url();
-          const pageTitle = await page.title();
-          
-          await supabase.from('plan_logs').insert({
-            plan_id,
-            msg: `Worker: Navigated to ${currentUrl}, page title: "${pageTitle}"`
-          });
-          
-          // Check if we're still on a login page
-          const stillOnLoginForm = await page.locator('input[type="password"], input[name="password"], #edit-pass').count() > 0;
-          
-          if (stillOnLoginForm) {
-            await supabase.from('plan_logs').insert({
-              plan_id,
-              msg: `Worker: Still on login page after direct navigation, skipping this URL`
-            });
-            continue;
-          }
-        } catch (navError) {
-          await supabase.from('plan_logs').insert({
-            plan_id,
-            msg: `Worker: Failed to navigate to ${regUrl}: ${navError.message}`
-          });
-          continue;
-        }
-      }
-    }
-
-    // Step 3: Now proceed with program discovery on the current page
-    const finalUrl = page.url();
-    const finalTitle = await page.title();
+    await page.waitForLoadState('networkidle');
     
     await supabase.from('plan_logs').insert({
       plan_id,
-      msg: `Worker: Ready for program discovery on ${finalUrl}, page title: "${finalTitle}"`
+      msg: `Worker: Ensured we're on registration page: ${page.url()}`
     });
     
-    // GUARD: Check if redirected to login at any time during discovery
-    if (page.url().includes('/user/login')) {
+    // Verify authentication before proceeding
+    const hasLoginForm = await page.locator('input[type="password"], input[name="password"], #edit-pass').count() > 0;
+    const isAuthenticated = await page.locator('a[href*="logout"], .user-menu, .dashboard-content, [class*="authenticated"]').count() > 0;
+    
+    if (hasLoginForm || !isAuthenticated) {
       await supabase.from('plan_logs').insert({
         plan_id,
-        msg: `Worker: GUARD - Redirected to login during discovery, re-authenticating...`
+        msg: `Worker: Authentication check failed - login form present: ${hasLoginForm}, auth indicators: ${isAuthenticated}`
       });
-      
-      // Log current page URL and take screenshot for debugging
-      try {
-        const screenshot = await page.screenshot({ type: 'png' });
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: DEBUG - Login redirect at URL: ${page.url()}, screenshot captured`
-        });
-      } catch (e) {
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: DEBUG - Login redirect at URL: ${page.url()}, screenshot failed: ${e.message}`
-        });
-      }
-      
-      // Re-authenticate using the helper
-      try {
-        // Immediately call ensureAuthenticated with actual credentials
-        const authResult = await ensureAuthenticated(page, baseUrl, credentials.email, credentials.password, supabase, plan_id);
-        if (!authResult.success) {
-          await supabase.from('plan_logs').insert({
-            plan_id,
-            msg: `Worker: Authentication recovery failed: ${authResult.error}`
-          });
-          throw new Error(`Authentication recovery failed: ${authResult.error}`);
-        }
-        
-        // Navigate directly to /registration once (do not go back to dashboard)
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: Authentication recovered, navigating directly to /registration`
-        });
-        
-        await page.goto(`${normalizedBaseUrl}/registration`, { waitUntil: 'networkidle' });
-        await page.waitForTimeout(2000);
-        
-        // Verify we're not still on login page
-        if (/\/user\/login/.test(page.url())) {
-          await supabase.from('plan_logs').insert({
-            plan_id,
-            msg: `Worker: Still on login page after auth recovery: ${page.url()}`
-          });
-          throw new Error('Unable to recover from login redirect');
-        }
-        
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: GUARD - Re-authentication successful, now on ${page.url()}`
-        });
-        
-      } catch (authError) {
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: GUARD - Re-authentication failed: ${authError.message}`
-        });
-        throw new Error('Session authentication failed during discovery - action required');
-      }
+      throw new Error('Session authentication failed - redirected to login');
     }
     
-    // Check if we're still on a login page after all navigation attempts
-    const finalLoginFormCheck = await page.locator('input[type="password"], input[name="password"], #edit-pass').count() > 0;
-    
-    if (finalLoginFormCheck) {
-      throw new Error('Unable to access registration page - redirected to login');
-    }
-    } // End of conditional sidebar navigation block
-    
-    // At this point, we should be on /registration (either directly or via navigation)
-    // A) Optional search filter to reduce noise
+    // Optional search filter to reduce noise
     const search = page.locator('input[type="search"], input[name*="search"], input[placeholder*="search" i]').first();
     if (await search.count()) {
       await supabase.from('plan_logs').insert({
@@ -2666,59 +2250,107 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
       await page.waitForLoadState('networkidle');
     }
 
-    // Row discovery and Register click (for cases where we navigated via sidebar)
+    // Target only main Programs table rows, avoiding cart/header containers
     const NAME = /nordic kids wednesday/i;
-    const rows = page.locator('tbody tr, .views-row, article, .card');
-    let best = null;
-    const rowCount = await rows.count();
+    
+    // Focus on main content table rows, excluding cart, header, and navigation containers
+    const mainProgramRows = page.locator('main tbody tr, .main-content tbody tr, .content tbody tr, .view-content tbody tr').filter({
+      has: page.locator('td') // Ensure it's a data row with table cells
+    });
+    
+    // Fallback to broader selection if main table not found, but still exclude containers
+    const fallbackRows = page.locator('tbody tr').filter({
+      hasNot: page.locator('.cart, .shopping-cart, .header, .navigation, .nav, .menu, .breadcrumb')
+    });
+    
+    let rows = mainProgramRows;
+    let rowCount = await rows.count();
+    
+    if (rowCount === 0) {
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: 'Worker: No main table rows found, using fallback selector'
+      });
+      rows = fallbackRows;
+      rowCount = await rows.count();
+    }
+    
+    let bestRow = null;
     
     await supabase.from('plan_logs').insert({
       plan_id,
-      msg: `Worker: Scanning ${rowCount} rows for "Nordic Kids Wednesday"`
+      msg: `Worker: Scanning ${rowCount} main Programs table rows for "Nordic Kids Wednesday"`
     });
     
     for (let i = 0; i < rowCount; i++) {
       const row = rows.nth(i);
       const txt = ((await row.innerText().catch(()=>'')) || '').toLowerCase();
       
-      // Skip navigation/header rows
-      if (/skip to main content|account\s+dashboard|register\s+memberships\s+programs\s+events/i.test(txt)) continue;
+      // Skip obvious non-program rows (navigation, headers, cart items)
+      if (/skip to main content|account\s+dashboard|register\s+memberships\s+programs\s+events|shopping.?cart|cart.?total|checkout|quantity|remove.?item/i.test(txt)) {
+        continue;
+      }
+      
+      // Skip rows that don't contain program-like content
+      if (!txt.includes('nordic') && !txt.includes('program') && !txt.includes('class') && !txt.includes('lesson')) {
+        continue;
+      }
       
       if (NAME.test(txt)) { 
-        best = row; 
+        bestRow = row; 
         await supabase.from('plan_logs').insert({
           plan_id,
-          msg: `Worker: Found matching row at index ${i}: "${txt.substring(0, 200)}"`
+          msg: `Worker: Found matching program row at index ${i}: "${txt.substring(0, 200)}"`
         });
         break; 
       }
     }
     
-    // If not found, scroll down and retry
-    if (!best) {
+    // If not found, scroll down and retry with same targeted approach
+    if (!bestRow) {
       await supabase.from('plan_logs').insert({
         plan_id,
-        msg: `Worker: Row not found on initial scan, scrolling to find more content`
+        msg: `Worker: Program row not found on initial scan, scrolling to find more content`
       });
       
-      for (let s = 0; s < 10 && !best; s++) {
+      for (let s = 0; s < 10 && !bestRow; s++) {
         await page.mouse.wheel(0, 800);
         await page.waitForTimeout(120);
-        const scrollRows = page.locator('tbody tr, .views-row, article, .card');
-        const scrollCount = await scrollRows.count();
+        
+        // Re-query with same targeted selectors after scroll
+        const scrollMainRows = page.locator('main tbody tr, .main-content tbody tr, .content tbody tr, .view-content tbody tr').filter({
+          has: page.locator('td')
+        });
+        const scrollFallbackRows = page.locator('tbody tr').filter({
+          hasNot: page.locator('.cart, .shopping-cart, .header, .navigation, .nav, .menu, .breadcrumb')
+        });
+        
+        let scrollRows = scrollMainRows;
+        let scrollCount = await scrollRows.count();
+        
+        if (scrollCount === 0) {
+          scrollRows = scrollFallbackRows;
+          scrollCount = await scrollRows.count();
+        }
         
         for (let i = 0; i < scrollCount; i++) {
           const row = scrollRows.nth(i);
           const txt = ((await row.innerText().catch(()=>'')) || '').toLowerCase();
           
-          // Skip navigation/header rows
-          if (/skip to main content|account\s+dashboard|register\s+memberships\s+programs\s+events/i.test(txt)) continue;
+          // Same filtering as above
+          if (/skip to main content|account\s+dashboard|register\s+memberships\s+programs\s+events|shopping.?cart|cart.?total|checkout|quantity|remove.?item/i.test(txt)) {
+            continue;
+          }
+          
+          if (!txt.includes('nordic') && !txt.includes('program') && !txt.includes('class') && !txt.includes('lesson')) {
+            continue;
+          }
           
           if (NAME.test(txt)) { 
-            best = row; 
+            bestRow = row; 
             await supabase.from('plan_logs').insert({
               plan_id,
-              msg: `Worker: Found matching row after scroll ${s+1} at index ${i}: "${txt.substring(0, 200)}"`
+              msg: `Worker: Found matching program row after scroll ${s+1} at index ${i}: "${txt.substring(0, 200)}"`
             });
             break; 
           }
@@ -2726,35 +2358,159 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
       }
     }
 
-    if (!best) {
-      const sample = await page.locator('tbody tr, .views-row').allTextContents().catch(()=>[]);
+    if (!bestRow) {
+      const sample = await page.locator('tbody tr').allTextContents().catch(()=>[]);
       await supabase.from('plan_logs').insert({ 
         plan_id, 
-        msg: `Worker: No row matched "Nordic Kids Wednesday". Samples: ${JSON.stringify(sample?.slice(0,10) || [])}` 
+        msg: `Worker: No program row matched "Nordic Kids Wednesday". Samples: ${JSON.stringify(sample?.slice(0,10) || [])}` 
       });
       return { success:false, error:'No matching program rows', code:'BLACKHAWK_DISCOVERY_FAILED' };
     }
 
-    const regSel = 'a.btn.btn-secondary.btn-sm:has-text("Register"), a[href*="/registration/"][href$="/start"]';
-    const regBtn = best.locator(regSel).first();
-    if (!(await regBtn.count())) {
+    // Click row-scoped Register button
+    const ROW_REGISTER_SEL = [
+      'a.btn.btn-secondary.btn-sm:has-text("Register")',
+      'a[href*="/registration/"][href$="/start"]', 
+      'button:has-text("Register")' // fallback if implemented as button
+    ].join(', ');
+
+    const rowRegister = bestRow.locator(ROW_REGISTER_SEL).first();
+    if (!(await rowRegister.count())) {
       await supabase.from('plan_logs').insert({ 
         plan_id, 
-        msg: 'Worker: Register not present in matched row' 
+        msg: 'Worker: Register button not present inside matched program row' 
       });
-      return { success:false, error:'Register not found in row', code:'BLACKHAWK_DISCOVERY_FAILED' };
+      return { success:false, error:'Register not found in program row', code:'BLACKHAWK_DISCOVERY_FAILED' };
     }
-    
-    await regBtn.scrollIntoViewIfNeeded().catch(()=>{});
-    await regBtn.click();
+
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: Found row-scoped Register button, clicking...`
+    });
+
+    // Ensure it's visible and click
+    await rowRegister.scrollIntoViewIfNeeded().catch(()=>{});
+    await rowRegister.click();
+
+    // Must navigate to /registration/<id>/start
     await page.waitForURL(/\/registration\/\d+\/start/, { timeout: 15000 });
-    
     await supabase.from('plan_logs').insert({ 
       plan_id, 
-      msg: `Worker: Successfully navigated to registration start page: ${page.url()}` 
+      msg: `Worker: Navigated to start page ${page.url()}` 
     });
+
+    return { success: true, startUrl: page.url() };
+  
+  } catch (error) {
+    console.error("Discovery error:", error);
+    return await logDiscoveryFailure(page, plan_id, error.message, 'BLACKHAWK_DISCOVERY_FAILED', supabase);
+  }
+// ===== EXISTING SIGNUP EXECUTION FUNCTIONS =====
+      
+      if (NAME.test(txt)) { 
+        bestRow = row; 
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Found matching program row at index ${i}: "${txt.substring(0, 200)}"`
+        });
+        break; 
+      }
+    }
     
-    return { success:true, startUrl: page.url() };
+    // If not found, scroll down and retry with same targeted approach
+    if (!bestRow) {
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: Program row not found on initial scan, scrolling to find more content`
+      });
+      
+      for (let s = 0; s < 10 && !bestRow; s++) {
+        await page.mouse.wheel(0, 800);
+        await page.waitForTimeout(120);
+        
+        // Re-query with same targeted selectors after scroll
+        const scrollMainRows = page.locator('main tbody tr, .main-content tbody tr, .content tbody tr, .view-content tbody tr').filter({
+          has: page.locator('td')
+        });
+        const scrollFallbackRows = page.locator('tbody tr').filter({
+          hasNot: page.locator('.cart, .shopping-cart, .header, .navigation, .nav, .menu, .breadcrumb')
+        });
+        
+        let scrollRows = scrollMainRows;
+        let scrollCount = await scrollRows.count();
+        
+        if (scrollCount === 0) {
+          scrollRows = scrollFallbackRows;
+          scrollCount = await scrollRows.count();
+        }
+        
+        for (let i = 0; i < scrollCount; i++) {
+          const row = scrollRows.nth(i);
+          const txt = ((await row.innerText().catch(()=>'')) || '').toLowerCase();
+          
+          // Same filtering as above
+          if (/skip to main content|account\s+dashboard|register\s+memberships\s+programs\s+events|shopping.?cart|cart.?total|checkout|quantity|remove.?item/i.test(txt)) {
+            continue;
+          }
+          
+          if (!txt.includes('nordic') && !txt.includes('program') && !txt.includes('class') && !txt.includes('lesson')) {
+            continue;
+          }
+          
+          if (NAME.test(txt)) { 
+            bestRow = row; 
+            await supabase.from('plan_logs').insert({
+              plan_id,
+              msg: `Worker: Found matching program row after scroll ${s+1} at index ${i}: "${txt.substring(0, 200)}"`
+            });
+            break; 
+          }
+        }
+      }
+    }
+
+    if (!bestRow) {
+      const sample = await page.locator('tbody tr').allTextContents().catch(()=>[]);
+      await supabase.from('plan_logs').insert({ 
+        plan_id, 
+        msg: `Worker: No program row matched "Nordic Kids Wednesday". Samples: ${JSON.stringify(sample?.slice(0,10) || [])}` 
+      });
+      return { success:false, error:'No matching program rows', code:'BLACKHAWK_DISCOVERY_FAILED' };
+    }
+
+    // Click row-scoped Register button
+    const ROW_REGISTER_SEL = [
+      'a.btn.btn-secondary.btn-sm:has-text("Register")',
+      'a[href*="/registration/"][href$="/start"]', 
+      'button:has-text("Register")' // fallback if implemented as button
+    ].join(', ');
+
+    const rowRegister = bestRow.locator(ROW_REGISTER_SEL).first();
+    if (!(await rowRegister.count())) {
+      await supabase.from('plan_logs').insert({ 
+        plan_id, 
+        msg: 'Worker: Register button not present inside matched program row' 
+      });
+      return { success:false, error:'Register not found in program row', code:'BLACKHAWK_DISCOVERY_FAILED' };
+    }
+
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: Found row-scoped Register button, clicking...`
+    });
+
+    // Ensure it's visible and click
+    await rowRegister.scrollIntoViewIfNeeded().catch(()=>{});
+    await rowRegister.click();
+
+    // Must navigate to /registration/<id>/start
+    await page.waitForURL(/\/registration\/\d+\/start/, { timeout: 15000 });
+    await supabase.from('plan_logs').insert({ 
+      plan_id, 
+      msg: `Worker: Navigated to start page ${page.url()}` 
+    });
+
+    return { success: true, startUrl: page.url() };
   
   } catch (error) {
     console.error("Discovery error:", error);
