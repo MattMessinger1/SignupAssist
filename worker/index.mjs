@@ -692,6 +692,14 @@ async function executeRunPlanBackground(plan_id, supabase) {
       
       if (loggedIn) {
         await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Already logged in (restored session)' });
+        
+        // Navigate to dashboard to ensure proper authentication state
+        const dashboardUrl = `${normalizedBaseUrl}/user/dashboard`;
+        await page.goto(dashboardUrl, { waitUntil: 'networkidle', timeout: 15000 });
+        await supabase.from('plan_logs').insert({ 
+          plan_id, 
+          msg: 'Worker: Navigated to authenticated dashboard to confirm session' 
+        });
       } else {
         // Proceed with existing login flow
         const loginUrl = `${normalizedBaseUrl}/user/login`;
@@ -2048,11 +2056,10 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
   try {
     await supabase.from('plan_logs').insert({
       plan_id,
-      msg: "Worker: Starting Blackhawk program discovery with fuzzy matching"
+      msg: "Worker: Starting Blackhawk program discovery with proper navigation flow"
     });
 
     const baseUrl = plan.base_url || `https://${(plan.org||'').toLowerCase().replace(/[^a-z0-9]/g,'')}.skiclubpro.team`;
-    const registrationPages = [`${baseUrl}/registration`, `${baseUrl}/registration/events`];
     
     // Build fuzzy matchers based on plan details
     const nameMatcher = /nordic/i;
@@ -2064,74 +2071,113 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
       msg: `Worker: Using fuzzy matchers - name: ${nameMatcher}, day: ${dayMatcher}, time: ${timeMatcher}`
     });
 
-    // Try each registration page
-    for (const regUrl of registrationPages) {
-      try {
-        await page.goto(regUrl, { waitUntil: 'networkidle', timeout: 15000 });
-        
-        // Enhanced waits as specified
-        await page.waitForLoadState("networkidle", { timeout: 15000 });
-        
-        // Check if we need to navigate to Programs menu
-        const programsLink = page.locator('text=Programs, a:has-text("Programs"), nav a:contains("Programs")').first();
-        if (await programsLink.count() > 0) {
-          await supabase.from('plan_logs').insert({
-            plan_id,
-            msg: `Worker: Found Programs link, clicking to navigate to registration page`
-          });
-          await programsLink.click();
-          await page.waitForLoadState("networkidle", { timeout: 15000 });
-        }
-        
-        const currentUrl = page.url();
-        const pageTitle = await page.title();
-        
+    // Step 1: Ensure we're on the authenticated dashboard
+    const currentUrl = page.url();
+    if (!currentUrl.includes('dashboard')) {
+      const dashboardUrl = `${baseUrl}/user/dashboard`;
+      await page.goto(dashboardUrl, { waitUntil: 'networkidle', timeout: 15000 });
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: Navigated to dashboard: ${dashboardUrl}`
+      });
+    }
+
+    // Step 2: Look for and click the Programs navigation link
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: Looking for Programs navigation link in sidebar`
+    });
+
+    // Try multiple selectors for the Programs link
+    const programsSelectors = [
+      'a:has-text("Programs")',
+      'nav a:has-text("Programs")', 
+      'a[href*="registration"]',
+      'a[href*="programs"]',
+      '.menu a:has-text("Programs")',
+      '.sidebar a:has-text("Programs")'
+    ];
+
+    let programsClicked = false;
+    for (const selector of programsSelectors) {
+      const programsLink = page.locator(selector).first();
+      if (await programsLink.count() > 0 && await programsLink.isVisible()) {
         await supabase.from('plan_logs').insert({
           plan_id,
-          msg: `Worker: Navigated to ${currentUrl}, page title: "${pageTitle}"`
+          msg: `Worker: Found Programs link with selector: ${selector}`
         });
-        
-        // Check if we're on a login page instead of registration
-        const hasLoginForm = await page.locator('input[type="password"], input[name="password"], #edit-pass').count() > 0;
-        
-        if (hasLoginForm) {
+        await programsLink.click();
+        await page.waitForLoadState("networkidle", { timeout: 15000 });
+        programsClicked = true;
+        break;
+      }
+    }
+
+    if (!programsClicked) {
+      // Fallback: try to navigate to registration pages directly as before
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: Programs link not found, trying direct navigation to registration pages`
+      });
+      
+      const registrationPages = [`${baseUrl}/registration`, `${baseUrl}/registration/events`];
+      for (const regUrl of registrationPages) {
+        try {
+          await page.goto(regUrl, { waitUntil: 'networkidle', timeout: 15000 });
+          await page.waitForLoadState("networkidle", { timeout: 15000 });
+          
+          const currentUrl = page.url();
+          const pageTitle = await page.title();
+          
           await supabase.from('plan_logs').insert({
             plan_id,
-            msg: `Worker: Detected login page, trying to access programs directly`
+            msg: `Worker: Navigated to ${currentUrl}, page title: "${pageTitle}"`
           });
           
-          // Try to find a link to programs/registration
-          const programLinks = [
-            'a[href*="program"]', 'a[href*="registration"]', 'a[href*="class"]',
-            'text=Programs', 'text=Registration', 'text=Classes', 'text=Lessons'
-          ];
+          // Check if we're still on a login page
+          const hasLoginForm = await page.locator('input[type="password"], input[name="password"], #edit-pass').count() > 0;
           
-          for (const linkSelector of programLinks) {
-            try {
-              const link = page.locator(linkSelector).first();
-              if (await link.isVisible()) {
-                await link.click();
-                await page.waitForLoadState("networkidle", { timeout: 15000 });
-                await supabase.from('plan_logs').insert({
-                  plan_id,
-                  msg: `Worker: Clicked ${linkSelector}, now at ${page.url()}`
-                });
-                break;
-              }
-            } catch (e) {
-              continue;
-            }
+          if (hasLoginForm) {
+            await supabase.from('plan_logs').insert({
+              plan_id,
+              msg: `Worker: Still on login page after direct navigation, skipping this URL`
+            });
+            continue;
           }
+        } catch (navError) {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: Failed to navigate to ${regUrl}: ${navError.message}`
+          });
+          continue;
         }
-        
-        // Find all program containers using flexible selectors based on screenshots
-        const containers = await page.locator('div, article, section, .card, .program, .class, .event, [class*="program"], [class*="class"], [class*="event"]').all();
-        
-        // If no containers found with generic selectors, try looking for text-based containers
-        if (containers.length === 0) {
-          const textContainers = await page.locator('*').filter({ hasText: /nordic|kids|wednesday/i }).all();
-          containers.push(...textContainers);
-        }
+      }
+    }
+
+    // Step 3: Now proceed with program discovery on the current page
+    const finalUrl = page.url();
+    const finalTitle = await page.title();
+    
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: Ready for program discovery on ${finalUrl}, page title: "${finalTitle}"`
+    });
+    
+    // Check if we're still on a login page
+    const hasLoginForm = await page.locator('input[type="password"], input[name="password"], #edit-pass').count() > 0;
+    
+    if (hasLoginForm) {
+      throw new Error('Unable to access registration page - redirected to login');
+    }
+    
+    // Find all program containers using flexible selectors
+    const containers = await page.locator('div, article, section, .card, .program, .class, .event, [class*="program"], [class*="class"], [class*="event"], .views-row, tr').all();
+    
+    // If no containers found with generic selectors, try looking for text-based containers
+    if (containers.length === 0) {
+      const textContainers = await page.locator('*').filter({ hasText: /nordic|kids|wednesday/i }).all();
+      containers.push(...textContainers);
+    }
         
         if (containers.length === 0) {
           await supabase.from('plan_logs').insert({
@@ -2231,9 +2277,9 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
           } else {
             await supabase.from('plan_logs').insert({
               plan_id,
-              msg: `Worker: No matching programs found on ${regUrl} (best score: ${bestScore})`
+              msg: `Worker: No matching programs found on current page (best score: ${bestScore})`
             });
-            continue;
+            throw new Error('Target program not found after trying all registration pages');
           }
         }
         
@@ -2362,56 +2408,50 @@ async function discoverBlackhawkRegistration(page, plan, supabase) {
             plan_id,
             msg: `Worker: Could not start registration from best match container`
           });
+          throw new Error('Could not start registration from best match container');
         }
         
-      } catch (pageError) {
+        // If we successfully started registration, return success
+        const startUrl = page.url();
+        return { success: true, startUrl: startUrl };
+        
+    } catch (error) {
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: Program discovery failed: ${error.message}`
+      });
+      
+      // Final fallback: log first 10 rows for debugging
+      try {
+        const debugRows = await page.locator('.views-row, tr, article, .card').all();
+        const debugTexts = [];
+        
+        for (let i = 0; i < Math.min(10, debugRows.length); i++) {
+          try {
+            const text = await debugRows[i].innerText();
+            debugTexts.push(`Row ${i+1}: ${text.substring(0, 200).replace(/\n/g, ' ')}...`);
+          } catch (e) {
+            debugTexts.push(`Row ${i+1}: Error reading`);
+          }
+        }
+        
         await supabase.from('plan_logs').insert({
           plan_id,
-          msg: `Worker: Error on page ${regUrl}: ${pageError.message}`
+          msg: `BLACKHAWK_DISCOVERY_FAILED - Debugging rows:\n${debugTexts.join('\n')}`
+        });
+      } catch (debugError) {
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Could not capture debug information: ${debugError.message}`
         });
       }
-    }
-    
-    // If we get here, all attempts failed
-    await supabase.from('plan_logs').insert({
-      plan_id,
-      msg: `Worker: Program discovery failed: Target program not found after trying all registration pages`
-    });
-    
-    // Final fallback: log first 10 rows for debugging
-    try {
-      const debugRows = await page.locator('.views-row, tr, article, .card').all();
-      const debugTexts = [];
       
-      for (let i = 0; i < Math.min(10, debugRows.length); i++) {
-        try {
-          const text = await debugRows[i].innerText();
-          debugTexts.push(`Row ${i+1}: ${text.substring(0, 200).replace(/\n/g, ' ')}...`);
-        } catch (e) {
-          debugTexts.push(`Row ${i+1}: Error reading`);
-        }
-      }
-      
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `BLACKHAWK_DISCOVERY_FAILED - Debugging rows:\n${debugTexts.join('\n')}`
-      });
-    } catch (debugError) {
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Worker: Could not capture debug information: ${debugError.message}`
-      });
+      return { 
+        success: false, 
+        error: error.message, 
+        code: "BLACKHAWK_DISCOVERY_FAILED" 
+      };
     }
-    
-    return { 
-      success: false, 
-      error: `Target program not found after trying all registration pages`, 
-      code: "BLACKHAWK_DISCOVERY_FAILED" 
-    };
-    
-  } catch (error) {
-    await supabase.from('plan_logs').insert({
-      plan_id,
       msg: `BLACKHAWK_DISCOVERY_FAILED - Error: ${error.message}`
     });
     
