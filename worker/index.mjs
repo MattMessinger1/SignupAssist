@@ -2185,6 +2185,20 @@ async function selectParticipant(page, fullName) {
   return false;
 }
 
+async function clickNextLike(page) {
+  const next = page.locator(
+    '#edit-submit, button#edit-submit,' +               // Start/Options common
+    'button:has-text("Next"), button:has-text("Continue"),' +
+    '#edit-actions-next, button#edit-actions-next,' +   // Checkout → Review
+    'input[type="submit"][value*="Next" i], input[type="submit"][value*="Continue" i]'
+  ).first();
+  if (!(await next.count())) return false;
+  await next.scrollIntoViewIfNeeded().catch(()=>{});
+  await next.click();
+  await page.waitForLoadState('networkidle');
+  return true;
+}
+
 async function clickNext(page) {
   const next = page.locator(
     '#edit-submit, button#edit-submit, button:has-text("Next"), button:has-text("Continue"), input[type="submit"][value*="Next"], input[type="submit"][value*="Continue"]'
@@ -2194,6 +2208,22 @@ async function clickNext(page) {
   await next.click();
   await page.waitForLoadState('networkidle');
   return true;
+}
+
+async function at(urlRe) { return (loc) => urlRe.test(loc); }
+
+function isSuccess(url, body) {
+  return /\/checkout\/.+\/complete/.test(url) ||
+         /(thank you|registration complete|successfully registered)/i.test(body);
+}
+
+async function logMessages(page, supabase, plan_id, where) {
+  const msgSel = '.messages--error, .messages--warning, .alert-danger, .alert-warning, [role="alert"]';
+  const txt = await page.locator(msgSel).innerText().catch(()=>'');
+
+  if (txt?.trim()) {
+    await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: ${where} messages: ${txt.slice(0,400)}` });
+  }
 }
 
 function sawSuccess(url, bodyText) {
@@ -2358,7 +2388,7 @@ async function logDiscoveryFailure(page, plan_id, error, code, supabase) {
   return { success: false, error, code, url: currentUrl };
 }
 
-async function discoverBlackhawkRegistration(page, plan, credentials, supabase) {
+async function discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv, supabase) {
   const plan_id = plan.id;
   
   try {
@@ -2459,158 +2489,153 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
       await page.waitForURL(/\/registration\/\d+\/start/, { timeout: 15000 });
       await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Start page opened: ${page.url()}` });
       
-      // === Complete registration flow after Start page ===
-      
-      // === Start (participant) ===
-      await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Start page — selecting participant' });
-      
-      // Sanitize any donation widgets on start page (main content only)
-      const mainContent = page.locator('main, #main, .main-content, .content').first();
-      if (await mainContent.count()) {
-        await suppressDonationsAndPickFree(mainContent, supabase, plan_id, 'Start page widgets');
-      }
-      
-      const child = (plan.child_name || '').trim();
-      const participantOk = await selectParticipant(page, child);
-      if (!participantOk) {
-        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Participant "${child}" not selectable` });
-        return { success:false, error:`Participant "${child}" not selectable`, code:'PARTICIPANT_NOT_FOUND' };
-      }
+      // === Complete registration flow with state machine ===
+      await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Entering advance loop' });
 
-      // Click Next to go to options
-      await clickNext(page);
+      const MAX_HOPS = 10; // safety bound
+      for (let hop = 0; hop < MAX_HOPS; hop++) {
+        const url = page.url();
+        const body = (await page.locator('body').innerText().catch(()=>'')) || '';
 
-      // === Options (if present) ===
-      if (/\/registration\/\d+\/options/.test(page.url())) {
-        await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Options page — filling required fields' });
-
-        // Sanitize donations and optional fields first (main content only)
-        const mainContent = page.locator('main, #main, .main-content, .content').first();
-        if (await mainContent.count()) {
-          await suppressDonationsAndPickFree(mainContent, supabase, plan_id, 'Options');
+        // Success detection
+        if (isSuccess(url, body)) {
+          await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Success detected — registration complete' });
+          return { success:true, requiresAction:false, details:{ message:'Signup completed' } };
         }
 
-        // Rentals example from screenshots (Parent Tot). Default: "We have our own skis"
-        const rentalsPref = (plan?.extras?.rentals || 'We have our own skis').toLowerCase();
-        const rentals = page.locator('select[name*="rental"], select[id*="rental"], select:has(+ label:has-text("ski"))');
-        if (await rentals.count()) {
-          // Try exact label match first, else pick first non-empty
-          const opts = rentals.first().locator('option');
-          const labels = await opts.allTextContents();
-          const exact = labels.find(t => t.trim().toLowerCase() === rentalsPref);
-          if (exact) await rentals.first().selectOption({ label: exact });
-          else if (labels.length > 1) await rentals.first().selectOption({ index: 1 });
+        // State-specific actions
+        if (/\/registration\/\d+\/start/.test(url)) {
+          await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Start — ensure participant selected then Next' });
+
+          // Sanitize any donation widgets on start page (main content only)
+          const mainContent = page.locator('main, #main, .main-content, .content').first();
+          if (await mainContent.count()) {
+            await suppressDonationsAndPickFree(mainContent, supabase, plan_id, 'Start page widgets');
+          }
+
+          // Ensure participant is selected (use your selectParticipant helper)
+          const child = (plan.child_name || '').trim();
+          const selected = await selectParticipant(page, child);
+          if (!selected) {
+            await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Participant "${child}" not selectable` });
+            return { success:false, error:`Participant "${child}" not selectable`, code:'PARTICIPANT_NOT_FOUND' };
+          }
+          await clickNextLike(page);
+          continue;
         }
 
-        // Next → Cart
-        await clickNext(page);
-      }
-
-      // === Cart ===
-      if (/\/cart(\?|$)/.test(page.url())) {
-        await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Cart — remove donations then Checkout' });
-        
-        // Donation cleanup limited to MAIN CONTENT only
-        const mainContent = page.locator('main, #main, .main-content, .content').first();
-        const changesMade = await suppressDonationsAndPickFree(mainContent, supabase, plan_id, 'Cart');
-        
-        // Remove donation line items from cart table
-        let removedItems = false;
-        try {
-          const rows = mainContent.locator('table tbody tr');
-          const n = await rows.count();
-          for (let i = 0; i < n; i++) {
-            const row = rows.nth(i);
-            const txt = ((await row.innerText().catch(()=>'')) || '').toLowerCase();
-            if (looksLikeDonationLabel(txt)) {
-              const removeCb = row.locator('input[type="checkbox"][name*="remove"], input[type="checkbox"][name*="delete"]').first();
-              const removeBtn = row.locator('a:has-text("Remove"), button:has-text("Remove"), input[type="submit"][value*="Remove"]').first();
-              if (await removeCb.count()) { await removeCb.check().catch(()=>{}); removedItems = true; }
-              if (await removeBtn.count()) { await removeBtn.click().catch(()=>{}); removedItems = true; }
-            }
+        if (/\/registration\/\d+\/options/.test(url)) {
+          await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Options — fill required, skip donations, Next' });
+          await suppressDonationsAndPickFree(page.locator('main, #main, .main-content, .content').first(), supabase, plan_id, 'Options'); // scoped to MAIN
+          
+          // Rentals example from screenshots (Parent Tot). Default: "We have our own skis"
+          const rentalsPref = (plan?.extras?.rentals || 'We have our own skis').toLowerCase();
+          const rentals = page.locator('select[name*="rental"], select[id*="rental"], select:has(+ label:has-text("ski"))');
+          if (await rentals.count()) {
+            // Try exact label match first, else pick first non-empty
+            const opts = rentals.first().locator('option');
+            const labels = await opts.allTextContents();
+            const exact = labels.find(t => t.trim().toLowerCase() === rentalsPref);
+            if (exact) await rentals.first().selectOption({ label: exact });
+            else if (labels.length > 1) await rentals.first().selectOption({ index: 1 });
           }
           
-          // Only update cart if we actually removed items
-          if (removedItems) {
-            const update = page.locator('button:has-text("Update cart"), input[type="submit"][value*="Update"]').first();
-            if (await update.count()) { 
-              await update.click(); 
-              await page.waitForLoadState('networkidle'); 
-              await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Cart updated after removing donation items' });
+          await clickNextLike(page);
+          continue;
+        }
+
+        if (/\/cart(\?|$)/.test(url)) {
+          await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Cart — clean donations, Checkout' });
+
+          // clean donations only if present, then update cart
+          const main = page.locator('main, #main, .main-content, .content').first();
+          const changesMade = await suppressDonationsAndPickFree(main, supabase, plan_id, 'Cart');
+
+          // Remove donation line items from cart table if present
+          let removedItems = false;
+          try {
+            const rows = main.locator('table tbody tr');
+            const n = await rows.count();
+            for (let i = 0; i < n; i++) {
+              const row = rows.nth(i);
+              const txt = ((await row.innerText().catch(()=>'')) || '').toLowerCase();
+              if (looksLikeDonationLabel(txt)) {
+                const removeCb = row.locator('input[type="checkbox"][name*="remove"], input[type="checkbox"][name*="delete"]').first();
+                const removeBtn = row.locator('a:has-text("Remove"), button:has-text("Remove"), input[type="submit"][value*="Remove"]').first();
+                if (await removeCb.count()) { await removeCb.check().catch(()=>{}); removedItems = true; }
+                if (await removeBtn.count()) { await removeBtn.click().catch(()=>{}); removedItems = true; }
+              }
+            }
+            
+            // Only update cart if we actually removed items
+            if (removedItems || changesMade) {
+              const update = page.locator('button:has-text("Update cart"), input[type="submit"][value*="Update"]').first();
+              if (await update.count()) { 
+                await update.click(); 
+                await page.waitForLoadState('networkidle'); 
+                await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Cart updated after removing donation items' });
+              }
+            }
+          } catch(e) {
+            await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Cart donation cleanup error: ${e.message}` });
+          }
+
+          const checkoutBtn = page.locator('#edit-checkout, button#edit-checkout, button:has-text("Checkout")').first();
+          if (await checkoutBtn.count()) {
+            await checkoutBtn.scrollIntoViewIfNeeded().catch(()=>{});
+            await checkoutBtn.click();
+            await page.waitForLoadState('networkidle');
+            continue;
+          }
+        }
+
+        if (/\/checkout\/\d+\/(installments|payment)/.test(url) || /\/checkout\/\d+($|\?)/.test(url)) {
+          await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Checkout — prefer saved payment, Continue to Review' });
+
+          // Sanitize any donation widgets on checkout page (main content only)
+          const mainContent = page.locator('main, #main, .main-content, .content').first();
+          if (await mainContent.count()) {
+            await suppressDonationsAndPickFree(mainContent, supabase, plan_id, 'Checkout widgets');
+          }
+
+          const saved = page.locator('input[type="radio"][name*="payment"][value*="saved"], input[type="radio"][name*="payment-method"]').first();
+          if (await saved.count()) { await saved.check().catch(()=>{}); }
+          else {
+            const hasCardForm = await page.locator('input[name*="cardnumber"], iframe[src*="card"], input[autocomplete="cc-number"]').count();
+            if (hasCardForm && !allowNoCvv) {
+              await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Full card form present — action required' });
+              return { success:true, requiresAction:true, details:{ message:'Payment requires manual card entry' } };
             }
           }
-        } catch(e) {
-          await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Cart donation cleanup error: ${e.message}` });
-        }
-        
-        const checkoutBtn = page.locator('#edit-checkout, button#edit-checkout, button:has-text("Checkout")').first();
-        if (await checkoutBtn.count()) {
-          await checkoutBtn.scrollIntoViewIfNeeded().catch(()=>{});
-          await checkoutBtn.click();
-          await page.waitForLoadState('networkidle');
-        }
-      }
 
-      // === Checkout (saved payment) ===
-      if (/\/checkout\/\d+/.test(page.url())) {
-        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: On Checkout` });
-
-        // Sanitize any donation widgets on checkout page (main content only)
-        const mainContent = page.locator('main, #main, .main-content, .content').first();
-        if (await mainContent.count()) {
-          await suppressDonationsAndPickFree(mainContent, supabase, plan_id, 'Checkout widgets');
-        }
-
-        // Prefer saved payment radio (avoid full-PAN forms unless allow_no_cvv)
-        const saved = page.locator('input[type="radio"][name*="payment"][value*="saved"], input[type="radio"][name*="payment-method"]').first();
-        if (await saved.count()) { 
-          await saved.check().catch(()=>{}); 
-        } else {
-          const hasCardForm = await page.locator('input[name*="cardnumber"], iframe[src*="card"], input[autocomplete="cc-number"]').count();
-          if (hasCardForm && !allowNoCvv) {
-            await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Full card form present — action required' });
-            return { success:true, requiresAction:true, details:{ message:'Payment requires manual card entry' } };
+          const cont = page.locator('button:has-text("Continue to Review"), #edit-actions-next').first();
+          if (await cont.count()) {
+            await cont.scrollIntoViewIfNeeded().catch(()=>{});
+            await cont.click();
+            await page.waitForLoadState('networkidle');
+            continue;
           }
         }
 
-        // Continue to Review
-        const next = page.locator('button:has-text("Continue to Review"), #edit-actions-next').first();
-        if (await next.count()) { 
-          await next.scrollIntoViewIfNeeded().catch(()=>{}); 
-          await next.click(); 
-          await page.waitForLoadState('networkidle'); 
+        if (/\/checkout\/\d+\/review/.test(url)) {
+          await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Review — Pay and complete' });
+          const pay = page.locator('button:has-text("Pay and complete purchase"), #edit-actions-next').first();
+          if (await pay.count()) {
+            await pay.scrollIntoViewIfNeeded().catch(()=>{});
+            await pay.click();
+            await page.waitForLoadState('networkidle');
+            continue;
+          }
         }
+
+        // Log any inline messages and try a generic Next once
+        await logMessages(page, supabase, plan_id, `Hop ${hop} on ${url}`);
+        if (!(await clickNextLike(page))) break; // no obvious next → exit loop
       }
 
-      // === Review → Pay ===
-      if (/\/checkout\/\d+\/review/.test(page.url())) {
-        await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Review — Pay and complete' });
-        const pay = page.locator('button:has-text("Pay and complete purchase"), #edit-actions-next').first();
-        if (await pay.count()) { 
-          await pay.scrollIntoViewIfNeeded().catch(()=>{}); 
-          await pay.click(); 
-          await page.waitForLoadState('networkidle'); 
-        }
-      }
-
-      // === Success detection ===
-      const url = page.url();
-      const body = (await page.locator('body').innerText().catch(()=>'')) || '';
-      const msgSel = '.messages--error, .messages--warning, .alert-danger, .alert-warning, [role="alert"]';
-      const postMsg = await page.locator(msgSel).innerText().catch(()=>'');
-
-      if (postMsg?.trim()) {
-        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Post-submit messages: ${postMsg.slice(0,400)}` });
-      }
-
-      if (/\/checkout\/.+\/complete/.test(url) || /(thank you|registration complete|successfully registered)/i.test(body)) {
-        await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Signup confirmed — success detected' });
-        return { success:true, requiresAction:false, details:{ message:'Signup completed' } };
-      }
-
-      // If we reach here, still not confirmed:
-      await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Could not confirm success — action required' });
-      return { success:true, requiresAction:true, details:{ message:'Submitted, needs quick manual confirm' } };
+      // If we finished the loop without success:
+      await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Could not confirm success — action required (advance loop ended)' });
+      return { success:true, requiresAction:true, details:{ message:'Submitted or mid-flow; needs quick manual confirm' } };
     } catch (e) {
       await supabase.from('plan_logs').insert({
         plan_id, msg: `Worker: Register click failed: ${e.message}`
@@ -2656,7 +2681,7 @@ async function executeSignup(page, plan, credentials, nordicColorGroup, nordicRe
       msg: "Worker: Using Blackhawk discovery function for program registration"
     });
     
-    const discoveryResult = await discoverBlackhawkRegistration(page, plan, credentials, supabase);
+    const discoveryResult = await discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv, supabase);
     
     // One-run guarantee: return the discovery result immediately
     // No legacy form filling should run after adapter-based discovery
