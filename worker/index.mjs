@@ -386,7 +386,7 @@ async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
     volunteer: false
   };
 
-  // Check what fields are actually available on this page - use looser selector
+  // Check what fields are actually available on this page - use expanded selector
   const rentalSel = page.locator('select').filter({ hasText: /rental|ski rental|parent tot/i }).first();
   const colorSel = page.locator('select:has(label:has-text("Color"))').first();
   const volunteerCheckboxes = page.locator('input[type="checkbox"]');
@@ -420,7 +420,9 @@ async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
         return { success: true, requiresAction: true, details: { message: `Rental choice "${extras.nordicRental}" not available` } };
       }
     } else {
-      await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Rental preference "${extras.nordicRental}" specified but no rental field found (course may not require rental)` });
+      const allSelects = await page.locator('select').allTextContents();
+      await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Rental preference "${extras.nordicRental}" but no rental field matched. Found selects: ${JSON.stringify(allSelects)}` });
+      return { success: true, requiresAction: true, details: { message: `Rental field not detected — needs manual selection` } };
     }
   }
 
@@ -513,7 +515,21 @@ async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
   await supabase.from('plan_logs').insert({ 
     plan_id, 
     msg: `Worker: Options handling complete. Processed: [${processed.join(', ') || 'none'}]. Skipped: [${skipped.join(', ') || 'none'}]` 
-  });
+   });
+
+  // Click Next button after filling options
+  const nextBtn = page.locator(
+    '#edit-submit, button:has-text("Next"), input[type="submit"][value*="Next" i]'
+  ).first();
+  if (await nextBtn.count()) {
+    const label = await nextBtn.innerText().catch(() => await nextBtn.getAttribute('value'));
+    await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Clicking Next button "${label}"` });
+    await nextBtn.click();
+    await page.waitForLoadState('networkidle');
+  } else {
+    await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: No Next button found on Options' });
+    return { success: true, requiresAction: true, details: { message: 'Options complete but no Next button found' } };
+  }
 }
 
 // Health check
