@@ -367,28 +367,13 @@ async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
   // --- Color Group ---
   if (extras.nordicColorGroup) {
     const wanted = extras.nordicColorGroup.toLowerCase();
-    
-    // Try multiple selector patterns for color group
-    const colorSelectors = [
-      'select:has(label:has-text("Color"))',
-      'select[name*="color" i]',
-      'label:has-text("Color") + select',
-      'label:has-text("Color Group") + select'
-    ];
-    
-    for (const selector of colorSelectors) {
-      const sel = page.locator(selector).first();
-      if (await sel.count()) {
-        const options = await sel.locator('option').allTextContents();
-        const idx = options.findIndex(t => t.toLowerCase().includes(wanted));
-        if (idx >= 0) {
-          await sel.selectOption({ index: idx });
-          await supabase.from('plan_logs').insert({ 
-            plan_id, 
-            msg: `Worker: Color group set to "${options[idx]}" using selector: ${selector}` 
-          });
-          break;
-        }
+    const sel = page.locator('select:has(label:has-text("Color"))').first();
+    if (await sel.count()) {
+      const options = await sel.locator('option').allTextContents();
+      const idx = options.findIndex(t => t.toLowerCase().includes(wanted));
+      if (idx >= 0) {
+        await sel.selectOption({ index: idx });
+        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Color group set to "${options[idx]}"` });
       }
     }
   }
@@ -396,82 +381,46 @@ async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
   // --- Rental ---
   if (extras.nordicRental) {
     const wanted = extras.nordicRental.toLowerCase();
-    
-    // Try multiple selector patterns for rental
-    const rentalSelectors = [
-      'select:has(label:has-text("Rental"))',
-      'select[name*="rental" i]',
-      'label:has-text("Rental") + select',
-      'label:has-text("Equipment") + select'
-    ];
-    
-    for (const selector of rentalSelectors) {
-      const sel = page.locator(selector).first();
-      if (await sel.count()) {
-        const options = await sel.locator('option').allTextContents();
-        const idx = options.findIndex(t => t.toLowerCase().includes(wanted));
-        if (idx >= 0) {
-          await sel.selectOption({ index: idx });
-          await supabase.from('plan_logs').insert({ 
-            plan_id, 
-            msg: `Worker: Rental set to "${options[idx]}" using selector: ${selector}` 
-          });
-          break;
-        }
+    const sel = page.locator('select:has(label:has-text("Rental"))').first();
+    if (await sel.count()) {
+      const options = await sel.locator('option').allTextContents();
+      const idx = options.findIndex(t => t.toLowerCase().includes(wanted));
+      if (idx >= 0) {
+        await sel.selectOption({ index: idx });
+        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Rental set to "${options[idx]}"` });
       }
     }
   }
 
   // --- Volunteer ---
   if (extras.volunteer) {
-    const wanted = extras.volunteer.toLowerCase();
-    
-    if (wanted === 'no') {
-      // Uncheck all volunteer checkboxes
-      const checkboxes = page.locator('input[type="checkbox"]').filter({ hasText: /volunteer/i });
-      const count = await checkboxes.count();
-      for (let i = 0; i < count; i++) {
+    const volunteerPrefs = Array.isArray(extras.volunteer)
+      ? extras.volunteer.map(v => v.toLowerCase())
+      : [extras.volunteer.toLowerCase()];
+
+    const checkboxes = page.locator('input[type="checkbox"]');
+    const n = await checkboxes.count();
+    if (volunteerPrefs.includes('none') || volunteerPrefs.includes('no')) {
+      for (let i = 0; i < n; i++) {
         const cb = checkboxes.nth(i);
-        if (await cb.isChecked()) {
-          await cb.uncheck().catch(() => {});
-        }
+        if (await cb.isChecked()) await cb.uncheck().catch(()=>{});
       }
-      await supabase.from('plan_logs').insert({ 
-        plan_id, 
-        msg: 'Worker: All volunteer checkboxes unchecked' 
-      });
+      await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Volunteer set to none' });
     } else {
-      // Try to find and select specific volunteer option
-      const volunteerSelectors = [
-        'select:has(label:has-text("Volunteer"))',
-        'select[name*="volunteer" i]',
-        'label:has-text("Volunteer") + select'
-      ];
-      
-      for (const selector of volunteerSelectors) {
-        const sel = page.locator(selector).first();
-        if (await sel.count()) {
-          const options = await sel.locator('option').allTextContents();
-          const idx = options.findIndex(t => t.toLowerCase().includes(wanted));
-          if (idx >= 0) {
-            await sel.selectOption({ index: idx });
-            await supabase.from('plan_logs').insert({ 
-              plan_id, 
-              msg: `Worker: Volunteer set to "${options[idx]}" using selector: ${selector}` 
-            });
-            break;
+      for (const pref of volunteerPrefs) {
+        let matched = false;
+        for (let i = 0; i < n; i++) {
+          const cb = checkboxes.nth(i);
+          const label = await page.locator(`label[for="${await cb.getAttribute('id')}"]`).innerText().catch(()=> '');
+          if (label.toLowerCase().includes(pref)) {
+            await cb.check().catch(()=>{});
+            await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Volunteer role selected: ${label}` });
+            matched = true;
           }
         }
-      }
-      
-      // Also try checkboxes
-      const cb = page.locator('input[type="checkbox"]').filter({ hasText: new RegExp(wanted, 'i') }).first();
-      if (await cb.count()) {
-        await cb.check().catch(() => {});
-        await supabase.from('plan_logs').insert({ 
-          plan_id, 
-          msg: `Worker: Volunteer checkbox "${wanted}" checked` 
-        });
+        if (!matched) {
+          await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Volunteer pref "${pref}" not found on page` });
+        }
       }
     }
   }
