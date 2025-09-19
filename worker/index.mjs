@@ -355,6 +355,66 @@ function dlog(...args) {
   if (DEBUG_VERBOSE) console.log(...args); 
 }
 
+// Helper function to handle Blackhawk Options page fields using plan.extras
+async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
+  const extras = plan.extras || {};
+
+  // --- Color Group ---
+  if (extras.nordicColorGroup) {
+    const color = extras.nordicColorGroup.toLowerCase();
+    const colorSel = page.locator('select').filter({ has: page.locator('label:has-text("Color")') }).first();
+    if (await colorSel.count()) {
+      const options = await colorSel.locator('option').allTextContents();
+      const matchIdx = options.findIndex(t => t.toLowerCase().includes(color));
+      if (matchIdx >= 0) {
+        await colorSel.selectOption({ index: matchIdx });
+        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Color group set to "${options[matchIdx]}"` });
+      } else {
+        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Color group "${extras.nordicColorGroup}" not found, defaulting` });
+        await colorSel.selectOption({ index: 1 }).catch(()=>{});
+      }
+    }
+  }
+
+  // --- Rental ---
+  if (extras.nordicRental) {
+    const rental = extras.nordicRental.toLowerCase();
+    const rentalSel = page.locator('select').filter({ has: page.locator('label:has-text("Rental")') }).first();
+    if (await rentalSel.count()) {
+      const options = await rentalSel.locator('option').allTextContents();
+      const matchIdx = options.findIndex(t => t.toLowerCase().includes(rental));
+      if (matchIdx >= 0) {
+        await rentalSel.selectOption({ index: matchIdx });
+        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Rental set to "${options[matchIdx]}"` });
+      } else {
+        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Rental "${extras.nordicRental}" not found, defaulting` });
+        await rentalSel.selectOption({ index: 1 }).catch(()=>{});
+      }
+    }
+  }
+
+  // --- Volunteer ---
+  if (extras.volunteer) {
+    if (extras.volunteer.toLowerCase() === 'no') {
+      // uncheck all
+      const cbs = page.locator('input[type="checkbox"]').filter({ hasText: /volunteer/i });
+      const n = await cbs.count();
+      for (let i = 0; i < n; i++) {
+        const el = cbs.nth(i);
+        if (await el.isChecked()) await el.uncheck().catch(()=>{});
+      }
+      await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Volunteer set to No' });
+    } else {
+      const volunteer = extras.volunteer.toLowerCase();
+      const cb = page.locator('input[type="checkbox"]').filter({ hasText: new RegExp(volunteer, 'i') }).first();
+      if (await cb.count()) {
+        await cb.check().catch(()=>{});
+        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Volunteer set to "${extras.volunteer}"` });
+      }
+    }
+  }
+}
+
 // Health check
 app.get("/health", (req, res) => {
   console.log("⚡ Health check hit from:", req.get('User-Agent') || 'unknown');
@@ -2543,30 +2603,38 @@ async function discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv
         }
 
         if (/\/registration\/\d+\/options/.test(url)) {
-          await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Options — fill required & skip donations' });
+          await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Options — using plan extras for field values' });
 
+          // Use plan extras to fill options
+          await handleBlackhawkOptions(page, plan, supabase, plan_id);
+
+          // Handle any remaining required fields that weren't covered by plan extras
           const req = page.locator('select[required], select.js-form-required');
           const n = await req.count();
           for (let i = 0; i < n; i++) {
             const sel = req.nth(i);
+            
+            // Check if this select is still unset (placeholder)
+            const currentValue = await sel.locator('option:checked').innerText().catch(()=> '');
+            if (isPlaceholderText(currentValue)) {
+              // Read all option texts
+              const options = await sel.locator('option').allTextContents().catch(()=>[]);
+              // Find first non-placeholder index
+              let idx = options.findIndex(t => !isPlaceholderText(t));
+              // If still none, try index 1 (common first valid choice), else give up
+              if (idx < 0 && options.length > 1) idx = 1;
 
-            // Read all option texts
-            const options = await sel.locator('option').allTextContents().catch(()=>[]);
-            // Find first non-placeholder index
-            let idx = options.findIndex(t => !isPlaceholderText(t));
-            // If still none, try index 1 (common first valid choice), else give up
-            if (idx < 0 && options.length > 1) idx = 1;
-
-            if (idx >= 0) {
-              await sel.selectOption({ index: idx }).catch(()=>{});
-              await supabase.from('plan_logs').insert({
-                plan_id, msg: `Worker: Required select set to "${(options[idx]||'[unknown]').toString().slice(0,60)}"`
-              });
-            } else {
-              await supabase.from('plan_logs').insert({
-                plan_id, msg: 'Worker: Required select had no valid choices (stopping for assist)'
-              });
-              return { success:true, requiresAction:true, details:{ message:'Options page needs a selection the bot cannot choose' } };
+              if (idx >= 0) {
+                await sel.selectOption({ index: idx }).catch(()=>{});
+                await supabase.from('plan_logs').insert({
+                  plan_id, msg: `Worker: Fallback - Required select set to "${(options[idx]||'[unknown]').toString().slice(0,60)}"`
+                });
+              } else {
+                await supabase.from('plan_logs').insert({
+                  plan_id, msg: 'Worker: Required select had no valid choices (stopping for assist)'
+                });
+                return { success:true, requiresAction:true, details:{ message:'Options page needs a selection the bot cannot choose' } };
+              }
             }
           }
 
