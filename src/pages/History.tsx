@@ -215,28 +215,30 @@ export default function History() {
                           {plan.paid ? "Paid" : "Unpaid"}
                         </Badge>
                       )}
+                      {/* Edit button available for most statuses */}
+                      {plan.status !== 'executing' && plan.status !== 'running' && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditingPlan(plan);
+                          }}
+                        >
+                          <Edit className="h-4 w-4 mr-1" />
+                          Edit
+                        </Button>
+                      )}
+                      {/* Cancel button only for scheduled plans */}
                       {plan.status === 'scheduled' && (
-                        <div className="flex gap-2">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setEditingPlan(plan);
-                            }}
-                          >
-                            <Edit className="h-4 w-4 mr-1" />
-                            Edit
-                          </Button>
-                          <Button
-                            variant="destructive"
-                            size="sm"
-                            onClick={(e) => cancelPlan(plan.id, e)}
-                          >
-                            <X className="h-4 w-4 mr-1" />
-                            Cancel
-                          </Button>
-                        </div>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          onClick={(e) => cancelPlan(plan.id, e)}
+                        >
+                          <X className="h-4 w-4 mr-1" />
+                          Cancel
+                        </Button>
                       )}
                     </div>
                   </div>
