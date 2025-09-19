@@ -2245,7 +2245,7 @@ async function logMessages(page, supabase, plan_id, where) {
   }
 }
 
-function sawSuccess(url, bodyText) {
+function isSuccess(url, bodyText) {
   return /\/checkout\/.+\/complete/.test(url) ||
          /(thank you|registration complete|successfully registered|order number)/i.test(bodyText);
 }
@@ -2260,23 +2260,6 @@ function looksLikeOptionalLabel(t='') {
   return /optional|add[-\s]*on|addon|extra|upsell|volunteer/i.test(s);
 }
 
-function isSuccess(url, body) {
-  return /\/checkout\/.+\/complete/.test(url) ||
-         /(thank you|registration complete|successfully registered|order number)/i.test(body);
-}
-
-async function logMessages(page, supabase, plan_id, where) {
-  const sel = '.messages--error, .messages--warning, .alert-danger, .alert-warning, [role="alert"]';
-  const txt = await page.locator(sel).innerText().catch(()=> '');
-  if (txt?.trim()) {
-    await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: ${where} messages: ${txt.slice(0,400)}` });
-  }
-}
-
-function looksLikeOptionalLabel(t='') {
-  const s = t.toLowerCase();
-  return /optional|add[-\s]*on|addon|extra|upsell|volunteer/i.test(s);
-}
 
 async function setNumericInputToZero(scope) {
   const nums = scope.locator('input[type="number"], input[type="text"][inputmode="numeric"], input[pattern*="\\d"]');
