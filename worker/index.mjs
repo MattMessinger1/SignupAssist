@@ -2146,6 +2146,60 @@ async function advancedHoldOpenMicroActivity(page, targetElement) {
 
 // ===== BLACKHAWK PROGRAM DISCOVERY =====
 
+// Helper function for detailed failure logging
+async function logDiscoveryFailure(page, plan_id, error, code, supabase) {
+  try {
+    const currentUrl = page.url();
+    
+    // Log current URL
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `DISCOVERY FAILURE - Current URL: ${currentUrl}`
+    });
+    
+    // Get first 10 row texts for debugging
+    const containers = await page.locator('.views-row, tr, article, .card, tbody tr').all();
+    const rowTexts = [];
+    
+    for (let i = 0; i < Math.min(10, containers.length); i++) {
+      try {
+        const text = await containers[i].innerText();
+        rowTexts.push(`Row ${i+1}: ${text.substring(0, 200).replace(/\n/g, ' ')}...`);
+      } catch (e) {
+        rowTexts.push(`Row ${i+1}: Error reading text`);
+      }
+    }
+    
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `DISCOVERY FAILURE - Row dump (${containers.length} total):\n${rowTexts.join('\n')}`
+    });
+    
+    // Save screenshot
+    try {
+      const screenshot = await page.screenshot({ fullPage: true });
+      const base64Screenshot = screenshot.toString('base64');
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `DISCOVERY FAILURE - Screenshot saved (${base64Screenshot.length} bytes)`
+      });
+    } catch (screenshotError) {
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `DISCOVERY FAILURE - Could not capture screenshot: ${screenshotError.message}`
+      });
+    }
+    
+  } catch (logError) {
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `DISCOVERY FAILURE - Error during failure logging: ${logError.message}`
+    });
+  }
+  
+  return { success: false, error, code };
+}
+
 async function discoverBlackhawkRegistration(page, plan, credentials, supabase) {
   const plan_id = plan.id;
   
@@ -2477,7 +2531,7 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
         plan_id,
         msg: `Worker: No program containers found on current page`
       });
-      return { success: false, error: 'No program containers found on registration page', code: 'BLACKHAWK_DISCOVERY_FAILED' };
+      return await logDiscoveryFailure(page, plan_id, 'No program containers found on registration page', 'BLACKHAWK_DISCOVERY_FAILED', supabase);
     }
     
     let best = null, bestScore = 0, bestText = '';
@@ -2511,14 +2565,14 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
     });
 
     if (!best) {
-      return { success: false, error: 'No matching program rows', code: 'BLACKHAWK_DISCOVERY_FAILED' };
+      return await logDiscoveryFailure(page, plan_id, 'No matching program rows', 'BLACKHAWK_DISCOVERY_FAILED', supabase);
     }
 
     // C) Click the **row-scoped** Register anchor (matches your screenshot)
     const regSel = 'a.btn.btn-secondary.btn-sm:has-text("Register"), a[href*="/registration/"][href$="/start"]';
     const regBtn = best.locator(regSel).first();
     if (!(await regBtn.count())) {
-      return { success: false, error: 'Register button not present in matched row', code: 'BLACKHAWK_DISCOVERY_FAILED' };
+      return await logDiscoveryFailure(page, plan_id, 'Register button not present in matched row', 'BLACKHAWK_DISCOVERY_FAILED', supabase);
     }
     
     await supabase.from('plan_logs').insert({
@@ -2537,36 +2591,7 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
         msg: `Worker: Program discovery failed: ${error.message}`
       });
       
-      // Final fallback: log first 10 rows for debugging
-      try {
-        const debugRows = await page.locator('.views-row, tr, article, .card').all();
-        const debugTexts = [];
-        
-        for (let i = 0; i < Math.min(10, debugRows.length); i++) {
-          try {
-            const text = await debugRows[i].innerText();
-            debugTexts.push(`Row ${i+1}: ${text.substring(0, 200).replace(/\n/g, ' ')}...`);
-          } catch (e) {
-            debugTexts.push(`Row ${i+1}: Error reading`);
-          }
-        }
-        
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `BLACKHAWK_DISCOVERY_FAILED - Debugging rows:\n${debugTexts.join('\n')}`
-        });
-      } catch (debugError) {
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: Could not capture debug information: ${debugError.message}`
-        });
-      }
-      
-      return { 
-        success: false, 
-        error: error.message, 
-        code: "BLACKHAWK_DISCOVERY_FAILED" 
-      };
+      return await logDiscoveryFailure(page, plan_id, error.message, "BLACKHAWK_DISCOVERY_FAILED", supabase);
     }
   }
 
