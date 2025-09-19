@@ -359,24 +359,24 @@ function dlog(...args) {
 async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
   const extras = plan.extras || {};
 
+  // Mapping dictionaries for better matching
+  const rentalMap = {
+    "no-rental": ["no rental", "own skis", "we have our own skis", "none"],
+    "classic": ["classic", "wax", "fishscale"],
+    "skate": ["skate", "skis provided"]
+  };
+
+  const colorMap = {
+    "red": ["red"],
+    "green": ["green", "skate only (green and blue"],
+    "blue": ["blue"],
+    "purple": ["purple"]
+  };
+
   await supabase.from('plan_logs').insert({ 
     plan_id, 
     msg: `Worker: Handling Blackhawk options with extras: ${JSON.stringify(extras)}` 
   });
-
-  // --- Color Group ---
-  if (extras.nordicColorGroup) {
-    const wanted = extras.nordicColorGroup.toLowerCase();
-    const sel = page.locator('select:has(label:has-text("Color"))').first();
-    if (await sel.count()) {
-      const options = await sel.locator('option').allTextContents();
-      const idx = options.findIndex(t => t.toLowerCase().includes(wanted));
-      if (idx >= 0) {
-        await sel.selectOption({ index: idx });
-        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Color group set to "${options[idx]}"` });
-      }
-    }
-  }
 
   // --- Rental ---
   if (extras.nordicRental) {
@@ -384,10 +384,42 @@ async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
     const sel = page.locator('select:has(label:has-text("Rental"))').first();
     if (await sel.count()) {
       const options = await sel.locator('option').allTextContents();
-      const idx = options.findIndex(t => t.toLowerCase().includes(wanted));
-      if (idx >= 0) {
-        await sel.selectOption({ index: idx });
-        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Rental set to "${options[idx]}"` });
+      let chosenIdx = -1;
+
+      options.forEach((opt, idx) => {
+        const low = opt.toLowerCase();
+        if (rentalMap[wanted]?.some(alias => low.includes(alias))) chosenIdx = idx;
+      });
+
+      if (chosenIdx >= 0) {
+        await sel.selectOption({ index: chosenIdx });
+        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Rental matched plan "${extras.nordicRental}" → "${options[chosenIdx]}"` });
+      } else {
+        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Rental "${extras.nordicRental}" not matched. Options: ${JSON.stringify(options)}` });
+        return { success: true, requiresAction: true, details: { message: `Rental choice "${extras.nordicRental}" not available` } };
+      }
+    }
+  }
+
+  // --- Color Group ---
+  if (extras.nordicColorGroup) {
+    const wanted = extras.nordicColorGroup.toLowerCase();
+    const sel = page.locator('select:has(label:has-text("Color"))').first();
+    if (await sel.count()) {
+      const options = await sel.locator('option').allTextContents();
+      let chosenIdx = -1;
+
+      options.forEach((opt, idx) => {
+        const low = opt.toLowerCase();
+        if (colorMap[wanted]?.some(alias => low.includes(alias))) chosenIdx = idx;
+      });
+
+      if (chosenIdx >= 0) {
+        await sel.selectOption({ index: chosenIdx });
+        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Color group matched plan "${extras.nordicColorGroup}" → "${options[chosenIdx]}"` });
+      } else {
+        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Color group "${extras.nordicColorGroup}" not matched. Options: ${JSON.stringify(options)}` });
+        return { success: true, requiresAction: true, details: { message: `Color group "${extras.nordicColorGroup}" not available` } };
       }
     }
   }
@@ -407,6 +439,7 @@ async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
       }
       await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Volunteer set to none' });
     } else {
+      let anyMatched = false;
       for (const pref of volunteerPrefs) {
         let matched = false;
         for (let i = 0; i < n; i++) {
@@ -416,11 +449,23 @@ async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
             await cb.check().catch(()=>{});
             await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Volunteer role selected: ${label}` });
             matched = true;
+            anyMatched = true;
           }
         }
         if (!matched) {
           await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Volunteer pref "${pref}" not found on page` });
         }
+      }
+      
+      if (!anyMatched && volunteerPrefs.length > 0) {
+        const allLabels = [];
+        for (let i = 0; i < n; i++) {
+          const cb = checkboxes.nth(i);
+          const label = await page.locator(`label[for="${await cb.getAttribute('id')}"]`).innerText().catch(()=> '');
+          if (label) allLabels.push(label);
+        }
+        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: No volunteer roles matched. Available: ${JSON.stringify(allLabels)}` });
+        return { success: true, requiresAction: true, details: { message: `Volunteer roles "${volunteerPrefs.join(', ')}" not available` } };
       }
     }
   }
@@ -2617,7 +2662,10 @@ async function discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv
           await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Options — filling from plan extras' });
 
           // Use plan extras to fill options
-          await handleBlackhawkOptions(page, plan, supabase, plan_id);
+          const optionsResult = await handleBlackhawkOptions(page, plan, supabase, plan_id);
+          if (optionsResult && optionsResult.requiresAction) {
+            return optionsResult;
+          }
 
           // Handle any remaining required fields that weren't covered by plan extras
           const req = page.locator('select[required], select.js-form-required');
