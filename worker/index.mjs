@@ -2343,52 +2343,55 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
       });
     }
 
-    // Enhanced section expansion with better detection
-    const expandableTexts = ['REGISTER', 'Registration', 'Programs', 'Sign Up', 'Enroll'];
-    
-    for (const text of expandableTexts) {
-      try {
-        const sections = await page.locator(`:has-text("${text}")`).all();
-        
-        for (const section of sections) {
-          try {
-            // Look for expansion indicators
-            const expandButtons = [
-              section.locator('button, .toggle, .expand, [aria-expanded], .collapsed, .expandable'),
-              section.locator('..').locator('button, .toggle, .expand, [aria-expanded]'), // Parent level
-              section.locator('+ button, + .toggle') // Adjacent siblings
-            ];
-            
-            for (const buttonLocator of expandButtons) {
-              const buttons = await buttonLocator.all();
-              for (const button of buttons) {
-                const ariaExpanded = await button.getAttribute('aria-expanded');
-                const className = await button.getAttribute('class') || '';
-                
-                if (ariaExpanded === 'false' || className.includes('collapsed')) {
-                  await supabase.from('plan_logs').insert({
-                    plan_id,
-                    msg: `Worker: Expanding ${text} section (aria-expanded: ${ariaExpanded}, class: ${className})`
-                  });
-                  
-                  await button.scrollIntoViewIfNeeded();
-                  await button.click();
-                  await page.waitForTimeout(2000); // Wait for expansion animation
-                  break;
-                }
-              }
-            }
-          } catch (e) {
-            // Continue with next section
+      // Targeted REGISTER expansion helper
+      async function expandRegisterSection(page, supabase, plan_id) {
+        // Try the actual Register collapsible, not the profile image dropdown
+        const toggles = [
+          'button[aria-controls="collapse-register-content"]',
+          '#collapsiblock-wrapper-register .collapsible-block-action',
+          // fallback: the Register title then its associated toggle in the same block
+          'h2:has-text("Register") ~ .collapsible-block-action'
+        ];
+        for (const sel of toggles) {
+          const t = page.locator(sel).first();
+          if (await t.count()) {
+            await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Expanding REGISTER via ${sel}` });
+            await t.scrollIntoViewIfNeeded().catch(()=>{});
+            await t.click().catch(()=>{});
+            await page.waitForTimeout(250);
+            return;
           }
         }
-      } catch (e) {
+        await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: REGISTER toggle not found (skipping expansion)' });
+      }
+
+      // Check if we need to expand REGISTER section
+      const notOnRegistration = !/\/registration$/.test(page.url());
+      const programsAnchors = [
+        'a.nav-link--registration[href="/registration"]',
+        'a[href="/registration"]:has-text("Programs")'
+      ];
+      
+      let programsAnchorFound = false;
+      for (const anchor of programsAnchors) {
+        if (await page.locator(anchor).count() > 0) {
+          programsAnchorFound = true;
+          break;
+        }
+      }
+      
+      if (notOnRegistration && !programsAnchorFound) {
         await supabase.from('plan_logs').insert({
           plan_id,
-          msg: `Worker: Error handling ${text} section: ${e.message}`
+          msg: 'Worker: Not on /registration and no Programs anchor found - expanding REGISTER section'
+        });
+        await expandRegisterSection(page, supabase, plan_id);
+      } else {
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Skipping REGISTER expansion (onRegistration: ${!notOnRegistration}, programsFound: ${programsAnchorFound})`
         });
       }
-    }
 
     // Try specific selectors based on actual DOM structure
     const programsSelectors = [
