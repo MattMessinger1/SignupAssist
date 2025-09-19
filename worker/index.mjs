@@ -2167,22 +2167,11 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
       msg: `Worker: Using fuzzy matchers - name: ${nameMatcher}, day: ${dayMatcher}, time: ${timeMatcher}`
     });
 
-    // Step 1: Ensure we're on the authenticated dashboard and wait for dynamic content
-    // SAFETY: Only redirect to dashboard if we're not already on a registration page during discovery
-    const currentUrl = page.url();
-    if (!currentUrl.includes('dashboard') && !/\/registration/.test(currentUrl)) {
-      const dashboardUrl = `${baseUrl}/user/dashboard`;
-      await page.goto(dashboardUrl, { waitUntil: 'networkidle', timeout: 15000 });
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Worker: Navigated to dashboard: ${dashboardUrl}`
-      });
-    } else if (/\/registration/.test(currentUrl)) {
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Worker: Already on registration page, skipping dashboard redirect for safety`
-      });
-    }
+    // SAFETY: Skip dashboard navigation during discovery - assume we're already on the correct page
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: Starting discovery on current page: ${page.url()}`
+    });
     
     // Wait for dynamic content to load and verify authentication
     await page.waitForTimeout(3000);
