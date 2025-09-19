@@ -6,6 +6,8 @@ import { createClient } from "@supabase/supabase-js";
 console.log("✅ Supabase client imported");
 import { chromium } from "playwright-core";
 console.log("✅ Playwright imported");
+import { pickAdapter } from './adapters/registry.js';
+console.log("✅ Adapter registry imported");
 
 console.log("🔍 Checking environment variables...");
 const requiredStartupEnvVars = [
@@ -2209,50 +2211,38 @@ async function logDiscoveryFailure(page, plan_id, error, code, supabase) {
   return { success: false, error, code, url: currentUrl };
 }
 
-// Utility: find a row container by normalized text, across table or card layouts
-async function findProgramContainer(page, nameRegex) {
-  // --- A) Table layout: table with "Title" and "Register" headers ---
-  const table = page.locator('main table:has(th:has-text("Title")):has(th:has-text("Register"))').first();
-  if (await table.count()) {
-    const rows = table.locator('tbody > tr');
-    const n = await rows.count();
-    for (let i = 0; i < n; i++) {
-      const row = rows.nth(i);
-      const txt = ((await row.innerText().catch(()=>'')) || '').toLowerCase();
-      if (nameRegex.test(txt)) return { container: row, layout: 'table' };
-    }
-  }
-
-  // --- B) Card/Views layout: .views-row / .card / article / section blocks ---
-  const cards = page.locator('.views-row, .card, article, section .views-row, section .card, section article');
-  const m = await cards.count();
-  for (let i = 0; i < Math.min(m, 300); i++) {
-    const card = cards.nth(i);
-    const txt = ((await card.innerText().catch(()=>'')) || '').toLowerCase();
-
-    // Skip chrome/header blocks that pollute matching
-    if (/skip to main content|account\s+dashboard|memberships|programs|events|view search filters/i.test(txt)) continue;
-
-    if (nameRegex.test(txt)) return { container: card, layout: 'card' };
-  }
-
-  return { container: null, layout: null };
-}
-
 async function discoverBlackhawkRegistration(page, plan, credentials, supabase) {
   const plan_id = plan.id;
   
   try {
     await supabase.from('plan_logs').insert({
       plan_id,
-      msg: "Worker: Starting Blackhawk program discovery with proper navigation flow"
+      msg: "Worker: Starting Blackhawk program discovery with adapter-based strategy"
     });
 
     const baseUrl = plan.base_url || `https://${(plan.org||'').toLowerCase().replace(/[^a-z0-9]/g,'')}.skiclubpro.team`;
     const normalizedBaseUrl = baseUrl.replace(/\/$/, '');
     
-    // 1) Preconditions (keep) - We've already verified auth. We are on /registration and must not re-open the sidebar once here.
-    if (!/\/registration$/.test(page.url())) {
+    // Skip sidebar if already on /registration (RDM guardrail)
+    if (/\/registration$/.test(page.url())) {
+      await supabase.from('plan_logs').insert({ 
+        plan_id, 
+        msg: 'Worker: Skipping navigation - already on /registration page' 
+      });
+    } else {
+      // Check for login redirect and handle immediately
+      if (/\/user\/login\?destination=/.test(page.url())) {
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Detected login redirect at ${page.url()}, authenticating and going to /registration`
+        });
+        await ensureAuthenticated(page, normalizedBaseUrl, credentials.email, credentials.password, supabase, plan_id);
+      }
+      
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: Navigating from ${page.url()} to ${normalizedBaseUrl}/registration`
+      });
       await page.goto(`${normalizedBaseUrl}/registration`, { waitUntil: 'networkidle' });
     }
     await page.waitForLoadState('networkidle');
@@ -2288,66 +2278,41 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
       await page.waitForLoadState('networkidle');
     }
 
-    // 3) Hybrid discovery for "Nordic Kids Wednesday" and row-scoped click
+    // Use adapter system to detect layout and find program
+    const adapter = await pickAdapter(page);
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: Selected adapter for layout detection`
+    });
+    
+    await adapter.openListing(page, normalizedBaseUrl);
+    
+    // Build matcher for the program
     const NAME = /nordic kids wednesday/i;
-
-    const { container: match, layout } = await findProgramContainer(page, NAME);
-    if (!match) {
-      // Log samples to debug
+    
+    const {container, layout} = await adapter.findProgramContainer(page, NAME);
+    if (!container) {
+      // Log first 8 containers' text then fail
       const samples = await page.locator('tbody tr, .views-row, .card, article').allTextContents().catch(()=>[]);
       await supabase.from('plan_logs').insert({
         plan_id,
-        msg: `Worker: No container matched "Nordic Kids Wednesday". Sample blocks: ${JSON.stringify((samples||[]).slice(0,8))}`
+        msg: `Worker: No container matched "Nordic Kids Wednesday" using ${layout} layout. Sample blocks: ${JSON.stringify((samples||[]).slice(0,8))}`
       });
       return { success:false, error:'No matching program rows', code:'BLACKHAWK_DISCOVERY_FAILED' };
     }
 
-    // Row-scoped Register anchor (table or card)
-    const REG_ANCHOR = [
-      'a.btn.btn-secondary.btn-sm:has-text("Register")',
-      'a[href*="/registration/"][href$="/start"]'
-    ].join(', ');
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: Found program container using ${layout} layout, clicking register button`
+    });
 
-    // Try to find Register in the matched container
-    let regBtn = match.locator(REG_ANCHOR).first();
-
-    // If not found in card, sometimes the button sits in a sibling cell/column; check nearest ancestor then within
-    if (!(await regBtn.count())) {
-      const parent = match.locator('xpath=ancestor::tr[1] | xpath=ancestor::div[1] | xpath=ancestor::section[1]');
-      if (await parent.count()) regBtn = parent.locator(REG_ANCHOR).first();
-    }
-
-    if (!(await regBtn.count())) {
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Worker: Register not present inside matched ${layout || 'unknown'} container (maybe Sold Out?)`
-      });
-      return { success:false, error:'Register not found in row', code:'BLACKHAWK_DISCOVERY_FAILED' };
-    }
-
-    // Scroll and click
+    // Row-scoped click using adapter
     try {
-      await regBtn.scrollIntoViewIfNeeded().catch(()=>{});
-      await regBtn.click();
+      await adapter.clickRegisterInContainer(page, container);
       await page.waitForURL(/\/registration\/\d+\/start/, { timeout: 15000 });
       await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Start page opened: ${page.url()}` });
       return { success:true, startUrl: page.url() };
     } catch (e) {
-      // If click didn't navigate (intercepted), try "Read Description" → internal Register
-      const readDesc = match.locator('a:has-text("Read Description")').first();
-      if (await readDesc.count()) {
-        await readDesc.click().catch(()=>{});
-        await page.waitForLoadState('networkidle');
-        const innerReg = page.locator(REG_ANCHOR).first();
-        if (await innerReg.count()) {
-          await innerReg.scrollIntoViewIfNeeded().catch(()=>{});
-          await innerReg.click();
-          await page.waitForURL(/\/registration\/\d+\/start/, { timeout: 15000 });
-          await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Start page opened via details: ${page.url()}` });
-          return { success:true, startUrl: page.url() };
-        }
-      }
-
       await supabase.from('plan_logs').insert({
         plan_id, msg: `Worker: Register click failed: ${e.message}`
       });
