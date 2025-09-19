@@ -1,7 +1,28 @@
 console.log("🚀 Worker starting up...");
+console.log("📦 Importing dependencies...");
 import express from "express";
+console.log("✅ Express imported");
 import { createClient } from "@supabase/supabase-js";
+console.log("✅ Supabase client imported");
 import { chromium } from "playwright-core";
+console.log("✅ Playwright imported");
+
+console.log("🔍 Checking environment variables...");
+const requiredStartupEnvVars = [
+  'SUPABASE_URL',
+  'SUPABASE_SERVICE_ROLE_KEY', 
+  'BROWSERBASE_API_KEY',
+  'BROWSERBASE_PROJECT_ID',
+  'CRED_ENC_KEY'
+];
+
+const missingStartupEnvVars = requiredStartupEnvVars.filter(varName => !process.env[varName]);
+if (missingStartupEnvVars.length > 0) {
+  console.error('❌ Missing required environment variables:', missingStartupEnvVars);
+  console.error('Available env vars:', Object.keys(process.env).filter(key => key.includes('SUPABASE') || key.includes('BROWSERBASE') || key.includes('CRED')));
+} else {
+  console.log("✅ All required environment variables present");
+}
 
 // ===== SHARED HELPER FUNCTIONS =====
 /**
@@ -31,10 +52,10 @@ async function scrollUntilVisible(page, selector, maxScrolls = 20) {
   throw new Error(`Element not visible for selector: ${selector}`);
 }
 
-// ===== INFRASTRUCTURE: PROCESS ERROR HANDLERS =====
-// Prevent silent crashes that cause 502 errors
+console.log("🛡️ Setting up error handlers...");
 process.on('uncaughtException', async (error) => {
   console.error('🚨 Uncaught Exception:', error);
+  console.error('Stack trace:', error.stack);
   try {
     // Log to Supabase if possible
     const supabase = createClient(
@@ -48,8 +69,7 @@ process.on('uncaughtException', async (error) => {
   } catch (e) {
     console.error('Failed to log uncaught exception:', e);
   }
-  // Give time to log before exit
-  setTimeout(() => process.exit(1), 1000);
+  process.exit(1);
 });
 
 process.on('unhandledRejection', async (reason, promise) => {
@@ -61,15 +81,19 @@ process.on('unhandledRejection', async (reason, promise) => {
     );
     await supabase.from('plan_logs').insert({
       plan_id: 'SYSTEM',
-      msg: `CRITICAL ERROR: Unhandled Rejection: ${String(reason)}`
+      msg: `CRITICAL ERROR: Unhandled Promise Rejection: ${reason}`
     });
   } catch (e) {
     console.error('Failed to log unhandled rejection:', e);
   }
+  process.exit(1);
 });
 
+console.log("🚀 Creating Express app...");
 const app = express();
+console.log("✅ Express app created");
 app.use(express.json());
+console.log("✅ JSON middleware added");
 
 // ===== POLICY CONSTANTS =====
 const CAPTCHA_AUTOSOLVE_ENABLED = false; // NEVER call a CAPTCHA solver - SMS + verify link only
@@ -241,8 +265,18 @@ function dlog(...args) {
 
 // Health check
 app.get("/health", (req, res) => {
-  console.log("⚡ Health check hit");
-  res.json({ ok: true });
+  console.log("⚡ Health check hit from:", req.get('User-Agent') || 'unknown');
+  console.log("🏥 Health check - app is running properly");
+  res.json({ 
+    ok: true, 
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    env: {
+      NODE_ENV: process.env.NODE_ENV || 'unknown',
+      PORT: process.env.PORT || '8080'
+    }
+  });
 });
 
 // ===== INFRASTRUCTURE: ASYNCHRONOUS /run-plan ENDPOINT =====
@@ -2779,7 +2813,10 @@ async function handlePaymentInfo(page, credentials, allowNoCvv, supabase, plan_i
 }
 
 // Start server
+console.log("🌐 Starting server...");
 const PORT = process.env.PORT || 8080;
+console.log(`📡 Attempting to listen on 0.0.0.0:${PORT}`);
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Worker listening on 0.0.0.0:${PORT} with enhanced infrastructure and advanced anti-bot measures`);
+  console.log("🎉 Server startup complete!");
 });
