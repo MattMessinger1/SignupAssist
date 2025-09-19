@@ -2306,7 +2306,65 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
         plan_id,
         msg: 'Worker: Already on /registration — skipping sidebar and proceeding to list parsing'
       });
-      // Jump directly to the list-parsing block (no sidebar expansion here!)
+      
+      // Immediate row discovery and Register click
+      const NAME = /nordic kids wednesday/i;
+      const rows = page.locator('tbody tr, .views-row, article, .card');
+      let best = null;
+      const rowCount = await rows.count();
+      
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: Scanning ${rowCount} rows for "Nordic Kids Wednesday"`
+      });
+      
+      for (let i = 0; i < rowCount; i++) {
+        const row = rows.nth(i);
+        const txt = ((await row.innerText().catch(()=>'')) || '').toLowerCase();
+        
+        // Skip navigation/header rows
+        if (/skip to main content|account\s+dashboard|register\s+memberships\s+programs\s+events/i.test(txt)) continue;
+        
+        if (NAME.test(txt)) { 
+          best = row; 
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: Found matching row at index ${i}: "${txt.substring(0, 200)}"`
+          });
+          break; 
+        }
+      }
+      
+      if (!best) {
+        const sample = await page.locator('tbody tr, .views-row').allTextContents().catch(()=>[]);
+        await supabase.from('plan_logs').insert({ 
+          plan_id, 
+          msg: `Worker: No row matched "Nordic Kids Wednesday". Samples: ${JSON.stringify(sample?.slice(0,10) || [])}` 
+        });
+        return { success:false, error:'No matching program rows', code:'BLACKHAWK_DISCOVERY_FAILED' };
+      }
+
+      const regSel = 'a.btn.btn-secondary.btn-sm:has-text("Register"), a[href*="/registration/"][href$="/start"]';
+      const regBtn = best.locator(regSel).first();
+      if (!(await regBtn.count())) {
+        await supabase.from('plan_logs').insert({ 
+          plan_id, 
+          msg: 'Worker: Register not present in matched row' 
+        });
+        return { success:false, error:'Register not found in row', code:'BLACKHAWK_DISCOVERY_FAILED' };
+      }
+      
+      await regBtn.scrollIntoViewIfNeeded().catch(()=>{});
+      await regBtn.click();
+      await page.waitForURL(/\/registration\/\d+\/start/, { timeout: 15000 });
+      
+      await supabase.from('plan_logs').insert({ 
+        plan_id, 
+        msg: `Worker: Successfully navigated to registration start page: ${page.url()}` 
+      });
+      
+      return { success:true, startUrl: page.url() };
+      
     } else {
       // Step 2: Look for and click the Programs navigation link
       await supabase.from('plan_logs').insert({
@@ -2583,6 +2641,7 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
     }
     } // End of conditional sidebar navigation block
     
+    // At this point, we should be on /registration (either directly or via navigation)
     // A) Optional search filter to reduce noise
     const search = page.locator('input[type="search"], input[name*="search"], input[placeholder*="search" i]').first();
     if (await search.count()) {
@@ -2597,69 +2656,95 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
       await page.waitForLoadState('networkidle');
     }
 
-    // Target signal for exact matching
+    // Row discovery and Register click (for cases where we navigated via sidebar)
     const NAME = /nordic kids wednesday/i;
+    const rows = page.locator('tbody tr, .views-row, article, .card');
+    let best = null;
+    const rowCount = await rows.count();
     
-    // Candidate container selectors for the list page
-    const CONTAINER_SELS = [
-      'tbody tr',               // table rows
-      '.views-row', '.card',    // views/card layouts
-      'section .row', 'article'
-    ];
-
     await supabase.from('plan_logs').insert({
       plan_id,
-      msg: `Worker: Looking for exact match "Nordic Kids Wednesday" using container selectors`
+      msg: `Worker: Scanning ${rowCount} rows for "Nordic Kids Wednesday"`
     });
-
-    // Find the best matching row (must contain the full phrase to avoid "Sunday")
-    let bestRow = null;
-    for (const sel of CONTAINER_SELS) {
-      const rows = page.locator(sel);
-      const count = await rows.count();
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Worker: Checking ${count} rows with selector "${sel}"`
-      });
+    
+    for (let i = 0; i < rowCount; i++) {
+      const row = rows.nth(i);
+      const txt = ((await row.innerText().catch(()=>'')) || '').toLowerCase();
       
-      for (let i = 0; i < Math.min(count, 300); i++) {
-        const row = rows.nth(i);
-        const txt = ((await row.innerText().catch(()=>'')) || '').toLowerCase();
-        if (NAME.test(txt)) { 
-          bestRow = row; 
-          await supabase.from('plan_logs').insert({
-            plan_id,
-            msg: `Worker: Found matching row at index ${i}: "${txt.substring(0, 200)}"`
-          });
-          break; 
-        }
+      // Skip navigation/header rows
+      if (/skip to main content|account\s+dashboard|register\s+memberships\s+programs\s+events/i.test(txt)) continue;
+      
+      if (NAME.test(txt)) { 
+        best = row; 
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Found matching row at index ${i}: "${txt.substring(0, 200)}"`
+        });
+        break; 
       }
-      if (bestRow) break;
     }
-
-    // If not found, scroll down and retry once more set of containers
-    if (!bestRow) {
+    
+    // If not found, scroll down and retry
+    if (!best) {
       await supabase.from('plan_logs').insert({
         plan_id,
         msg: `Worker: Row not found on initial scan, scrolling to find more content`
       });
       
-      for (let s = 0; s < 10 && !bestRow; s++) {
+      for (let s = 0; s < 10 && !best; s++) {
         await page.mouse.wheel(0, 800);
         await page.waitForTimeout(120);
-        for (const sel of CONTAINER_SELS) {
-          const rows = page.locator(sel);
-          const count = await rows.count();
-          for (let i = 0; i < Math.min(count, 300); i++) {
-            const row = rows.nth(i);
-            const txt = ((await row.innerText().catch(()=>'')) || '').toLowerCase();
-            if (NAME.test(txt)) { 
-              bestRow = row; 
-              await supabase.from('plan_logs').insert({
-                plan_id,
-                msg: `Worker: Found matching row after scroll ${s+1} at index ${i}: "${txt.substring(0, 200)}"`
-              });
-              break; 
+        const scrollRows = page.locator('tbody tr, .views-row, article, .card');
+        const scrollCount = await scrollRows.count();
+        
+        for (let i = 0; i < scrollCount; i++) {
+          const row = scrollRows.nth(i);
+          const txt = ((await row.innerText().catch(()=>'')) || '').toLowerCase();
+          
+          // Skip navigation/header rows
+          if (/skip to main content|account\s+dashboard|register\s+memberships\s+programs\s+events/i.test(txt)) continue;
+          
+          if (NAME.test(txt)) { 
+            best = row; 
+            await supabase.from('plan_logs').insert({
+              plan_id,
+              msg: `Worker: Found matching row after scroll ${s+1} at index ${i}: "${txt.substring(0, 200)}"`
+            });
+            break; 
+          }
+        }
+      }
+    }
+
+    if (!best) {
+      const sample = await page.locator('tbody tr, .views-row').allTextContents().catch(()=>[]);
+      await supabase.from('plan_logs').insert({ 
+        plan_id, 
+        msg: `Worker: No row matched "Nordic Kids Wednesday". Samples: ${JSON.stringify(sample?.slice(0,10) || [])}` 
+      });
+      return { success:false, error:'No matching program rows', code:'BLACKHAWK_DISCOVERY_FAILED' };
+    }
+
+    const regSel = 'a.btn.btn-secondary.btn-sm:has-text("Register"), a[href*="/registration/"][href$="/start"]';
+    const regBtn = best.locator(regSel).first();
+    if (!(await regBtn.count())) {
+      await supabase.from('plan_logs').insert({ 
+        plan_id, 
+        msg: 'Worker: Register not present in matched row' 
+      });
+      return { success:false, error:'Register not found in row', code:'BLACKHAWK_DISCOVERY_FAILED' };
+    }
+    
+    await regBtn.scrollIntoViewIfNeeded().catch(()=>{});
+    await regBtn.click();
+    await page.waitForURL(/\/registration\/\d+\/start/, { timeout: 15000 });
+    
+    await supabase.from('plan_logs').insert({ 
+      plan_id, 
+      msg: `Worker: Successfully navigated to registration start page: ${page.url()}` 
+    });
+    
+    return { success:true, startUrl: page.url() };
             }
           }
           if (bestRow) break;
