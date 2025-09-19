@@ -2343,6 +2343,27 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
       });
     }
 
+      // First, try to click Programs anchor
+      const programs = page.locator('a.nav-link--registration[href="/registration"], a[href="/registration"]:has-text("Programs")').first();
+      if (await programs.count()) {
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: 'Worker: Found Programs anchor, attempting click'
+        });
+        await programs.scrollIntoViewIfNeeded().catch(()=>{});
+        await programs.click({ timeout: 5000 }).catch(()=>{});
+        await page.waitForLoadState('networkidle');
+      }
+      
+      // Direct fallback if not on registration page
+      if (!/\/registration$/.test(page.url())) {
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Not on /registration after Programs click, using direct navigation from ${page.url()}`
+        });
+        await page.goto(`${baseUrl}/registration`, { waitUntil: 'networkidle' });
+      }
+
       // Targeted REGISTER expansion helper
       async function expandRegisterSection(page, supabase, plan_id) {
         // Try the actual Register collapsible, not the profile image dropdown
@@ -2365,8 +2386,8 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
         await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: REGISTER toggle not found (skipping expansion)' });
       }
 
-      // Check if we need to expand REGISTER section
-      const notOnRegistration = !/\/registration$/.test(page.url());
+      // Check if we need to expand REGISTER section (only after Programs click attempts)
+      const stillNotOnRegistration = !/\/registration$/.test(page.url());
       const programsAnchors = [
         'a.nav-link--registration[href="/registration"]',
         'a[href="/registration"]:has-text("Programs")'
@@ -2380,16 +2401,16 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
         }
       }
       
-      if (notOnRegistration && !programsAnchorFound) {
+      if (stillNotOnRegistration && !programsAnchorFound) {
         await supabase.from('plan_logs').insert({
           plan_id,
-          msg: 'Worker: Not on /registration and no Programs anchor found - expanding REGISTER section'
+          msg: 'Worker: Still not on /registration and no Programs anchor found - expanding REGISTER section'
         });
         await expandRegisterSection(page, supabase, plan_id);
       } else {
         await supabase.from('plan_logs').insert({
           plan_id,
-          msg: `Worker: Skipping REGISTER expansion (onRegistration: ${!notOnRegistration}, programsFound: ${programsAnchorFound})`
+          msg: `Worker: Skipping REGISTER expansion (onRegistration: ${!stillNotOnRegistration}, programsFound: ${programsAnchorFound})`
         });
       }
 
