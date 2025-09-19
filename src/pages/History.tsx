@@ -220,7 +220,11 @@ export default function History() {
                         </Badge>
                       )}
                       {/* Edit button available for most statuses */}
-                      {plan.status !== 'executing' && plan.status !== 'running' && (
+                      {(() => {
+                        const shouldShow = plan.status !== 'executing' && plan.status !== 'running';
+                        console.log(`Plan ${plan.org}: status="${plan.status}", shouldShowEdit=${shouldShow}`);
+                        return shouldShow;
+                      })() && (
                         <Button
                           variant="outline"
                           size="sm"
@@ -233,6 +237,10 @@ export default function History() {
                           Edit
                         </Button>
                       )}
+                      {/* Debug indicator */}
+                      <span className="text-xs text-muted-foreground">
+                        Status: {plan.status}
+                      </span>
                       {/* Cancel button only for scheduled plans */}
                       {plan.status === 'scheduled' && (
                         <Button
