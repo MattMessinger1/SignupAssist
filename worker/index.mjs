@@ -2700,7 +2700,7 @@ async function discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv
           // Skip donation sanitization for Blackhawk - plan extras handle all fields
           
           // Click Next and verify we moved to Cart or Checkout
-          const res = await clickNextAndWaitForChange(page, [/\/cart(\?|$)/, /\/checkout\/\d+/]);
+          const res = await clickNextAndWaitForChange(page, [/\/cart(\?|$)/, /\/checkout\/\d+/, /\/(complete|success|confirmation|thank-you|registered)/]);
           if (!res.changed) {
             // Log any inline validation messages so we know exactly why it stuck
             await logMessages(page, supabase, plan_id, 'Options post-Next');
@@ -2720,11 +2720,54 @@ async function discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv
 
             return { success:true, requiresAction:true, details:{ message:`Stuck on Options (${res.reason})` } };
           }
+          
+          // Check if we landed directly on a completion page (free programs might skip cart)
+          const currentUrl = page.url();
+          if (/\/(complete|success|confirmation|thank-you|registered)/.test(currentUrl)) {
+            await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Landed on completion page directly from Options (likely free program)' });
+            
+            if (await page.locator('*:has-text("Registration complete"), *:has-text("Successfully registered"), *:has-text("Thank you"), *:has-text("confirmed")').count()) {
+              await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Free program registration completed successfully' });
+              return { success: true, message: 'Free program registration completed from Options' };
+            }
+          }
+          
           continue;
         }
 
         if (/\/cart(\?|$)/.test(url)) {
-          await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Cart — clean donations, Checkout' });
+          await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Cart — checking total cost' });
+          
+          // Check if this is a free program
+          const costTexts = await page.locator('*:has-text("$"), *:has-text("Total"), *:has-text("Cost")').allTextContents().catch(() => []);
+          const totalText = costTexts.join(' ').toLowerCase();
+          const isFree = totalText.includes('$0.00') || totalText.includes('$0') || 
+                        (totalText.includes('free') && totalText.includes('total')) ||
+                        /total[:\s]*\$?0(\.00)?/i.test(totalText);
+          
+          if (isFree) {
+            await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Free program detected ($0) — skipping payment steps' });
+            
+            // For free programs, look for immediate completion or simple confirmation
+            const completeBtn = page.locator('button:has-text("Complete"), button:has-text("Confirm"), button:has-text("Register"), #edit-checkout, button#edit-checkout').first();
+            if (await completeBtn.count()) {
+              await completeBtn.scrollIntoViewIfNeeded().catch(()=>{});
+              await completeBtn.click();
+              await page.waitForLoadState('networkidle');
+              
+              // Check if we've reached a success page
+              const url = page.url();
+              if (/\/(complete|success|confirmation|thank-you|registered)/.test(url) || 
+                  await page.locator('*:has-text("Registration complete"), *:has-text("Successfully registered"), *:has-text("Thank you")').count()) {
+                await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Free program registration completed successfully' });
+                return { success: true, message: 'Free program registration completed' };
+              }
+              continue;
+            }
+          } else {
+            await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Paid program — cleaning donations and proceeding to checkout' });
+          }
+          
           const changed = await suppressDonationsAndPickFree(page.locator('main'), supabase, plan_id, 'Cart');
           if (changed) {
             const update = page.locator('button:has-text("Update cart"), input[type="submit"][value*="Update" i]').first();
@@ -2761,9 +2804,16 @@ async function discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv
           return { success:true, requiresAction:true, details:{ message:'Stuck on Review' } };
         }
 
+        // Check for completion pages first (success, confirmation, etc.)
+        if (/\/(complete|success|confirmation|thank-you|registered)/.test(url) || 
+            await page.locator('*:has-text("Registration complete"), *:has-text("Successfully registered"), *:has-text("Thank you"), *:has-text("Registration confirmed")').count()) {
+          await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Registration completion detected' });
+          return { success: true, message: 'Registration completed successfully' };
+        }
+
         // Unknown state → try one generic Next; if no change, stop
         await logMessages(page, supabase, plan_id, `Hop ${hop} on ${url}`);
-        const res = await clickNextAndWaitForChange(page, [/\/cart(\?|$)/, /\/checkout\/\d+/, /\/checkout\/\d+\/review/, /\/checkout\/.+\/complete/]);
+        const res = await clickNextAndWaitForChange(page, [/\/cart(\?|$)/, /\/checkout\/\d+/, /\/checkout\/\d+\/review/, /\/checkout\/.+\/complete/, /\/(complete|success|confirmation|thank-you|registered)/]);
         if (!res.changed) break;
       }
 
