@@ -2755,29 +2755,12 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
     });
     
     return { success:true, startUrl: page.url() };
-            }
-          }
-          if (bestRow) break;
-        }
-      }
-    }
-
-    if (!bestRow) {
-      // Log sample rows for debugging
-      const sample = await page.locator('tbody tr, .views-row').allTextContents().catch(()=>[]);
-      await supabase.from('plan_logs').insert({ 
-        plan_id, 
-        msg: `Worker: No row matched "Nordic Kids Wednesday". Sample rows: ${JSON.stringify(sample?.slice(0,10) || [])}` 
-      });
-      return await logDiscoveryFailure(page, plan_id, 'No matching program rows', 'BLACKHAWK_DISCOVERY_FAILED', supabase);
-    }
-
-    // Scroll the row into view
-    await bestRow.scrollIntoViewIfNeeded().catch(()=>{});
-    await page.waitForTimeout(80);
-
-    // Row-scoped Register (matches your screenshot: <a class="btn btn-secondary btn-sm" href="/registration/<id>/start">Register</a>)
-    const ROW_REGISTER_SEL = [
+  
+  } catch (error: any) {
+    console.error("Discovery error:", error);
+    return await logDiscoveryFailure(page, plan_id, error.message, 'BLACKHAWK_DISCOVERY_FAILED', supabase);
+  }
+}
       'a.btn.btn-secondary.btn-sm:has-text("Register")',
       'a[href*="/registration/"][href$="/start"]',
       'button:has-text("Register")' // fallback if implemented as button
