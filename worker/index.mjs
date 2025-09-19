@@ -2231,10 +2231,6 @@ async function clickNext(page) {
 
 async function at(urlRe) { return (loc) => urlRe.test(loc); }
 
-function isSuccess(url, body) {
-  return /\/checkout\/.+\/complete/.test(url) ||
-         /(thank you|registration complete|successfully registered)/i.test(body);
-}
 
 async function logMessages(page, supabase, plan_id, where) {
   const msgSel = '.messages--error, .messages--warning, .alert-danger, .alert-warning, [role="alert"]';
