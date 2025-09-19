@@ -2251,6 +2251,54 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
       await page.waitForTimeout(2000);
     }
 
+    // Safety rails: Check for login redirects and handle authentication
+    let authRetryAttempted = false;
+    const currentUrl = page.url();
+    
+    if (/\/user\/login\?destination=/.test(currentUrl)) {
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: Detected login redirect at ${currentUrl}, attempting authentication recovery`
+      });
+      
+      if (!authRetryAttempted) {
+        authRetryAttempted = true;
+        
+        // Re-authenticate using existing credentials
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Calling ensureAuthenticated to recover session`
+        });
+        
+        const authResult = await ensureAuthenticated(page, baseUrl, credentials.email, credentials.password, supabase, plan_id);
+        if (!authResult.success) {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: Authentication recovery failed: ${authResult.error}`
+          });
+          return await logDiscoveryFailure(page, plan_id, `Authentication recovery failed: ${authResult.error}`, 'BLACKHAWK_DISCOVERY_FAILED', supabase);
+        }
+        
+        // Retry navigation to /registration once
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Authentication recovered, retrying navigation to /registration`
+        });
+        
+        await page.goto(`${normalizedBaseUrl}/registration`, { waitUntil: 'networkidle' });
+        await page.waitForTimeout(2000);
+        
+        // Verify we're not still on login page
+        if (/\/user\/login/.test(page.url())) {
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: Still on login page after auth recovery: ${page.url()}`
+          });
+          return await logDiscoveryFailure(page, plan_id, 'Unable to recover from login redirect', 'BLACKHAWK_DISCOVERY_FAILED', supabase);
+        }
+      }
+    }
+
     // Step 2: Look for and click the Programs navigation link
     await supabase.from('plan_logs').insert({
       plan_id,
