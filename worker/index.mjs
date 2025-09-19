@@ -2343,9 +2343,9 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
           });
           
           // Check if we're still on a login page
-          const hasLoginForm = await page.locator('input[type="password"], input[name="password"], #edit-pass').count() > 0;
+          const stillOnLoginForm = await page.locator('input[type="password"], input[name="password"], #edit-pass').count() > 0;
           
-          if (hasLoginForm) {
+          if (stillOnLoginForm) {
             await supabase.from('plan_logs').insert({
               plan_id,
               msg: `Worker: Still on login page after direct navigation, skipping this URL`
@@ -2415,10 +2415,10 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
       }
     }
     
-    // Check if we're still on a login page
-    const hasLoginForm = await page.locator('input[type="password"], input[name="password"], #edit-pass').count() > 0;
+    // Check if we're still on a login page after all navigation attempts
+    const finalLoginFormCheck = await page.locator('input[type="password"], input[name="password"], #edit-pass').count() > 0;
     
-    if (hasLoginForm) {
+    if (finalLoginFormCheck) {
       throw new Error('Unable to access registration page - redirected to login');
     }
     
