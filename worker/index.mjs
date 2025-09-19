@@ -363,7 +363,8 @@ async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
   const rentalMap = {
     "no-rental": ["no rental", "own skis", "we have our own skis", "none"],
     "classic": ["classic", "wax", "fishscale"],
-    "skate": ["skate", "skis provided"]
+    "skate": ["skate", "skis provided", "skis and boots"],
+    "ski-pups": ["ski pups", "skis that go over winter boots"]
   };
 
   const colorMap = {
@@ -385,8 +386,8 @@ async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
     volunteer: false
   };
 
-  // Check what fields are actually available on this page
-  const rentalSel = page.locator('select:has(label:has-text("Rental"))').first();
+  // Check what fields are actually available on this page - use looser selector
+  const rentalSel = page.locator('select').filter({ hasText: /rental|ski rental|parent tot/i }).first();
   const colorSel = page.locator('select:has(label:has-text("Color"))').first();
   const volunteerCheckboxes = page.locator('input[type="checkbox"]');
 
@@ -400,25 +401,27 @@ async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
   });
 
   // --- Rental (only if field exists) ---
-  if (extras.nordicRental && fieldsPresent.rental) {
+  if (extras.nordicRental) {
     const wanted = extras.nordicRental.toLowerCase();
-    const options = await rentalSel.locator('option').allTextContents();
-    let chosenIdx = -1;
+    if (await rentalSel.count()) {
+      const options = await rentalSel.locator('option').allTextContents();
+      let chosenIdx = -1;
 
-    options.forEach((opt, idx) => {
-      const low = opt.toLowerCase();
-      if (rentalMap[wanted]?.some(alias => low.includes(alias))) chosenIdx = idx;
-    });
+      options.forEach((opt, idx) => {
+        const low = opt.toLowerCase();
+        if (rentalMap[wanted]?.some(alias => low.includes(alias))) chosenIdx = idx;
+      });
 
-    if (chosenIdx >= 0) {
-      await rentalSel.selectOption({ index: chosenIdx });
-      await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Rental matched plan "${extras.nordicRental}" → "${options[chosenIdx]}"` });
+      if (chosenIdx >= 0) {
+        await rentalSel.selectOption({ index: chosenIdx });
+        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Rental matched plan "${extras.nordicRental}" → "${options[chosenIdx]}"` });
+      } else {
+        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Rental "${extras.nordicRental}" not matched. Options: ${JSON.stringify(options)}` });
+        return { success: true, requiresAction: true, details: { message: `Rental choice "${extras.nordicRental}" not available` } };
+      }
     } else {
-      await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Rental "${extras.nordicRental}" not matched. Options: ${JSON.stringify(options)}` });
-      return { success: true, requiresAction: true, details: { message: `Rental choice "${extras.nordicRental}" not available` } };
+      await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Rental preference "${extras.nordicRental}" specified but no rental field found (course may not require rental)` });
     }
-  } else if (extras.nordicRental && !fieldsPresent.rental) {
-    await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Rental preference "${extras.nordicRental}" specified but no rental field found (course may not require rental)` });
   }
 
   // --- Color Group (only if field exists) ---
