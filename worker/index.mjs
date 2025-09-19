@@ -2515,83 +2515,121 @@ async function discoverBlackhawkRegistration(page, plan, credentials, supabase) 
       await page.waitForLoadState('networkidle');
     }
 
-    // B) Fuzzy scoring: require at least 2 signals, skip site chrome
-    const nameRe = /nordic/i;
-    const dayRe  = /wednesday/i;
-    const timeRe = /(16:30|4:30)/i;
-
-    const containers = await page.locator('.views-row, tr, article, .card, tbody tr').all();
+    // Target signal for exact matching
+    const NAME = /nordic kids wednesday/i;
     
-    // Only fallback to /registration/events if no containers found after search
-    if (containers.length === 0) {
+    // Candidate container selectors for the list page
+    const CONTAINER_SELS = [
+      'tbody tr',               // table rows
+      '.views-row', '.card',    // views/card layouts
+      'section .row', 'article'
+    ];
+
+    await supabase.from('plan_logs').insert({
+      plan_id,
+      msg: `Worker: Looking for exact match "Nordic Kids Wednesday" using container selectors`
+    });
+
+    // Find the best matching row (must contain the full phrase to avoid "Sunday")
+    let bestRow = null;
+    for (const sel of CONTAINER_SELS) {
+      const rows = page.locator(sel);
+      const count = await rows.count();
       await supabase.from('plan_logs').insert({
         plan_id,
-        msg: `Worker: No containers found on Programs page, trying Events page as fallback`
+        msg: `Worker: Checking ${count} rows with selector "${sel}"`
       });
       
-      await page.goto(`${baseUrl}/registration/events`, { waitUntil: 'networkidle' });
-      const eventContainers = await page.locator('.views-row, tr, article, .card, tbody tr').all();
-      containers.push(...eventContainers);
+      for (let i = 0; i < Math.min(count, 300); i++) {
+        const row = rows.nth(i);
+        const txt = ((await row.innerText().catch(()=>'')) || '').toLowerCase();
+        if (NAME.test(txt)) { 
+          bestRow = row; 
+          await supabase.from('plan_logs').insert({
+            plan_id,
+            msg: `Worker: Found matching row at index ${i}: "${txt.substring(0, 200)}"`
+          });
+          break; 
+        }
+      }
+      if (bestRow) break;
     }
-    
-    if (containers.length === 0) {
+
+    // If not found, scroll down and retry once more set of containers
+    if (!bestRow) {
       await supabase.from('plan_logs').insert({
         plan_id,
-        msg: `Worker: No program containers found on current page`
+        msg: `Worker: Row not found on initial scan, scrolling to find more content`
       });
-      return await logDiscoveryFailure(page, plan_id, 'No program containers found on registration page', 'BLACKHAWK_DISCOVERY_FAILED', supabase);
-    }
-    
-    let best = null, bestScore = 0, bestText = '';
-
-    for (let i = 0; i < containers.length; i++) {
-      try {
-        const c = containers[i];
-        const txt = (await c.innerText()).toLowerCase();
-
-        // Skip header / nav chrome
-        if (/skip to main content|account\s+dashboard|register\s+memberships\s+programs\s+events/i.test(txt)) continue;
-
-        let score = 0;
-        if (nameRe.test(txt)) score += 2;
-        if (dayRe.test(txt))  score += 1;
-        if (timeRe.test(txt)) score += 1;
-
-        if (score >= 2 && score > bestScore) { 
-          best = c; 
-          bestScore = score; 
-          bestText = txt.slice(0,200); 
+      
+      for (let s = 0; s < 10 && !bestRow; s++) {
+        await page.mouse.wheel(0, 800);
+        await page.waitForTimeout(120);
+        for (const sel of CONTAINER_SELS) {
+          const rows = page.locator(sel);
+          const count = await rows.count();
+          for (let i = 0; i < Math.min(count, 300); i++) {
+            const row = rows.nth(i);
+            const txt = ((await row.innerText().catch(()=>'')) || '').toLowerCase();
+            if (NAME.test(txt)) { 
+              bestRow = row; 
+              await supabase.from('plan_logs').insert({
+                plan_id,
+                msg: `Worker: Found matching row after scroll ${s+1} at index ${i}: "${txt.substring(0, 200)}"`
+              });
+              break; 
+            }
+          }
+          if (bestRow) break;
         }
-      } catch (e) {
-        // Continue with next container
       }
     }
 
-    await supabase.from('plan_logs').insert({ 
-      plan_id, 
-      msg: `Worker: Best Programs row score=${bestScore} text="${bestText}"` 
-    });
-
-    if (!best) {
+    if (!bestRow) {
+      // Log sample rows for debugging
+      const sample = await page.locator('tbody tr, .views-row').allTextContents().catch(()=>[]);
+      await supabase.from('plan_logs').insert({ 
+        plan_id, 
+        msg: `Worker: No row matched "Nordic Kids Wednesday". Sample rows: ${JSON.stringify(sample?.slice(0,10) || [])}` 
+      });
       return await logDiscoveryFailure(page, plan_id, 'No matching program rows', 'BLACKHAWK_DISCOVERY_FAILED', supabase);
     }
 
-    // C) Click the **row-scoped** Register anchor (matches your screenshot)
-    const regSel = 'a.btn.btn-secondary.btn-sm:has-text("Register"), a[href*="/registration/"][href$="/start"]';
-    const regBtn = best.locator(regSel).first();
-    if (!(await regBtn.count())) {
-      return await logDiscoveryFailure(page, plan_id, 'Register button not present in matched row', 'BLACKHAWK_DISCOVERY_FAILED', supabase);
+    // Scroll the row into view
+    await bestRow.scrollIntoViewIfNeeded().catch(()=>{});
+    await page.waitForTimeout(80);
+
+    // Row-scoped Register (matches your screenshot: <a class="btn btn-secondary btn-sm" href="/registration/<id>/start">Register</a>)
+    const ROW_REGISTER_SEL = [
+      'a.btn.btn-secondary.btn-sm:has-text("Register")',
+      'a[href*="/registration/"][href$="/start"]',
+      'button:has-text("Register")' // fallback if implemented as button
+    ].join(', ');
+
+    const rowRegister = bestRow.locator(ROW_REGISTER_SEL).first();
+    if (!(await rowRegister.count())) {
+      await supabase.from('plan_logs').insert({ 
+        plan_id, 
+        msg: 'Worker: Register button not present inside matched row' 
+      });
+      return await logDiscoveryFailure(page, plan_id, 'Register not found in row', 'BLACKHAWK_DISCOVERY_FAILED', supabase);
     }
-    
+
     await supabase.from('plan_logs').insert({
       plan_id,
       msg: `Worker: Found row-scoped Register button, clicking...`
     });
-    
-    await (await scrollUntilVisible(page, regSel)).click();
 
-    // D) Confirm we're on /registration/*/start (start page)
-    await page.waitForURL(/\/registration\/.*\/start/, { timeout: 15000 });
+    // Ensure it's visible and click
+    await (await scrollUntilVisible(page, ROW_REGISTER_SEL)).click();
+
+    // Must navigate to /registration/<id>/start
+    await page.waitForURL(/\/registration\/\d+\/start/, { timeout: 15000 });
+    await supabase.from('plan_logs').insert({ 
+      plan_id, 
+      msg: `Worker: Navigated to start page ${page.url()}` 
+    });
+
     return { success: true, startUrl: page.url() };
     } catch (error) {
       await supabase.from('plan_logs').insert({
