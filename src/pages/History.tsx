@@ -220,11 +220,7 @@ export default function History() {
                         </Badge>
                       )}
                       {/* Edit button available for most statuses */}
-                      {(() => {
-                        const shouldShowEdit = plan.status !== 'executing' && plan.status !== 'running';
-                        console.log(`Plan ${plan.id} edit button: status=${plan.status}, shouldShow=${shouldShowEdit}`);
-                        return shouldShowEdit;
-                      })() && (
+                      {plan.status !== 'executing' && plan.status !== 'running' && (
                         <Button
                           variant="outline"
                           size="sm"
