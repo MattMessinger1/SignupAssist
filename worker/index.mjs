@@ -355,177 +355,162 @@ function dlog(...args) {
   if (DEBUG_VERBOSE) console.log(...args); 
 }
 
+// ===== GENERALIZED MAPPING TABLES =====
+const rentalMap = {
+  "full-rental": ["skis and boots"],
+  "ski-pups": ["ski pups", "skis that go over winter boots"],
+  "no-rental": ["we have our own skis", "own skis", "no rental needed"],
+  "skis-only": ["skis only"],
+  "boots-only": ["boots only"]
+};
+
+const colorMap = {
+  "red": ["red"],
+  "green": ["green", "skate only (green and blue"],
+  "blue": ["blue", "skate only (green and blue"],
+  "yellow": ["yellow"],
+  "purple": ["purple"],
+  "unsure": ["unsure"]
+};
+
+const volunteerMap = {
+  "hot chocolate leader": ["hot chocolate leader"],
+  "grooming": ["grooming"],
+  "equipment": ["equipment hand out", "equipment return"],
+  "none": ["none", "no"]
+};
+
+// Utility matcher function
+function findMatch(planValue, mapping, options) {
+  const wanted = planValue.toLowerCase();
+  let chosenIdx = -1;
+  options.forEach((opt, idx) => {
+    const low = opt.toLowerCase();
+    if (mapping[wanted]?.some(alias => low.includes(alias))) {
+      chosenIdx = idx;
+    }
+  });
+  return chosenIdx;
+}
+
 // Helper function to handle Blackhawk Options page fields using plan.extras
 async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
   const extras = plan.extras || {};
-
-  // Mapping dictionaries for better matching
-  const rentalMap = {
-    "full-rental": ["skis and boots"],
-    "ski-pups": ["ski pups"],
-    "no-rental": ["we have our own skis", "own skis", "no rental needed"],
-    "skis-only": ["skis only"],
-    "boots-only": ["boots only"]
-  };
-
-  const colorMap = {
-    "red": ["red"],
-    "green": ["green", "skate only (green and blue"],
-    "blue": ["blue"],
-    "purple": ["purple"]
-  };
 
   await supabase.from('plan_logs').insert({ 
     plan_id, 
     msg: `Worker: Handling Blackhawk options with extras: ${JSON.stringify(extras)}` 
   });
 
-  // Track which fields are present on this page
-  const fieldsPresent = {
-    rental: false,
-    colorGroup: false,
-    volunteer: false
-  };
-
-  // Check what fields are actually available on this page - use expanded selector
-  const rentalSel = page.locator('select').filter({ hasText: /rental|ski rental|parent tot/i }).first();
-  const colorSel = page.locator('select:has(label:has-text("Color"))').first();
-  const volunteerCheckboxes = page.locator('input[type="checkbox"]');
-
-  fieldsPresent.rental = await rentalSel.count() > 0;
-  fieldsPresent.colorGroup = await colorSel.count() > 0;
-  fieldsPresent.volunteer = await volunteerCheckboxes.count() > 0;
-
-  await supabase.from('plan_logs').insert({ 
-    plan_id, 
-    msg: `Worker: Fields present on options page: ${JSON.stringify(fieldsPresent)}` 
-  });
-
-  // --- Rental (only if field exists) ---
+  // --- Rental Logic ---
   if (extras.nordicRental) {
-    const wanted = extras.nordicRental.toLowerCase();
-    const sel = page.locator('select').filter({ hasText: /rental|ski rental|parent tot/i }).first();
+    const selects = page.locator('select');
+    const count = await selects.count();
+    let matched = false;
 
-    if (await sel.count()) {
+    for (let i = 0; i < count; i++) {
+      const sel = selects.nth(i);
       const options = await sel.locator('option').allTextContents();
-      let chosenIdx = -1;
+      const idx = findMatch(extras.nordicRental, rentalMap, options);
 
-      options.forEach((opt, idx) => {
-        const low = opt.toLowerCase();
-        if (rentalMap[wanted]?.some(alias => low.includes(alias))) {
-          chosenIdx = idx;
-        }
-      });
-
-      if (chosenIdx >= 0) {
-        await sel.selectOption({ index: chosenIdx });
+      if (idx >= 0) {
+        await sel.selectOption({ index: idx });
         await supabase.from('plan_logs').insert({
           plan_id,
-          msg: `Worker: Rental matched plan "${extras.nordicRental}" → "${options[chosenIdx]}"`
+          msg: `Worker: Rental matched plan "${extras.nordicRental}" → "${options[idx]}"`
         });
-      } else {
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: Rental "${extras.nordicRental}" not matched. Options: ${JSON.stringify(options)}`
-        });
-        return { success: true, requiresAction: true, details: { message: `Rental choice "${extras.nordicRental}" not available` } };
+        matched = true;
+        break;
       }
-    } else {
-      const allSelects = await page.locator('select').allTextContents();
-      await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Rental preference "${extras.nordicRental}" but no rental field matched. Found selects: ${JSON.stringify(allSelects)}` });
-      return { success: true, requiresAction: true, details: { message: `Rental field not detected — needs manual selection` } };
+    }
+
+    if (!matched) {
+      const allOpts = [];
+      for (let i = 0; i < count; i++) {
+        allOpts.push(await selects.nth(i).locator('option').allTextContents());
+      }
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: Rental "${extras.nordicRental}" not matched. Options: ${JSON.stringify(allOpts)}`
+      });
+      return { success: true, requiresAction: true, details: { message: `Rental "${extras.nordicRental}" not available` } };
     }
   }
 
-  // --- Color Group (only if field exists) ---
-  if (extras.nordicColorGroup && fieldsPresent.colorGroup) {
-    const wanted = extras.nordicColorGroup.toLowerCase();
-    const options = await colorSel.locator('option').allTextContents();
-    let chosenIdx = -1;
+  // --- Color Group Logic ---
+  if (extras.nordicColorGroup) {
+    const selects = page.locator('select');
+    const count = await selects.count();
+    let matched = false;
 
-    options.forEach((opt, idx) => {
-      const low = opt.toLowerCase();
-      if (colorMap[wanted]?.some(alias => low.includes(alias))) chosenIdx = idx;
-    });
+    for (let i = 0; i < count; i++) {
+      const sel = selects.nth(i);
+      const options = await sel.locator('option').allTextContents();
+      const idx = findMatch(extras.nordicColorGroup, colorMap, options);
 
-    if (chosenIdx >= 0) {
-      await colorSel.selectOption({ index: chosenIdx });
-      await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Color group matched plan "${extras.nordicColorGroup}" → "${options[chosenIdx]}"` });
-    } else {
-      await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Color group "${extras.nordicColorGroup}" not matched. Options: ${JSON.stringify(options)}` });
-      return { success: true, requiresAction: true, details: { message: `Color group "${extras.nordicColorGroup}" not available` } };
+      if (idx >= 0) {
+        await sel.selectOption({ index: idx });
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Color matched plan "${extras.nordicColorGroup}" → "${options[idx]}"`
+        });
+        matched = true;
+        break;
+      }
     }
-  } else if (extras.nordicColorGroup && !fieldsPresent.colorGroup) {
-    await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Color group preference "${extras.nordicColorGroup}" specified but no color field found (course may not use color groups)` });
+
+    if (!matched) {
+      const allOpts = [];
+      for (let i = 0; i < count; i++) {
+        allOpts.push(await selects.nth(i).locator('option').allTextContents());
+      }
+      await supabase.from('plan_logs').insert({
+        plan_id,
+        msg: `Worker: Color "${extras.nordicColorGroup}" not matched. Options: ${JSON.stringify(allOpts)}`
+      });
+      return { success: true, requiresAction: true, details: { message: `Color "${extras.nordicColorGroup}" not available` } };
+    }
   }
 
-  // --- Volunteer (only if checkboxes exist) ---
-  if (extras.volunteer && fieldsPresent.volunteer) {
-    const volunteerPrefs = Array.isArray(extras.volunteer)
-      ? extras.volunteer.map(v => v.toLowerCase())
-      : [extras.volunteer.toLowerCase()];
+  // --- Volunteer Logic ---
+  if (extras.volunteer) {
+    const wanted = extras.volunteer.toLowerCase();
+    const checkboxes = page.locator('input[type="checkbox"]');
+    const n = await checkboxes.count();
 
-    const n = await volunteerCheckboxes.count();
-    if (volunteerPrefs.includes('none') || volunteerPrefs.includes('no')) {
+    if (volunteerMap[wanted]?.includes("no")) {
       for (let i = 0; i < n; i++) {
-        const cb = volunteerCheckboxes.nth(i);
+        const cb = checkboxes.nth(i);
         if (await cb.isChecked()) await cb.uncheck().catch(()=>{});
       }
       await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Volunteer set to none' });
     } else {
-      let anyMatched = false;
-      for (const pref of volunteerPrefs) {
-        let matched = false;
-        for (let i = 0; i < n; i++) {
-          const cb = volunteerCheckboxes.nth(i);
-          const label = await page.locator(`label[for="${await cb.getAttribute('id')}"]`).innerText().catch(()=> '');
-          if (label.toLowerCase().includes(pref)) {
-            await cb.check().catch(()=>{});
-            await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Volunteer role selected: ${label}` });
-            matched = true;
-            anyMatched = true;
-          }
-        }
-        if (!matched) {
-          await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Volunteer pref "${pref}" not found on page` });
+      let matched = false;
+      for (let i = 0; i < n; i++) {
+        const cb = checkboxes.nth(i);
+        const label = await page.locator(`label[for="${await cb.getAttribute('id')}"]`).innerText().catch(()=> '');
+        if (volunteerMap[wanted]?.some(alias => label.toLowerCase().includes(alias))) {
+          await cb.check().catch(()=>{});
+          await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Volunteer role matched plan "${extras.volunteer}" → "${label}"` });
+          matched = true;
         }
       }
-      
-      if (!anyMatched && volunteerPrefs.length > 0) {
-        const allLabels = [];
-        for (let i = 0; i < n; i++) {
-          const cb = volunteerCheckboxes.nth(i);
-          const label = await page.locator(`label[for="${await cb.getAttribute('id')}"]`).innerText().catch(()=> '');
-          if (label) allLabels.push(label);
-        }
-        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: No volunteer roles matched. Available: ${JSON.stringify(allLabels)}` });
-        return { success: true, requiresAction: true, details: { message: `Volunteer roles "${volunteerPrefs.join(', ')}" not available` } };
+      if (!matched) {
+        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Volunteer role "${extras.volunteer}" not matched on page` });
+        return { success: true, requiresAction: true, details: { message: `Volunteer role "${extras.volunteer}" not available` } };
       }
     }
-  } else if (extras.volunteer && !fieldsPresent.volunteer) {
-    await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Volunteer preference "${extras.volunteer}" specified but no volunteer checkboxes found (course may not need volunteers)` });
   }
 
-  // Log completion - show which fields were processed vs skipped
+  // Log completion
   const processed = [];
-  const skipped = [];
-  
-  if (extras.nordicRental) {
-    if (fieldsPresent.rental) processed.push('rental');
-    else skipped.push('rental (field not present)');
-  }
-  if (extras.nordicColorGroup) {
-    if (fieldsPresent.colorGroup) processed.push('color group');
-    else skipped.push('color group (field not present)');
-  }
-  if (extras.volunteer) {
-    if (fieldsPresent.volunteer) processed.push('volunteer');
-    else skipped.push('volunteer (field not present)');
-  }
+  if (extras.nordicRental) processed.push('rental');
+  if (extras.nordicColorGroup) processed.push('color group');
+  if (extras.volunteer) processed.push('volunteer');
 
   await supabase.from('plan_logs').insert({ 
     plan_id, 
-    msg: `Worker: Options handling complete. Processed: [${processed.join(', ') || 'none'}]. Skipped: [${skipped.join(', ') || 'none'}]` 
+    msg: `Worker: Options handling complete. Processed: [${processed.join(', ') || 'none'}]` 
    });
 
   // Click Next button after filling options
