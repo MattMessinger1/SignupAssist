@@ -2575,7 +2575,7 @@ async function discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv
     await adapter.openListing(page, normalizedBaseUrl);
     
     // Read desired program name from plan.extras or fallback
-    const targetProgram = plan.extras?.programName || "Nordic Kids Wednesday";
+    const targetProgram = plan.extras?.programName || plan.preferred_class_name || "Nordic Kids Wednesday";
     const NAME = new RegExp(targetProgram, "i");
 
     await supabase.from("plan_logs").insert({
@@ -2585,13 +2585,12 @@ async function discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv
     
     const {container, layout} = await adapter.findProgramContainer(page, NAME);
     if (!container) {
-      // Log first 8 containers' text then fail
-      const samples = await page.locator('tbody tr, .views-row, .card, article').allTextContents().catch(()=>[]);
-      await supabase.from('plan_logs').insert({
+      const sample = await page.locator(".views-row, tr").allTextContents().catch(()=>[]);
+      await supabase.from("plan_logs").insert({
         plan_id,
-        msg: `Worker: Could not find program "${targetProgram}" using ${layout} layout. Sample blocks: ${JSON.stringify((samples||[]).slice(0,8))}`
+        msg: `Worker: Could not find program "${targetProgram}". Sample rows: ${JSON.stringify(sample.slice(0,5))}`
       });
-      return { success:false, error:`Program "${targetProgram}" not found`, code:'PROGRAM_NOT_FOUND' };
+      return { success:false, error:`Program "${targetProgram}" not found`, code:"PROGRAM_NOT_FOUND" };
     }
 
     await supabase.from('plan_logs').insert({
