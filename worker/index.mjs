@@ -2682,37 +2682,7 @@ async function discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv
         }
 
         if (/\/cart(\?|$)/.test(url)) {
-          await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Cart — checking total cost' });
-          
-          // Check if this is a free program
-          const costTexts = await page.locator('*:has-text("$"), *:has-text("Total"), *:has-text("Cost")').allTextContents().catch(() => []);
-          const totalText = costTexts.join(' ').toLowerCase();
-          const isFree = totalText.includes('$0.00') || totalText.includes('$0') || 
-                        (totalText.includes('free') && totalText.includes('total')) ||
-                        /total[:\s]*\$?0(\.00)?/i.test(totalText);
-          
-          if (isFree) {
-            await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Free program detected ($0) — skipping payment steps' });
-            
-            // For free programs, look for immediate completion or simple confirmation
-            const completeBtn = page.locator('button:has-text("Complete"), button:has-text("Confirm"), button:has-text("Register"), #edit-checkout, button#edit-checkout').first();
-            if (await completeBtn.count()) {
-              await completeBtn.scrollIntoViewIfNeeded().catch(()=>{});
-              await completeBtn.click();
-              await page.waitForLoadState('networkidle');
-              
-              // Check if we've reached a success page
-              const url = page.url();
-              if (/\/(complete|success|confirmation|thank-you|registered)/.test(url) || 
-                  await page.locator('*:has-text("Registration complete"), *:has-text("Successfully registered"), *:has-text("Thank you")').count()) {
-                await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Free program registration completed successfully' });
-                return { success: true, message: 'Free program registration completed' };
-              }
-              continue;
-            }
-          } else {
-            await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Paid program — cleaning donations and proceeding to checkout' });
-          }
+          await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Cart — proceeding to checkout' });
           
           const changed = await suppressDonationsAndPickFree(page.locator('main'), supabase, plan_id, 'Cart');
           if (changed) {
@@ -2720,7 +2690,7 @@ async function discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv
             if (await update.count()) { await update.click().catch(()=>{}); await page.waitForLoadState('networkidle'); }
           }
           
-          // Page-specific Checkout button click
+          // Always click Checkout, even if free
           const checkoutBtn = page.locator('#edit-checkout, button#edit-checkout, button:has-text("Checkout")').first();
           if (await checkoutBtn.count()) {
             await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: On Cart — clicking Checkout" });
@@ -2735,6 +2705,23 @@ async function discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv
         }
 
         if (/\/checkout\/\d+\/(installments|payment)/.test(url) || /\/checkout\/\d+($|\?)/.test(url)) {
+          // If free, skip selecting card and go straight to Continue to Review
+          const bodyText = await page.locator("body").innerText().catch(()=> "");
+          if (/total:\s*\$0/i.test(bodyText)) {
+            await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Free program — skipping payment fields" });
+            const contBtn = page.locator('#edit-actions-next, button#edit-actions-next, button:has-text("Continue to Review")').first();
+            if (await contBtn.count()) {
+              await contBtn.scrollIntoViewIfNeeded().catch(()=>{});
+              await contBtn.click();
+              await page.waitForLoadState("networkidle");
+            } else {
+              await logMessages(page, supabase, plan_id, 'Free checkout — no continue');
+              return { success:true, requiresAction:true, details:{ message:'Stuck on Free Checkout' } };
+            }
+            continue;
+          }
+
+          // Otherwise, normal payment logic...
           await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Checkout — prefer saved payment' });
           const saved = page.locator('input[type="radio"][name*="payment"][value*="saved"], input[type="radio"][name*="payment-method"]').first();
           if (await saved.count()) { await saved.check().catch(()=>{}); }
