@@ -388,16 +388,14 @@ export default function PlanDetail() {
               </div>
 
               {/* Program Name and Nordic Kids Add-ons Section */}
-              {plan.extras && (plan.extras.programName || plan.extras.nordicRental || plan.extras.nordicColorGroup || plan.extras.volunteer) && (
+              {plan.extras && (plan.extras.nordicRental || plan.extras.nordicColorGroup || plan.extras.volunteer) || true && (
                 <div className="mb-6">
                   <h3 className="font-medium text-lg mb-3 text-blue-800">Program Details & Nordic Kids Add-ons</h3>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 bg-blue-50/50 rounded-lg border border-blue-200">
-                    {plan.extras.programName && (
-                      <div>
-                        <p className="font-medium text-blue-900">Program Name</p>
-                        <p className="text-sm text-blue-700">{plan.extras.programName}</p>
-                      </div>
-                    )}
+                    <div>
+                      <p className="font-medium text-blue-900">Program Name</p>
+                      <p className="text-sm text-blue-700">{plan.extras?.programName || "Default (Nordic Kids Wednesday)"}</p>
+                    </div>
                     {plan.extras.nordicRental && (
                       <div>
                         <p className="font-medium text-blue-900">Rental Equipment</p>

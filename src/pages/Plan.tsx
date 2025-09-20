@@ -464,14 +464,21 @@ export default function Plan() {
 
                 <div className="space-y-2">
                   <Label htmlFor="program_name">Program Name</Label>
-                  <Input
-                    id="program_name"
+                  <Select
                     value={formData.programName}
-                    onChange={(e) => setFormData(prev => ({ ...prev, programName: e.target.value }))}
-                    placeholder="e.g., Nordic Kids Wednesday, Nordic Parent Tot Wednesday"
-                  />
+                    onValueChange={(value) => setFormData(prev => ({ ...prev, programName: value }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select Program" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="">Default (Nordic Kids Wednesday)</SelectItem>
+                      <SelectItem value="Nordic Kids Wednesday">Nordic Kids Wednesday</SelectItem>
+                      <SelectItem value="Nordic Parent Tot Wednesday">Nordic Parent Tot Wednesday</SelectItem>
+                    </SelectContent>
+                  </Select>
                   <p className="text-sm text-muted-foreground">
-                    Leave blank to use default "Nordic Kids Wednesday"
+                    Choose the specific program or leave as default
                   </p>
                 </div>
 
