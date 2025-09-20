@@ -373,11 +373,52 @@ function findMatch(planValue, mapping, options) {
 async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
   const extras = plan.extras || {};
   const pageTitle = (await page.locator("h1").innerText().catch(()=> "")).toLowerCase();
-
   await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Options page title="${pageTitle}"` });
 
-  const isParentTot = pageTitle.includes("parent tot");
-  const config = isParentTot ? mappings.parent_tot : mappings.nordic_kids;
+  if (pageTitle.includes("parent tot")) {
+    // === Parent Tot: only rental field ===
+    const rentalMap = {
+      "full-rental": ["skis and boots"],
+      "ski-pups": ["ski pups", "skis that go over winter boots"],
+      "no-rental": ["we have our own skis", "own skis", "no rental needed"]
+    };
+    const sel = page.locator("select").first();
+    if (await sel.count() && extras.nordicRental) {
+      const options = await sel.locator("option").allTextContents();
+      const idx = findMatch(extras.nordicRental, rentalMap, options);
+      if (idx >= 0) {
+        await sel.selectOption({ index: idx });
+        await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Parent Tot rental matched "${extras.nordicRental}" → "${options[idx]}"` });
+      } else {
+        await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Parent Tot rental not matched. Options: ${JSON.stringify(options)}` });
+        return { success:true, requiresAction:true, details:{ message:`Rental choice "${extras.nordicRental}" not available` } };
+      }
+    }
+    return;
+  }
+
+  // === Nordic Kids: rental + color + volunteer ===
+  const rentalMap = {
+    "full-rental": ["skis and boots"],
+    "ski-pups": ["ski pups"],
+    "no-rental": ["we have our own skis", "own skis"],
+    "skis-only": ["skate only", "skate and classic", "classic only"]
+  };
+  const colorMap = {
+    "red": ["red"],
+    "green": ["green"],
+    "blue": ["blue", "skate only (green and blue"],
+    "yellow": ["yellow"],
+    "purple": ["purple"],
+    "unsure": ["unsure"]
+  };
+  const volunteerMap = {
+    "hot chocolate leader": ["hot chocolate leader"],
+    "instructor": ["instructor"],
+    "assistant instructor": ["assistant instructor"],
+    "grooming": ["grooming"],
+    "none": ["none", "no"]
+  };
 
   // Rental
   if (extras.nordicRental) {
@@ -385,7 +426,7 @@ async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
     for (let i=0; i<await selects.count(); i++) {
       const sel = selects.nth(i);
       const options = await sel.locator("option").allTextContents();
-      const idx = findMatch(extras.nordicRental, config.rental, options);
+      const idx = findMatch(extras.nordicRental, rentalMap, options);
       if (idx >= 0) {
         await sel.selectOption({ index: idx });
         await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Rental matched "${extras.nordicRental}" → "${options[idx]}"` });
@@ -394,13 +435,13 @@ async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
     }
   }
 
-  // Color (Nordic Kids only)
-  if (!isParentTot && extras.nordicColorGroup) {
+  // Color
+  if (extras.nordicColorGroup) {
     const selects = page.locator("select");
     for (let i=0; i<await selects.count(); i++) {
       const sel = selects.nth(i);
       const options = await sel.locator("option").allTextContents();
-      const idx = findMatch(extras.nordicColorGroup, config.color, options);
+      const idx = findMatch(extras.nordicColorGroup, colorMap, options);
       if (idx >= 0) {
         await sel.selectOption({ index: idx });
         await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Color matched "${extras.nordicColorGroup}" → "${options[idx]}"` });
@@ -409,10 +450,10 @@ async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
     }
   }
 
-  // Volunteer (Nordic Kids only)
-  if (!isParentTot && extras.volunteer) {
+  // Volunteer
+  if (extras.volunteer) {
     const wanted = extras.volunteer.toLowerCase();
-    if (config.volunteer[wanted]?.includes("no")) {
+    if (volunteerMap[wanted]?.some(alias => alias.includes("no"))) {
       const cbs = page.locator("input[type='checkbox']");
       for (let i=0; i<await cbs.count(); i++) if (await cbs.nth(i).isChecked()) await cbs.nth(i).uncheck();
       await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Volunteer set to none" });
@@ -421,23 +462,12 @@ async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
       for (let i=0; i<await cbs.count(); i++) {
         const cb = cbs.nth(i);
         const label = await page.locator(`label[for="${await cb.getAttribute("id")}"]`).innerText().catch(()=> "");
-        if (config.volunteer[wanted]?.some(alias => label.toLowerCase().includes(alias))) {
+        if (volunteerMap[wanted]?.some(alias => label.toLowerCase().includes(alias))) {
           await cb.check();
           await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Volunteer matched "${extras.volunteer}" → "${label}"` });
         }
       }
     }
-  }
-
-  // Always click Next
-  const nextBtn = page.locator('#edit-submit, button:has-text("Next"), input[type="submit"][value*="Next" i]').first();
-  if (await nextBtn.count()) {
-    const label = await nextBtn.innerText().catch(() => nextBtn.getAttribute("value"));
-    await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Clicking Next "${label}"` });
-    await nextBtn.click();
-    await page.waitForLoadState("networkidle");
-  } else {
-    return { success:true, requiresAction:true, details:{ message:"Options complete but no Next button found" } };
   }
 }
 
@@ -2635,17 +2665,18 @@ async function discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv
 
         if (/\/registration\/\d+\/options/.test(url)) {
           await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Options — filling from plan extras' });
-
           await handleBlackhawkOptions(page, plan, supabase, plan_id);
-
-          // Short-circuit: DO NOT run generic required-select filler here
-          await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Skipping generic required-select fallback (plan extras used)' });
-
-          // Advance by clicking Next
-          const res = await clickNextAndWaitForChange(page, [/\/cart(\?|$)/, /\/checkout\/\d+/]);
-          if (!res.changed) {
-            await logMessages(page, supabase, plan_id, 'Options post-Next');
-            return { success:true, requiresAction:true, details:{ message:`Stuck on Options (${res.reason})` } };
+          
+          // Page-specific Next button click
+          const nextBtn = page.locator('button#edit-submit, button:has-text("Next")').first();
+          if (await nextBtn.count()) {
+            await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: On Options — clicking Next" });
+            await nextBtn.scrollIntoViewIfNeeded().catch(()=>{});
+            await nextBtn.click();
+            await page.waitForLoadState("networkidle");
+          } else {
+            await logMessages(page, supabase, plan_id, 'Options — no Next button');
+            return { success:true, requiresAction:true, details:{ message:'Stuck on Options' } };
           }
           continue;
         }
@@ -2688,10 +2719,19 @@ async function discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv
             const update = page.locator('button:has-text("Update cart"), input[type="submit"][value*="Update" i]').first();
             if (await update.count()) { await update.click().catch(()=>{}); await page.waitForLoadState('networkidle'); }
           }
+          
+          // Page-specific Checkout button click
           const checkoutBtn = page.locator('#edit-checkout, button#edit-checkout, button:has-text("Checkout")').first();
-          if (await checkoutBtn.count()) { await checkoutBtn.scrollIntoViewIfNeeded().catch(()=>{}); await checkoutBtn.click(); await page.waitForLoadState('networkidle'); continue; }
-          await logMessages(page, supabase, plan_id, 'Cart — no checkout button');
-          return { success:true, requiresAction:true, details:{ message:'Stuck on Cart' } };
+          if (await checkoutBtn.count()) {
+            await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: On Cart — clicking Checkout" });
+            await checkoutBtn.scrollIntoViewIfNeeded().catch(()=>{});
+            await checkoutBtn.click();
+            await page.waitForLoadState("networkidle");
+          } else {
+            await logMessages(page, supabase, plan_id, 'Cart — no checkout button');
+            return { success:true, requiresAction:true, details:{ message:'Stuck on Cart' } };
+          }
+          continue;
         }
 
         if (/\/checkout\/\d+\/(installments|payment)/.test(url) || /\/checkout\/\d+($|\?)/.test(url)) {
@@ -2705,18 +2745,36 @@ async function discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv
               return { success:true, requiresAction:true, details:{ message:'Payment requires manual card entry' } };
             }
           }
-          const cont = page.locator('button:has-text("Continue to Review"), #edit-actions-next').first();
-          if (await cont.count()) { await cont.scrollIntoViewIfNeeded().catch(()=>{}); await cont.click(); await page.waitForLoadState('networkidle'); continue; }
-          await logMessages(page, supabase, plan_id, 'Checkout — no continue');
-          return { success:true, requiresAction:true, details:{ message:'Stuck on Checkout' } };
+          
+          // Page-specific Continue button click
+          const contBtn = page.locator('#edit-actions-next, button#edit-actions-next, button:has-text("Continue to Review")').first();
+          if (await contBtn.count()) {
+            await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: On Payment — clicking Continue to Review" });
+            await contBtn.scrollIntoViewIfNeeded().catch(()=>{});
+            await contBtn.click();
+            await page.waitForLoadState("networkidle");
+          } else {
+            await logMessages(page, supabase, plan_id, 'Checkout — no continue');
+            return { success:true, requiresAction:true, details:{ message:'Stuck on Checkout' } };
+          }
+          continue;
         }
 
         if (/\/checkout\/\d+\/review/.test(url)) {
           await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: On Review — Pay and complete' });
-          const pay = page.locator('button:has-text("Pay and complete purchase"), #edit-actions-next').first();
-          if (await pay.count()) { await pay.scrollIntoViewIfNeeded().catch(()=>{}); await pay.click(); await page.waitForLoadState('networkidle'); continue; }
-          await logMessages(page, supabase, plan_id, 'Review — no pay button');
-          return { success:true, requiresAction:true, details:{ message:'Stuck on Review' } };
+          
+          // Page-specific Pay button click  
+          const payBtn = page.locator('#edit-actions-next, button#edit-actions-next, button:has-text("Pay and complete purchase")').first();
+          if (await payBtn.count()) {
+            await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: On Review — clicking Pay and complete purchase" });
+            await payBtn.scrollIntoViewIfNeeded().catch(()=>{});
+            await payBtn.click();
+            await page.waitForLoadState("networkidle");
+          } else {
+            await logMessages(page, supabase, plan_id, 'Review — no pay button');
+            return { success:true, requiresAction:true, details:{ message:'Stuck on Review' } };
+          }
+          continue;
         }
 
         // Check for completion pages first (success, confirmation, etc.)
