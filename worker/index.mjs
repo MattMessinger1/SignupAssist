@@ -361,10 +361,11 @@ async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
 
   // Mapping dictionaries for better matching
   const rentalMap = {
-    "no-rental": ["no rental", "own skis", "we have our own skis", "none"],
-    "classic": ["classic", "wax", "fishscale"],
-    "skate": ["skate", "skis provided", "skis and boots"],
-    "ski-pups": ["ski pups", "skis that go over winter boots"]
+    "full-rental": ["skis and boots"],
+    "ski-pups": ["ski pups"],
+    "no-rental": ["we have our own skis", "own skis", "no rental needed"],
+    "skis-only": ["skis only"],
+    "boots-only": ["boots only"]
   };
 
   const colorMap = {
@@ -403,20 +404,30 @@ async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
   // --- Rental (only if field exists) ---
   if (extras.nordicRental) {
     const wanted = extras.nordicRental.toLowerCase();
-    if (await rentalSel.count()) {
-      const options = await rentalSel.locator('option').allTextContents();
+    const sel = page.locator('select').filter({ hasText: /rental|ski rental|parent tot/i }).first();
+
+    if (await sel.count()) {
+      const options = await sel.locator('option').allTextContents();
       let chosenIdx = -1;
 
       options.forEach((opt, idx) => {
         const low = opt.toLowerCase();
-        if (rentalMap[wanted]?.some(alias => low.includes(alias))) chosenIdx = idx;
+        if (rentalMap[wanted]?.some(alias => low.includes(alias))) {
+          chosenIdx = idx;
+        }
       });
 
       if (chosenIdx >= 0) {
-        await rentalSel.selectOption({ index: chosenIdx });
-        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Rental matched plan "${extras.nordicRental}" → "${options[chosenIdx]}"` });
+        await sel.selectOption({ index: chosenIdx });
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Rental matched plan "${extras.nordicRental}" → "${options[chosenIdx]}"`
+        });
       } else {
-        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Rental "${extras.nordicRental}" not matched. Options: ${JSON.stringify(options)}` });
+        await supabase.from('plan_logs').insert({
+          plan_id,
+          msg: `Worker: Rental "${extras.nordicRental}" not matched. Options: ${JSON.stringify(options)}`
+        });
         return { success: true, requiresAction: true, details: { message: `Rental choice "${extras.nordicRental}" not available` } };
       }
     } else {
