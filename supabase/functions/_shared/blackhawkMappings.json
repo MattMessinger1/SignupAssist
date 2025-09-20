@@ -1,0 +1,32 @@
+{
+  "parent_tot": {
+    "rental": {
+      "full-rental": ["skis and boots"],
+      "ski-pups": ["ski pups", "skis that go over winter boots"],
+      "no-rental": ["we have our own skis", "own skis", "no rental needed"]
+    }
+  },
+  "nordic_kids": {
+    "rental": {
+      "full-rental": ["skis and boots"],
+      "ski-pups": ["ski pups"],
+      "no-rental": ["we have our own skis", "own skis"],
+      "skis-only": ["skate only", "skate and classic", "classic only"]
+    },
+    "color": {
+      "red": ["red"],
+      "green": ["green"],
+      "blue": ["blue", "skate only (green and blue"],
+      "yellow": ["yellow"],
+      "purple": ["purple"],
+      "unsure": ["unsure"]
+    },
+    "volunteer": {
+      "hot chocolate leader": ["hot chocolate leader"],
+      "instructor": ["instructor"],
+      "assistant instructor": ["assistant instructor"],
+      "grooming": ["grooming"],
+      "none": ["none", "no"]
+    }
+  }
+}

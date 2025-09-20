@@ -8,6 +8,8 @@ import { chromium } from "playwright-core";
 console.log("✅ Playwright imported");
 import { pickAdapter } from './adapters/registry.js';
 console.log("✅ Adapter registry imported");
+import mappings from "../functions/_shared/blackhawkMappings.json" assert { type: "json" };
+console.log("✅ Blackhawk mappings imported");
 
 console.log("🔍 Checking environment variables...");
 const requiredStartupEnvVars = [
@@ -355,34 +357,9 @@ function dlog(...args) {
   if (DEBUG_VERBOSE) console.log(...args); 
 }
 
-// ===== GENERALIZED MAPPING TABLES =====
-const rentalMap = {
-  "full-rental": ["skis and boots"],
-  "ski-pups": ["ski pups", "skis that go over winter boots"],
-  "no-rental": ["we have our own skis", "own skis", "no rental needed"],
-  "skis-only": ["skis only"],
-  "boots-only": ["boots only"]
-};
-
-const colorMap = {
-  "red": ["red"],
-  "green": ["green", "skate only (green and blue"],
-  "blue": ["blue", "skate only (green and blue"],
-  "yellow": ["yellow"],
-  "purple": ["purple"],
-  "unsure": ["unsure"]
-};
-
-const volunteerMap = {
-  "hot chocolate leader": ["hot chocolate leader"],
-  "grooming": ["grooming"],
-  "equipment": ["equipment hand out", "equipment return"],
-  "none": ["none", "no"]
-};
-
 // Utility matcher function
 function findMatch(planValue, mapping, options) {
-  const wanted = planValue.toLowerCase();
+  const wanted = (planValue || "").toLowerCase();
   let chosenIdx = -1;
   options.forEach((opt, idx) => {
     const low = opt.toLowerCase();
@@ -393,143 +370,74 @@ function findMatch(planValue, mapping, options) {
   return chosenIdx;
 }
 
-// Helper function to handle Blackhawk Options page fields using plan.extras
 async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
   const extras = plan.extras || {};
+  const pageTitle = (await page.locator("h1").innerText().catch(()=> "")).toLowerCase();
 
-  await supabase.from('plan_logs').insert({ 
-    plan_id, 
-    msg: `Worker: Handling Blackhawk options with extras: ${JSON.stringify(extras)}` 
-  });
+  await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Options page title="${pageTitle}"` });
 
-  // --- Rental Logic ---
+  const isParentTot = pageTitle.includes("parent tot");
+  const config = isParentTot ? mappings.parent_tot : mappings.nordic_kids;
+
+  // Rental
   if (extras.nordicRental) {
-    const selects = page.locator('select');
-    const count = await selects.count();
-    let matched = false;
-
-    for (let i = 0; i < count; i++) {
+    const selects = page.locator("select");
+    for (let i=0; i<await selects.count(); i++) {
       const sel = selects.nth(i);
-      const options = await sel.locator('option').allTextContents();
-      const idx = findMatch(extras.nordicRental, rentalMap, options);
-
+      const options = await sel.locator("option").allTextContents();
+      const idx = findMatch(extras.nordicRental, config.rental, options);
       if (idx >= 0) {
         await sel.selectOption({ index: idx });
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: Rental matched plan "${extras.nordicRental}" → "${options[idx]}"`
-        });
-        matched = true;
+        await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Rental matched "${extras.nordicRental}" → "${options[idx]}"` });
         break;
       }
     }
-
-    if (!matched) {
-      const allOpts = [];
-      for (let i = 0; i < count; i++) {
-        allOpts.push(await selects.nth(i).locator('option').allTextContents());
-      }
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Worker: Rental "${extras.nordicRental}" not matched. Options: ${JSON.stringify(allOpts)}`
-      });
-      return { success: true, requiresAction: true, details: { message: `Rental "${extras.nordicRental}" not available` } };
-    }
   }
 
-  // --- Color Group Logic ---
-  if (extras.nordicColorGroup) {
-    const selects = page.locator('select');
-    const count = await selects.count();
-    let matched = false;
-
-    for (let i = 0; i < count; i++) {
+  // Color (Nordic Kids only)
+  if (!isParentTot && extras.nordicColorGroup) {
+    const selects = page.locator("select");
+    for (let i=0; i<await selects.count(); i++) {
       const sel = selects.nth(i);
-      const options = await sel.locator('option').allTextContents();
-      const idx = findMatch(extras.nordicColorGroup, colorMap, options);
-
+      const options = await sel.locator("option").allTextContents();
+      const idx = findMatch(extras.nordicColorGroup, config.color, options);
       if (idx >= 0) {
         await sel.selectOption({ index: idx });
-        await supabase.from('plan_logs').insert({
-          plan_id,
-          msg: `Worker: Color matched plan "${extras.nordicColorGroup}" → "${options[idx]}"`
-        });
-        matched = true;
+        await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Color matched "${extras.nordicColorGroup}" → "${options[idx]}"` });
         break;
       }
     }
-
-    if (!matched) {
-      const allOpts = [];
-      for (let i = 0; i < count; i++) {
-        allOpts.push(await selects.nth(i).locator('option').allTextContents());
-      }
-      await supabase.from('plan_logs').insert({
-        plan_id,
-        msg: `Worker: Color "${extras.nordicColorGroup}" not matched. Options: ${JSON.stringify(allOpts)}`
-      });
-      return { success: true, requiresAction: true, details: { message: `Color "${extras.nordicColorGroup}" not available` } };
-    }
   }
 
-  // --- Volunteer Logic ---
-  if (extras.volunteer) {
+  // Volunteer (Nordic Kids only)
+  if (!isParentTot && extras.volunteer) {
     const wanted = extras.volunteer.toLowerCase();
-    const checkboxes = page.locator('input[type="checkbox"]');
-    const n = await checkboxes.count();
-
-    if (volunteerMap[wanted]?.includes("no")) {
-      for (let i = 0; i < n; i++) {
-        const cb = checkboxes.nth(i);
-        if (await cb.isChecked()) await cb.uncheck().catch(()=>{});
-      }
-      await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: Volunteer set to none' });
+    if (config.volunteer[wanted]?.includes("no")) {
+      const cbs = page.locator("input[type='checkbox']");
+      for (let i=0; i<await cbs.count(); i++) if (await cbs.nth(i).isChecked()) await cbs.nth(i).uncheck();
+      await supabase.from("plan_logs").insert({ plan_id, msg: "Worker: Volunteer set to none" });
     } else {
-      let matched = false;
-      for (let i = 0; i < n; i++) {
-        const cb = checkboxes.nth(i);
-        const label = await page.locator(`label[for="${await cb.getAttribute('id')}"]`).innerText().catch(()=> '');
-        if (volunteerMap[wanted]?.some(alias => label.toLowerCase().includes(alias))) {
-          await cb.check().catch(()=>{});
-          await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Volunteer role matched plan "${extras.volunteer}" → "${label}"` });
-          matched = true;
+      const cbs = page.locator("input[type='checkbox']");
+      for (let i=0; i<await cbs.count(); i++) {
+        const cb = cbs.nth(i);
+        const label = await page.locator(`label[for="${await cb.getAttribute("id")}"]`).innerText().catch(()=> "");
+        if (config.volunteer[wanted]?.some(alias => label.toLowerCase().includes(alias))) {
+          await cb.check();
+          await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Volunteer matched "${extras.volunteer}" → "${label}"` });
         }
       }
-      if (!matched) {
-        await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Volunteer role "${extras.volunteer}" not matched on page` });
-        return { success: true, requiresAction: true, details: { message: `Volunteer role "${extras.volunteer}" not available` } };
-      }
     }
   }
 
-  // Log completion
-  const processed = [];
-  if (extras.nordicRental) processed.push('rental');
-  if (extras.nordicColorGroup) processed.push('color group');
-  if (extras.volunteer) processed.push('volunteer');
-
-  await supabase.from('plan_logs').insert({ 
-    plan_id, 
-    msg: `Worker: Options handling complete. Processed: [${processed.join(', ') || 'none'}]` 
-   });
-
-  // Click Next button after filling options
-  const nextBtn = page.locator(
-    '#edit-submit, button:has-text("Next"), input[type="submit"][value*="Next" i]'
-  ).first();
+  // Always click Next
+  const nextBtn = page.locator('#edit-submit, button:has-text("Next"), input[type="submit"][value*="Next" i]').first();
   if (await nextBtn.count()) {
-    let label;
-    try {
-      label = await nextBtn.innerText();
-    } catch {
-      label = await nextBtn.getAttribute('value') || 'Next';
-    }
-    await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Clicking Next button "${label}"` });
+    const label = await nextBtn.innerText().catch(() => nextBtn.getAttribute("value"));
+    await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Clicking Next "${label}"` });
     await nextBtn.click();
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState("networkidle");
   } else {
-    await supabase.from('plan_logs').insert({ plan_id, msg: 'Worker: No Next button found on Options' });
-    return { success: true, requiresAction: true, details: { message: 'Options complete but no Next button found' } };
+    return { success:true, requiresAction:true, details:{ message:"Options complete but no Next button found" } };
   }
 }
 
