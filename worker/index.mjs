@@ -8,7 +8,7 @@ import { chromium } from "playwright-core";
 console.log("✅ Playwright imported");
 import { pickAdapter } from './adapters/registry.js';
 console.log("✅ Adapter registry imported");
-import mappings from "../functions/_shared/blackhawkMappings.json" assert { type: "json" };
+import mappings from "./blackhawkMappings.json" assert { type: "json" };
 console.log("✅ Blackhawk mappings imported");
 
 console.log("🔍 Checking environment variables...");
