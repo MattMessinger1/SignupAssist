@@ -522,7 +522,12 @@ async function handleBlackhawkOptions(page, plan, supabase, plan_id) {
     '#edit-submit, button:has-text("Next"), input[type="submit"][value*="Next" i]'
   ).first();
   if (await nextBtn.count()) {
-    const label = await nextBtn.innerText().catch(() => await nextBtn.getAttribute('value'));
+    let label;
+    try {
+      label = await nextBtn.innerText();
+    } catch {
+      label = await nextBtn.getAttribute('value') || 'Next';
+    }
     await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Clicking Next button "${label}"` });
     await nextBtn.click();
     await page.waitForLoadState('networkidle');
