@@ -54,7 +54,8 @@ export default function Plan() {
     alternate_time: "",
     alternate_class_name: "",
     phone: "",
-    // Nordic add-ons
+    // Program and Nordic add-ons
+    programName: "",
     nordicRental: "",
     nordicColorGroup: "",
     volunteer: "",
@@ -140,8 +141,9 @@ export default function Plan() {
       const localDateTime = new Date(formData.open_time);
       const adjustedOpenTime = fromZonedTime(localDateTime, formData.timezone).toISOString();
 
-      // Build extras object for Nordic add-ons
+      // Build extras object for program and Nordic add-ons
       const extras: any = {};
+      if (formData.programName) extras.programName = formData.programName;
       if (formData.nordicRental) extras.nordicRental = formData.nordicRental;
       if (formData.nordicColorGroup) extras.nordicColorGroup = formData.nordicColorGroup;
       if (formData.volunteer) extras.volunteer = formData.volunteer;
@@ -202,7 +204,8 @@ export default function Plan() {
         alternate_time: "",
         alternate_class_name: "",
         phone: "",
-        // Nordic add-ons
+        // Program and Nordic add-ons
+        programName: "",
         nordicRental: "",
         nordicColorGroup: "",
         volunteer: "",
@@ -457,6 +460,19 @@ export default function Plan() {
                     placeholder="https://example.com/page"
                     required
                   />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="program_name">Program Name</Label>
+                  <Input
+                    id="program_name"
+                    value={formData.programName}
+                    onChange={(e) => setFormData(prev => ({ ...prev, programName: e.target.value }))}
+                    placeholder="e.g., Nordic Kids Wednesday, Nordic Parent Tot Wednesday"
+                  />
+                  <p className="text-sm text-muted-foreground">
+                    Leave blank to use default "Nordic Kids Wednesday"
+                  </p>
                 </div>
 
                 <div className="space-y-2">
