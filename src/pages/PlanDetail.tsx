@@ -394,7 +394,7 @@ export default function PlanDetail() {
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 bg-blue-50/50 rounded-lg border border-blue-200">
                     <div>
                       <p className="font-medium text-blue-900">Program Name</p>
-                      <p className="text-sm text-blue-700">{plan.extras?.programName || "Default (Nordic Kids Wednesday)"}</p>
+                      <p className="text-sm text-blue-700">{plan.extras?.programName || "Not specified"}</p>
                     </div>
                     {plan.extras.nordicRental && (
                       <div>

@@ -472,7 +472,7 @@ export default function Plan() {
                       <SelectValue placeholder="Select Program" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">Default (Nordic Kids Wednesday)</SelectItem>
+                      <SelectItem value="">Select Program</SelectItem>
                       <SelectItem value="Nordic Kids Wednesday">Nordic Kids Wednesday</SelectItem>
                       <SelectItem value="Nordic Parent Tot Wednesday">Nordic Parent Tot Wednesday</SelectItem>
                     </SelectContent>

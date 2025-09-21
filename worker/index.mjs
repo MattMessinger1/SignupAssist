@@ -10,6 +10,8 @@ import { pickAdapter } from './adapters/registry.js';
 console.log("✅ Adapter registry imported");
 import mappings from "./blackhawkMappings.json" assert { type: "json" };
 console.log("✅ Blackhawk mappings imported");
+import { distance as levenshtein } from "fastest-levenshtein";
+console.log("✅ Levenshtein distance imported");
 
 console.log("🔍 Checking environment variables...");
 const requiredStartupEnvVars = [
@@ -2604,33 +2606,70 @@ async function discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv
     
     await adapter.openListing(page, normalizedBaseUrl);
     
-    // Read desired program name from plan.extras or fallback
+    // Read desired program name from plan.extras with fuzzy matching
     const targetProgram = plan.extras?.programName || plan.preferred_class_name || "Nordic Kids Wednesday";
-    const NAME = new RegExp(targetProgram, "i");
+    const keywords = targetProgram.toLowerCase().split(/\s+/).filter(Boolean);
 
     await supabase.from("plan_logs").insert({
       plan_id,
-      msg: `Worker: Looking for program "${targetProgram}"`
+      msg: `Worker: Fuzzy matching program="${targetProgram}" keywords=${JSON.stringify(keywords)}`
     });
     
-    const {container, layout} = await adapter.findProgramContainer(page, NAME);
-    if (!container) {
-      const sample = await page.locator(".views-row, tr").allTextContents().catch(()=>[]);
-      await supabase.from("plan_logs").insert({
-        plan_id,
-        msg: `Worker: Could not find program "${targetProgram}". Sample rows: ${JSON.stringify(sample.slice(0,5))}`
-      });
-      return { success:false, error:`Program "${targetProgram}" not found`, code:"PROGRAM_NOT_FOUND" };
+    // Grab all rows for fuzzy matching
+    const rows = await page.locator(".views-row, tr").allInnerTexts().catch(() => []);
+    let matchedRow = null;
+    let matchedScore = Infinity;
+    let matchedIndex = -1;
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const lower = row.toLowerCase();
+
+      // 1) Keyword coverage - all keywords must be present
+      const allKeywordsMatch = keywords.every(k => lower.includes(k));
+      if (allKeywordsMatch) {
+        matchedRow = row;
+        matchedScore = 0;
+        matchedIndex = i;
+        break;
+      }
+
+      // 2) Levenshtein fallback for typos
+      const dist = levenshtein(targetProgram.toLowerCase(), lower);
+      if (dist < matchedScore && dist <= 5) { // allow small typos
+        matchedRow = row;
+        matchedScore = dist;
+        matchedIndex = i;
+      }
     }
 
-    await supabase.from('plan_logs').insert({
-      plan_id,
-      msg: `Worker: Found program container using ${layout} layout, clicking register button`
-    });
-
-    // Row-scoped click using adapter
-    try {
-      await adapter.clickRegisterInContainer(page, container);
+    if (matchedRow) {
+      await supabase.from("plan_logs").insert({
+        plan_id,
+        msg: `Worker: Program matched row="${matchedRow.substring(0, 100)}..." (levenshtein=${matchedScore})`
+      });
+      
+      // Click Register button in the matched row
+      const rowLocators = page.locator(".views-row, tr");
+      const targetRowLocator = rowLocators.nth(matchedIndex);
+      const regBtn = targetRowLocator.locator('a:has-text("Register"), button:has-text("Register")').first();
+      
+      if (await regBtn.count()) {
+        await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: Clicking Register button in matched row` });
+        await regBtn.scrollIntoViewIfNeeded().catch(() => {});
+        await regBtn.click();
+        await page.waitForLoadState("networkidle");
+      } else {
+        await supabase.from("plan_logs").insert({ plan_id, msg: `Worker: No Register button found in matched row` });
+        return { success: false, error: "No Register button found in matched program row", code: "REGISTER_BUTTON_NOT_FOUND" };
+      }
+    } else {
+      await supabase.from("plan_logs").insert({
+        plan_id,
+        msg: `Worker: No match for program "${targetProgram}". Sample rows: ${JSON.stringify(rows.slice(0, 5))}`
+      });
+      return { success: false, error: `Program "${targetProgram}" not matched`, code: "PROGRAM_NOT_FOUND" };
+    }
       await page.waitForURL(/\/registration\/\d+\/start/, { timeout: 15000 });
       await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Start page opened: ${page.url()}` });
       
