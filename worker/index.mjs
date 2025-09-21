@@ -2670,6 +2670,9 @@ async function discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv
       });
       return { success: false, error: `Program "${targetProgram}" not matched`, code: "PROGRAM_NOT_FOUND" };
     }
+
+    // Register button clicked above, wait for start page
+    try {
       await page.waitForURL(/\/registration\/\d+\/start/, { timeout: 15000 });
       await supabase.from('plan_logs').insert({ plan_id, msg: `Worker: Start page opened: ${page.url()}` });
       
@@ -2824,7 +2827,6 @@ async function discoverBlackhawkRegistration(page, plan, credentials, allowNoCvv
       });
       return { success:false, error:'Register click failed', code:'BLACKHAWK_DISCOVERY_FAILED' };
     }
-  
   } catch (error) {
     console.error("Discovery error:", error);
     return await logDiscoveryFailure(page, plan_id, error.message, 'BLACKHAWK_DISCOVERY_FAILED', supabase);
